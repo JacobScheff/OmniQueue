@@ -5,7 +5,8 @@ PARK_WIDTH = 1000
 PARK_HEIGHT = 1000
 ENTRANCE_COORDS = (500, 900)
 
-TOTAL_GUESTS = 43000
+# Reduced total guests by 20% (originally 43000)
+TOTAL_GUESTS = 34400
 TOTAL_MINUTES = 900  # 8:00 AM to 11:00 PM (15 hours * 60 minutes)
 WALKING_SPEED = 30   # coordinate units per minute
 
