@@ -17,7 +17,8 @@ GUEST_SPAWN_STD_DEV = 120
 GUEST_DURATION_MEAN = 480
 GUEST_DURATION_STD_DEV = 120
 
-# ALL DISNEYLAND RIDES CONFIGURATION
+# ALL DISNEYLAND RIDES CONFIGURATION 
+# Fantasyland & Storybook Canal Boats popularity values have been reduced.
 RIDES_CONFIG = {
     # == Star Wars: Galaxy's Edge ==
     "Star Wars: Rise of the Resistance": {"capacity": 1200, "duration": 18, "breakdown_prob": 0.003, "popularity": 220, "coords": (100, 250)},
@@ -43,18 +44,18 @@ RIDES_CONFIG = {
     "Sailing Ship Columbia": {"capacity": 1200, "duration": 14, "breakdown_prob": 0.0001, "popularity": 35, "coords": (280, 450)},
 
     # == Fantasyland ==
-    "Matterhorn Bobsleds": {"capacity": 1500, "duration": 3, "breakdown_prob": 0.0015, "popularity": 140, "coords": (650, 400)},
-    "Peter Pan's Flight": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 110, "coords": (480, 450)},
-    "Mr. Toad's Wild Ride": {"capacity": 800, "duration": 2, "breakdown_prob": 0.0002, "popularity": 55, "coords": (520, 450)},
-    "Snow White's Enchanted Wish": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 60, "coords": (460, 470)},
-    "Pinocchio's Daring Journey": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 50, "coords": (440, 440)},
-    "King Arthur Carrousel": {"capacity": 1000, "duration": 2, "breakdown_prob": 0.0001, "popularity": 40, "coords": (500, 400)},
-    "Dumbo the Flying Elephant": {"capacity": 700, "duration": 2, "breakdown_prob": 0.0001, "popularity": 70, "coords": (550, 350)},
-    "Mad Tea Party": {"capacity": 900, "duration": 2, "breakdown_prob": 0.0001, "popularity": 60, "coords": (600, 430)},
-    "Alice in Wonderland": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 75, "coords": (580, 380)},
-    "Casey Jr. Circus Train": {"capacity": 700, "duration": 3, "breakdown_prob": 0.0002, "popularity": 45, "coords": (430, 350)},
-    "Storybook Land Canal Boats": {"capacity": 700, "duration": 6, "breakdown_prob": 0.0002, "popularity": 45, "coords": (480, 330)},
-    '"it\'s a small world"': {"capacity": 2500, "duration": 14, "breakdown_prob": 0.0002, "popularity": 160, "coords": (500, 250)},
+    "Matterhorn Bobsleds": {"capacity": 1500, "duration": 3, "breakdown_prob": 0.0015, "popularity": 120, "coords": (650, 400)},
+    "Peter Pan's Flight": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 90, "coords": (480, 450)},
+    "Mr. Toad's Wild Ride": {"capacity": 800, "duration": 2, "breakdown_prob": 0.0002, "popularity": 45, "coords": (520, 450)},
+    "Snow White's Enchanted Wish": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 50, "coords": (460, 470)},
+    "Pinocchio's Daring Journey": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 40, "coords": (440, 440)},
+    "King Arthur Carrousel": {"capacity": 1000, "duration": 2, "breakdown_prob": 0.0001, "popularity": 30, "coords": (500, 400)},
+    "Dumbo the Flying Elephant": {"capacity": 700, "duration": 2, "breakdown_prob": 0.0001, "popularity": 55, "coords": (550, 350)},
+    "Mad Tea Party": {"capacity": 900, "duration": 2, "breakdown_prob": 0.0001, "popularity": 50, "coords": (600, 430)},
+    "Alice in Wonderland": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 60, "coords": (580, 380)},
+    "Casey Jr. Circus Train": {"capacity": 700, "duration": 3, "breakdown_prob": 0.0002, "popularity": 35, "coords": (430, 350)},
+    "Storybook Land Canal Boats": {"capacity": 700, "duration": 6, "breakdown_prob": 0.0002, "popularity": 30, "coords": (480, 330)},
+    '"it\'s a small world"': {"capacity": 2500, "duration": 14, "breakdown_prob": 0.0002, "popularity": 135, "coords": (500, 250)},
 
     # == Mickey's Toontown ==
     "Mickey & Minnie's Runaway Railway": {"capacity": 1800, "duration": 5, "breakdown_prob": 0.002, "popularity": 150, "coords": (500, 150)},
