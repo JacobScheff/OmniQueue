@@ -169,4 +169,4 @@ def run_analytical_simulations(num_runs, interval_mins):
     print("Export Complete! You can now open it in Excel/Sheets.")
 
 if __name__ == "__main__":
-    run_analytical_simulations(num_runs=50, interval_mins=10) # For 34400 guests
+    run_analytical_simulations(num_runs=200, interval_mins=10) # For 34400 guests
