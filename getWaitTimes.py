@@ -21,8 +21,4 @@ def getRideStatuses():
             wait_time = ride["wait_time"]
             statuses[name] = (is_open, wait_time)
 
-    print(statuses)
-
-    return waitTimes
-
-waitTimes = getRideStatuses()
+    return statuses
