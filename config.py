@@ -18,7 +18,6 @@ GUEST_DURATION_MEAN = 480
 GUEST_DURATION_STD_DEV = 120
 
 # ALL DISNEYLAND RIDES CONFIGURATION
-# Added "popularity" weight. Higher number = more guests actively want to go here.
 RIDES_CONFIG = {
     # == Star Wars: Galaxy's Edge ==
     "Star Wars: Rise of the Resistance": {"capacity": 1200, "duration": 18, "breakdown_prob": 0.003, "popularity": 220, "coords": (100, 250)},
@@ -34,7 +33,7 @@ RIDES_CONFIG = {
     "Pirates of the Caribbean": {"capacity": 2800, "duration": 15, "breakdown_prob": 0.0005, "popularity": 230, "coords": (200, 550)},
 
     # == Adventureland ==
-    "Indiana Jones Adventure": {"capacity": 1600, "duration": 4, "breakdown_prob": 0.002, "popularity": 190, "coords": (250, 650)},
+    "Indiana Jones™ Adventure": {"capacity": 1600, "duration": 4, "breakdown_prob": 0.002, "popularity": 190, "coords": (250, 650)},
     "Jungle Cruise": {"capacity": 1800, "duration": 8, "breakdown_prob": 0.0005, "popularity": 130, "coords": (320, 620)},
     "Walt Disney's Enchanted Tiki Room": {"capacity": 1200, "duration": 15, "breakdown_prob": 0.0001, "popularity": 30, "coords": (380, 650)},
 
@@ -55,7 +54,7 @@ RIDES_CONFIG = {
     "Alice in Wonderland": {"capacity": 800, "duration": 3, "breakdown_prob": 0.0002, "popularity": 75, "coords": (580, 380)},
     "Casey Jr. Circus Train": {"capacity": 700, "duration": 3, "breakdown_prob": 0.0002, "popularity": 45, "coords": (430, 350)},
     "Storybook Land Canal Boats": {"capacity": 700, "duration": 6, "breakdown_prob": 0.0002, "popularity": 45, "coords": (480, 330)},
-    "It's a Small World": {"capacity": 2500, "duration": 14, "breakdown_prob": 0.0002, "popularity": 160, "coords": (500, 250)},
+    '"it\'s a small world"': {"capacity": 2500, "duration": 14, "breakdown_prob": 0.0002, "popularity": 160, "coords": (500, 250)},
 
     # == Mickey's Toontown ==
     "Mickey & Minnie's Runaway Railway": {"capacity": 1800, "duration": 5, "breakdown_prob": 0.002, "popularity": 150, "coords": (500, 150)},
@@ -63,8 +62,8 @@ RIDES_CONFIG = {
     "Chip 'n' Dale's GADGETcoaster": {"capacity": 800, "duration": 1, "breakdown_prob": 0.0005, "popularity": 45, "coords": (570, 180)},
 
     # == Tomorrowland ==
-    "Space Mountain": {"capacity": 1800, "duration": 3, "breakdown_prob": 0.0015, "popularity": 190, "coords": (850, 550)},
-    "Star Tours": {"capacity": 1800, "duration": 5, "breakdown_prob": 0.001, "popularity": 110, "coords": (750, 580)},
+    "Hyperspace Mountain": {"capacity": 1800, "duration": 3, "breakdown_prob": 0.0015, "popularity": 190, "coords": (850, 550)},
+    "Star Tours - The Adventures Continue": {"capacity": 1800, "duration": 5, "breakdown_prob": 0.001, "popularity": 110, "coords": (750, 580)},
     "Buzz Lightyear Astro Blasters": {"capacity": 2000, "duration": 5, "breakdown_prob": 0.0005, "popularity": 130, "coords": (700, 630)},
     "Astro Orbitor": {"capacity": 600, "duration": 2, "breakdown_prob": 0.0002, "popularity": 35, "coords": (750, 650)},
     "Autopia": {"capacity": 1800, "duration": 5, "breakdown_prob": 0.0005, "popularity": 90, "coords": (850, 450)},
