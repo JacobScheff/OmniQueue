@@ -1,7 +1,7 @@
 # guest_logic.py
 import random
 import math
-from config import RIDES_CONFIG
+from oldSimulation.config import RIDES_CONFIG
 
 def choose_next_ride(guest_id, guest_preferences, rides_state, current_location):
     """

@@ -3,7 +3,7 @@ import pygame
 import csv
 import sys
 import math
-from config import PARK_WIDTH, PARK_HEIGHT, ENTRANCE_COORDS, RIDES_CONFIG, TOTAL_MINUTES
+from oldSimulation.config import PARK_WIDTH, PARK_HEIGHT, ENTRANCE_COORDS, RIDES_CONFIG, TOTAL_MINUTES
 
 # Setup Pygame with an expanded width for the Sidebar
 SIDEBAR_WIDTH = 300

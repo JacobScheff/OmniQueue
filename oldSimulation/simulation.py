@@ -1,11 +1,11 @@
-# calculateGuestsBetweenRidesByTime.py
+# simulation.py
 import math
 import random
 import csv
 import collections
 import time
-from config import *
-from guest_logic import choose_next_ride
+from oldSimulation.config import *
+from oldSimulation.guest_logic import choose_next_ride
 
 class Ride:
     def __init__(self, name, config):
@@ -34,59 +34,67 @@ class Guest:
 
 def calc_walk_time(loc1, loc2):
     dist = math.hypot(loc1[0] - loc2[0], loc1[1] - loc2[1])
-    # Ensure walks always take at least 1 minute
+    # BUG FIX: Force at least 1 minute of transition time to prevent event loop dropout
     return max(1, math.ceil(dist / WALKING_SPEED))
 
-def run_analytical_simulations(num_runs, interval_mins):
-    print(f"Starting {num_runs} randomized simulations...")
-    print(f"Tracking walking guests every {interval_mins} minutes.\n")
-    
-    # Generate the checkpoints (e.g. 0, 10, 20, 30... 900)
-    intervals = list(range(0, TOTAL_MINUTES, interval_mins))
-    
-    # Dictionary to hold lists of counts: { tick:[run1_count, run2_count, ...] }
-    results = {t:[] for t in intervals}
-    overall_start_time = time.time()
-    
-    for run_idx in range(num_runs):
-        print(f"--- Running Simulation {run_idx + 1}/{num_runs} ---")
-        
-        # Park state initialization
-        rides = {name: Ride(name, cfg) for name, cfg in RIDES_CONFIG.items()}
-        guests = [Guest(i) for i in range(TOTAL_GUESTS)]
-        
-        spawn_schedule = collections.defaultdict(list)
-        walking_arrivals = collections.defaultdict(list)
-        ride_finishers = collections.defaultdict(list)
-        
-        for g in guests:
-            spawn_schedule[g.spawn_tick].append(g)
+def print_progress(iteration, total):
+    percent = f"{100 * (iteration / float(total)):.1f}"
+    filled_length = int(50 * iteration // total)
+    bar = '█' * filled_length + '-' * (50 - filled_length)
+    print(f'\rSimulating |{bar}| {percent}% Complete', end='\r')
+    if iteration == total: print()
 
-        deciding_guests =[]
-        currently_walking = 0  # ACTIVE TRACKER
+def run_simulation():
+    print("Initializing Park and Guests...")
+    rides = {name: Ride(name, cfg) for name, cfg in RIDES_CONFIG.items()}
+    guests =[Guest(i) for i in range(TOTAL_GUESTS)]
+    
+    spawn_schedule = collections.defaultdict(list)
+    walking_arrivals = collections.defaultdict(list)
+    ride_finishers = collections.defaultdict(list)
+    
+    for g in guests:
+        spawn_schedule[g.spawn_tick].append(g)
+
+    deciding_guests =[]
+    
+    with open('guest_log.csv', 'w', newline='') as g_file, \
+         open('rides_log.csv', 'w', newline='') as r_file:
+         
+        g_writer = csv.writer(g_file)
+        r_writer = csv.writer(r_file)
         
-        # Sim Loop
+        g_writer.writerow(['tick', 'guest_id', 'event', 'start_x', 'start_y', 'end_x', 'end_y', 'arrival_tick', 'target'])
+        r_writer.writerow(['tick', 'ride_name', 'status', 'queue_length', 'wait_time'])
+
+        print("Running Simulation Loop...")
+        start_time = time.time()
+        
         for tick in range(TOTAL_MINUTES):
             # 1. Spawn newly arriving guests
             for g in spawn_schedule[tick]:
                 deciding_guests.append(g)
+                g_writer.writerow([tick, g.id, 'SPAWN', g.location[0], g.location[1], '', '', '', 'ENTRANCE'])
 
             # 2. Finish rides
             for g, ride in ride_finishers[tick]:
                 g.location = ride.coords
                 deciding_guests.append(g)
+                g_writer.writerow([tick, g.id, 'END_RIDE', g.location[0], g.location[1], '', '', '', ride.name])
 
             # 3. Finish walks
             for g, target_ride in walking_arrivals[tick]:
-                currently_walking -= 1 # Guest has arrived, no longer walking
-                if target_ride is not None:
+                if target_ride is None:
+                    g_writer.writerow([tick, g.id, 'LEFT_PARK', g.location[0], g.location[1], '', '', '', ''])
+                else:
                     g.location = target_ride.coords
                     if target_ride.status == 'BROKEN':
                         deciding_guests.append(g)
                     else:
                         target_ride.queue.append(g)
+                        g_writer.writerow([tick, g.id, 'ENTER_QUEUE', g.location[0], g.location[1], '', '', '', target_ride.name])
 
-            # 4. Process Rides (Throughput & Breakdowns)
+            # 4. Process Rides
             rides_state = {}
             for name, ride in rides.items():
                 if ride.status == 'BROKEN':
@@ -114,6 +122,7 @@ def run_analytical_simulations(num_runs, interval_mins):
                     'queue_length': len(ride.queue),
                     'coords': ride.coords
                 }
+                r_writer.writerow([tick, name, ride.status, len(ride.queue), round(ride.get_wait_time(), 1)])
 
             # 5. Decide next actions
             for g in deciding_guests:
@@ -128,45 +137,15 @@ def run_analytical_simulations(num_runs, interval_mins):
                 arrival_tick = tick + walk_time
                 
                 walking_arrivals[arrival_tick].append((g, target))
-                currently_walking += 1 # Guest begins walking
-                
+                g_writer.writerow([tick, g.id, 'START_WALK', g.location[0], g.location[1], target_coords[0], target_coords[1], arrival_tick, target.name if target else 'ENTRANCE'])
+
             deciding_guests.clear()
             
-            # 6. Capture Data Snapshot
-            if tick in results:
-                results[tick].append(currently_walking)
+            if tick % 10 == 0:
+                print_progress(tick, TOTAL_MINUTES)
                 
-    print(f"\nAll {num_runs} simulations completed in {round(time.time() - overall_start_time, 2)} seconds.")
-    
-    # ================= EXPORT DATA =================
-    output_filename = 'walking_guests_stats.csv'
-    print(f"Calculating averages and exporting data to '{output_filename}'...")
-    
-    with open(output_filename, 'w', newline='') as f:
-        writer = csv.writer(f)
-        
-        # Generate Header
-        header =['Time', 'Tick'] + [f'Run_{i+1}' for i in range(num_runs)] + ['Average']
-        writer.writerow(header)
-        
-        # Write Rows
-        for tick in intervals:
-            # Format time beautifully (8:00 AM)
-            hour = 8 + (tick // 60)
-            minute = tick % 60
-            am_pm = "AM" if hour < 12 else "PM"
-            hr_12 = hour if hour <= 12 else hour - 12
-            if hr_12 == 0: hr_12 = 12
-            time_str = f"{hr_12:02d}:{minute:02d} {am_pm}"
-            
-            run_data = results[tick]
-            average = sum(run_data) / len(run_data) if run_data else 0
-            
-            # Append Row: Time, Tick, Run 1, Run 2... Run 20, Average
-            row_data = [time_str, tick] + run_data + [round(average, 2)]
-            writer.writerow(row_data)
-            
-    print("Export Complete! You can now open it in Excel/Sheets.")
+        print_progress(TOTAL_MINUTES, TOTAL_MINUTES)
+        print(f"Simulation completed in {round(time.time() - start_time, 2)} seconds. Logs saved.")
 
 if __name__ == "__main__":
-    run_analytical_simulations(num_runs=200, interval_mins=10) # For 34400 guests
+    run_simulation()

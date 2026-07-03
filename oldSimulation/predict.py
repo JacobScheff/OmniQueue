@@ -5,9 +5,9 @@ import csv
 import collections
 import time
 import datetime
-from config import *
-from guest_logic import choose_next_ride
-from getWaitTimes import getRideStatuses
+from oldSimulation.config import *
+from oldSimulation.guest_logic import choose_next_ride
+from oldSimulation.getWaitTimes import getRideStatuses
 
 class Ride:
     def __init__(self, name, config):
