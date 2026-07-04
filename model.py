@@ -35,26 +35,34 @@ class ParkRouterModel(nn.Module):
         )
 
     def forward(self, guest_dynamic_features, ride_dynamic_features, environment_dynamic_features):
+        B, num_guests, _ = guest_dynamic_features.size()
+
         # --- Actor --- #
 
+        # Reshape enviornment for guests and rides
+        env_for_rides = environment_dynamic_features.unsqueeze(1).expand(-1, self.num_rides, -1)  # (batch_size, num_rides, environment_dynamic_feat_dim)
+        env_for_guests = environment_dynamic_features.unsqueeze(1).expand(-1, num_guests, -1)  # (batch_size, num_guests, environment_dynamic_feat_dim)
+
         # Embed the rides
-        ride_learned_embeddings = self.ride_embed(torch.arange(ride_dynamic_features.size(0), device=ride_dynamic_features.device))  # (num_rides, d_model - ride_dynamic_feat_dim)
+        ride_ids = torch.arange(self.num_rides, device=ride_dynamic_features.device).expand(B, -1) # (batch_size, num_rides)
+        ride_learned_embeddings = self.ride_embed(ride_ids)  # (batch_size, num_rides, d_model - ride_dynamic_feat_dim - environment_dynamic_feat_dim)
 
         # Concatenate learned embeddings with dynamic features
-        ride_embeddings = torch.cat([ride_learned_embeddings, ride_dynamic_features], dim=-1) # (num_rides, d_model - ride_dynamic_feat_dim) + (num_rides, ride_dynamic_feat_dim) = (num_rides, d_model)
-
-        # Expand ride embeddings to match the batch size of guests
-        ride_embeddings = ride_embeddings.unsqueeze(0).expand(guest_dynamic_features.size(0), -1, -1)  # (batch_size, num_rides, d_model)
+        ride_embeddings = torch.cat([ride_learned_embeddings, ride_dynamic_features, env_for_rides], dim=-1) # (batch_size, num_rides, d_model)
 
         # Embed the guests' dynamic features
-        guest_embeddings = self.guest_embed(torch.cat([guest_dynamic_features, environment_dynamic_features], dim=-1))  # (batch_size, num_guests, d_model)
+        guest_inputs = torch.cat([guest_dynamic_features, env_for_guests], dim=-1)  # (batch_size, num_guests, guest_feat_dim + environment_dynamic_feat_dim)
+        guest_embeddings = self.guest_embed(guest_inputs)  # (batch_size, num_guests, d_model)
 
-        # Guest-to-Guest Coordination (V is unused, since only the attentinon is what matters)
-        coordinated_guests, _ = self.coordinator(guest_embeddings, guest_embeddings, guest_embeddings)  # (batch_size, num_guests, d_model)
-        
-        # Cross-attention between guests and rides
+        # Guest-to-Guest Coordination
+        coordinate_attn, _ = self.coordinator(guest_embeddings, guest_embeddings, guest_embeddings) # (batch_size, num_guests, d_model)
+        # Residual Connection
+        coordinated_guests = guest_embeddings + coordinate_attn # (batch_size, num_guests, d_model)
+
+        # Cross-attention between guests and rides (Pointer Head), V is not used since we only need the attention scores for routing guests to rides
         queries = self.q_proj(coordinated_guests)  # (batch_size, num_guests, d_model)
-        keys = self.k_proj(ride_embeddings)  # (num_rides, d_model)
+        keys = self.k_proj(ride_embeddings)  # (batch_size, num_rides, d_model)
+
         attention_scores = torch.matmul(queries, keys.transpose(-2, -1)) / (self.d_model ** 0.5)  # (batch_size, num_guests, num_rides)
 
         # --- Critic --- #
