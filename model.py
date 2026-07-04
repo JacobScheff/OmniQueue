@@ -24,9 +24,11 @@ class ParkRouterModel(nn.Module):
 
         # Critic Head (Global Value of the Park)
         self.critic_mlp = nn.Sequential(
-            nn.Linear(d_model * 2, 64),
+            nn.Linear(d_model * 2, d_model),
             nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 1)
         )
 
         self.d_model = d_model
