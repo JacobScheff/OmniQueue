@@ -9,8 +9,6 @@ class ParkRouterModel(nn.Module):
         self.num_rides = num_rides
         self.d_model = d_model
 
-        # TODO: Add environment features to the model. Currently, they are not used.
-
         # Guests each have their own individual features and do not persist, so no pre-learned information from embeddings
         # Rides are permanent and thus have their own learned information (such as breakdown rates, positions/distances to other rides, etc.) along with dynamic features (such as current wait times, number of guests heading to the ride, etc.)
         # Environment features are global and are dynamic (time of day, weather, etc.) and are shared across all rides and guests
