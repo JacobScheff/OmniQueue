@@ -75,3 +75,10 @@ class ParkRouterModel(nn.Module):
 
 
         return attention_scores, global_value
+    
+# Compile the model and print the number of parameters
+if __name__ == "__main__":
+    model = ParkRouterModel(guest_feat_dim=45, num_rides=35, ride_dynamic_feat_dim=5, environment_dynamic_feat_dim=4)
+    print(model)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params}")
