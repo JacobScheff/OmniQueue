@@ -27,7 +27,7 @@ class ParkRouterModel(nn.Module):
 
         # Critic Head (Global Value of the Park)
         self.critic_mlp = nn.Sequential(
-            nn.Linear(d_model * 2, d_model),
+            nn.Linear(d_model * 2 + environment_dynamic_feat_dim, d_model),
             nn.ReLU(),
             nn.Linear(d_model, d_model),
             nn.ReLU(),
@@ -69,7 +69,7 @@ class ParkRouterModel(nn.Module):
         # Global value of the park based on the average of the coordinated guest embeddings and the average of the ride embeddings
         avg_guest_embedding = coordinated_guests.mean(dim=1)  # (batch_size, d_model)
         avg_ride_embedding = ride_embeddings.mean(dim=1)  # (batch_size, d_model)
-        critic_input = torch.cat([avg_guest_embedding, avg_ride_embedding], dim=-1)  # (batch_size, d_model * 2)
+        critic_input = torch.cat([avg_guest_embedding, avg_ride_embedding, environment_dynamic_features], dim=-1)  # (batch_size, d_model * 2 + environment_dynamic_feat_dim)
         
         global_value = self.critic_mlp(critic_input)  # (batch_size, 1)
 
