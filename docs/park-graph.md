@@ -34,6 +34,8 @@ actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 | Method | Description |
 |--------|-------------|
 | `walk_time(from_node, to_node)` | Base walk seconds at nominal speed |
-| `walk_times_to_rides(from_node, speed)` | NumPy vector of walk seconds to all 35 rides |
-| `party_walk_time(from_node, to_node, speed)` | Single pair with party speed scaling |
+| `party_walk_sec(from_idx, to_idx, speed)` | Walk seconds between node indices |
+| `party_walk_to_ride_sec(from_idx, ride_id, speed)` | Walk seconds to a ride leaf |
+| `base_walk_to_rides` | `(num_nodes, 35)` int32 matrix for Numba routing |
+| `node_idx_to_ride` | Maps node index → ride id (-1 if not a ride) |
 | `random_idle_node(rng, node, max_hops=2)` | Random reachable node for idle wandering |

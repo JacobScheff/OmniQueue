@@ -46,7 +46,6 @@ def build_graph() -> Graph:
         add_edge(hub, config.ride_node_id(ride_id))
 
     node_ids = sorted(node_coords.keys())
-    index_of = {nid: i for i, nid in enumerate(node_ids)}
     n = len(node_ids)
 
     walk_time = [[0] * n for _ in range(n)]
@@ -92,26 +91,41 @@ def astar_distance(
                 h = _euclidean(coords[neighbor], goal_coord)
                 heapq.heappush(open_heap, (tentative + h, neighbor))
 
-    # Disconnected (should not happen) — fall back to straight line
     return _euclidean(coords[start], coords[goal])
 
 
 class ParkGraph:
-    """Runtime wrapper with node-id mapping and walk-time lookups."""
+    """Runtime wrapper with node-id mapping and precomputed walk caches."""
 
     def __init__(self) -> None:
         self._graph = build_graph()
         self._node_ids = sorted(self._graph.node_coords.keys())
         self._index_of = {nid: i for i, nid in enumerate(self._node_ids)}
+        self.idx_to_node_id = np.array(self._node_ids, dtype=np.int32)
+        self.num_nodes = len(self._node_ids)
+
         self._ride_node_to_id = {
             config.ride_node_id(r): r for r in range(config.NUM_RIDES)
         }
         self._walk_array = np.array(self._graph.walk_time_sec, dtype=np.float32)
+        self.base_walk_matrix = np.array(self._graph.walk_time_sec, dtype=np.int32)
         self._ride_col_indices = np.array(
             [self._index_of[config.ride_node_id(r)] for r in range(config.NUM_RIDES)],
             dtype=np.int32,
         )
+        self.base_walk_to_rides = self.base_walk_matrix[:, self._ride_col_indices].copy()
         self._speed_scale = config.BASE_WALKING_SPEED
+
+        self.entrance_node_idx = np.int32(self._index_of[config.NODE_ENTRANCE])
+        self.node_idx_to_ride = np.full(self.num_nodes, -1, dtype=np.int16)
+        for ride_id in range(config.NUM_RIDES):
+            idx = self._index_of[config.ride_node_id(ride_id)]
+            self.node_idx_to_ride[idx] = ride_id
+
+        self.ride_node_idx = np.array(
+            [self._index_of[config.ride_node_id(r)] for r in range(config.NUM_RIDES)],
+            dtype=np.int32,
+        )
 
     @property
     def entrance_node(self) -> int:
@@ -120,6 +134,12 @@ class ParkGraph:
     @property
     def node_ids(self) -> list[int]:
         return self._node_ids
+
+    def node_to_idx(self, node_id: int) -> int:
+        return self._index_of[node_id]
+
+    def idx_to_node(self, node_idx: int) -> int:
+        return int(self.idx_to_node_id[node_idx])
 
     def coords(self, node_id: int) -> tuple[float, float]:
         return self._graph.node_coords[node_id]
@@ -133,21 +153,26 @@ class ParkGraph:
     def walk_time(self, from_node: int, to_node: int) -> int:
         i = self._index_of[from_node]
         j = self._index_of[to_node]
-        return self._graph.walk_time_sec[i][j]
+        return int(self.base_walk_matrix[i, j])
 
-    def party_walk_time(self, from_node: int, to_node: int, effective_speed: float) -> int:
-        base = self.walk_time(from_node, to_node)
+    def party_walk_sec(self, from_node_idx: int, to_node_idx: int, effective_speed: float) -> int:
+        base = int(self.base_walk_matrix[from_node_idx, to_node_idx])
         return max(1, int(math.ceil(base * self._speed_scale / max(effective_speed, 0.1))))
 
+    def party_walk_to_ride_sec(self, from_node_idx: int, ride_id: int, effective_speed: float) -> int:
+        base = int(self.base_walk_to_rides[from_node_idx, ride_id])
+        return max(1, int(math.ceil(base * self._speed_scale / max(effective_speed, 0.1))))
+
+    def party_walk_time(self, from_node: int, to_node: int, effective_speed: float) -> int:
+        return self.party_walk_sec(self._index_of[from_node], self._index_of[to_node], effective_speed)
+
     def walk_times_to_rides(self, from_node: int, effective_speed: float) -> np.ndarray:
-        """Walk seconds from from_node to every ride (indexed by ride_id)."""
         row_idx = self._index_of[from_node]
         scale = self._speed_scale / max(effective_speed, 0.1)
-        cols = self._walk_array[row_idx, self._ride_col_indices]
+        cols = self.base_walk_to_rides[row_idx]
         return np.maximum(1, np.ceil(cols * scale)).astype(np.int32)
 
     def neighbors_within_hops(self, start_node: int, max_hops: int) -> list[int]:
-        """Return reachable nodes within max_hops (excluding start)."""
         visited = {start_node}
         frontier = [start_node]
         results: list[int] = []
@@ -167,6 +192,11 @@ class ParkGraph:
         if not candidates:
             return current_node
         return int(rng.choice(candidates))
+
+    def random_idle_node_idx(self, rng, current_node_idx: int, max_hops: int = config.IDLE_MAX_HOPS) -> int:
+        node_id = self.idx_to_node(current_node_idx)
+        idle = self.random_idle_node(rng, node_id, max_hops)
+        return self.node_to_idx(idle)
 
 
 _GRAPH: ParkGraph | None = None

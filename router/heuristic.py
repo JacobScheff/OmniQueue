@@ -1,68 +1,51 @@
-"""Heuristic baseline router with preference-ordered balking."""
+"""Heuristic baseline router with Numba-accelerated batch routing."""
 
 from __future__ import annotations
 
+import numpy as np
+
 import config
-from park_types import EXIT_RIDE_ID
+from park_types import EXIT_RIDE_ID, ROUTE_IDLE_CODE
+from router.numba_routing import route_batch_numba
 
 
 class HeuristicRouter:
     def route_batch(self, party_ids, parties, rides, graph, now_sec, rng):
         rides.refresh_router_cache()
-        open_mask = rides.open_mask
-        wait_times = rides.wait_arr
-        durations = rides.duration_arr
 
-        results = []
-        for party_id in party_ids:
-            party = parties.get(party_id)
-            if parties.should_leave(party, now_sec):
-                results.append((party_id, EXIT_RIDE_ID))
-                continue
+        if not party_ids:
+            return []
 
-            remaining = parties.time_remaining(party, now_sec)
-            current_ride = graph.node_to_ride(party.location_node)
-            walks = graph.walk_times_to_rides(party.location_node, party.effective_speed)
+        results: list[tuple[int, int | None]] = []
+        ids = np.asarray(party_ids, dtype=np.int32)
 
-            chosen = self._pick_by_balking(
-                party, open_mask, wait_times, durations, walks, remaining, current_ride
+        for start in range(0, len(ids), config.MAX_ROUTE_BATCH):
+            chunk = ids[start : start + config.MAX_ROUTE_BATCH]
+            rand_u01 = rng.random(chunk.shape[0], dtype=np.float64)
+            targets = route_batch_numba(
+                chunk,
+                parties.leave_sec,
+                parties.location_node_idx,
+                parties.effective_speed,
+                parties.preference_order,
+                parties.balk_sec,
+                graph.node_idx_to_ride,
+                rides.open_mask,
+                rides.wait_arr,
+                rides.duration_arr,
+                graph.base_walk_to_rides,
+                float(config.BASE_WALKING_SPEED),
+                int(now_sec),
+                rand_u01,
+                float(config.IDLE_WALK_PROB),
+                int(EXIT_RIDE_ID),
+                int(ROUTE_IDLE_CODE),
             )
-            if chosen is not None:
-                results.append((party_id, chosen))
-                continue
-
-            if rng.random() < config.IDLE_WALK_PROB:
-                results.append((party_id, None))
-                continue
-
-            forced = self._force_pick(
-                party, open_mask, wait_times, durations, walks, remaining, current_ride
-            )
-            results.append((party_id, forced))
+            for i, pid in enumerate(chunk):
+                target = int(targets[i])
+                if target == ROUTE_IDLE_CODE:
+                    results.append((int(pid), None))
+                else:
+                    results.append((int(pid), target))
 
         return results
-
-    def _pick_by_balking(self, party, open_mask, wait_times, durations, walks, remaining, current_ride):
-        for ride_id in party.preference_order:
-            if current_ride is not None and ride_id == current_ride:
-                continue
-            if not open_mask[ride_id]:
-                continue
-            walk = int(walks[ride_id])
-            if walk + wait_times[ride_id] + durations[ride_id] > remaining:
-                continue
-            if wait_times[ride_id] <= party.balk_sec[ride_id]:
-                return ride_id
-        return None
-
-    def _force_pick(self, party, open_mask, wait_times, durations, walks, remaining, current_ride):
-        for ride_id in party.preference_order:
-            if current_ride is not None and ride_id == current_ride:
-                continue
-            if not open_mask[ride_id]:
-                continue
-            walk = int(walks[ride_id])
-            if walk + wait_times[ride_id] + durations[ride_id] > remaining:
-                continue
-            return ride_id
-        return EXIT_RIDE_ID

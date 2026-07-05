@@ -39,6 +39,7 @@ MUST_DO_PREF_BOOST = 10.0
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
 FORCE_PICK_IDLE_SEC = 60  # nominal time for forced pick before re-eval
+MAX_ROUTE_BATCH = 256
 
 # --- Metrics ---
 METRICS_SAMPLE_INTERVAL_SEC = 300

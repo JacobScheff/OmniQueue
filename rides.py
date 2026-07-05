@@ -8,6 +8,7 @@ import random
 import numpy as np
 
 import config
+from park_graph import get_park_graph
 from park_types import Event, EventType, Ride, RideStatus
 from timing_wheel import TimingWheel
 
@@ -15,6 +16,7 @@ from timing_wheel import TimingWheel
 class RideManager:
     def __init__(self, rng: random.Random) -> None:
         self.rng = rng
+        graph = get_park_graph()
         self.rides: list[Ride] = []
         for cfg in config.get_ride_configs():
             self.rides.append(
@@ -30,35 +32,33 @@ class RideManager:
         self.open_mask = np.ones(config.NUM_RIDES, dtype=bool)
         self.wait_arr = np.zeros(config.NUM_RIDES, dtype=np.float32)
         self.duration_arr = np.array([r.duration_sec for r in self.rides], dtype=np.int32)
+        self.ride_node_idx = graph.ride_node_idx.copy()
 
     def refresh_router_cache(self) -> None:
         for i, ride in enumerate(self.rides):
             self.open_mask[i] = ride.status == RideStatus.OPEN
             self.wait_arr[i] = ride.current_wait_sec
 
-    def invalidate_router_cache(self) -> None:
-        pass
-
     def get(self, ride_id: int) -> Ride:
         return self.rides[ride_id]
 
     def wait_times(self) -> list[float]:
-        return [r.current_wait_sec for r in self.rides]
+        return self.wait_arr.tolist()
 
     def update_wait_estimates(self, now_sec: float) -> None:
-        self.invalidate_router_cache()
-        for ride in self.rides:
+        for i, ride in enumerate(self.rides):
             if ride.status == RideStatus.BROKEN:
                 ride.current_wait_sec = 9999.0
-                continue
-            pending = len(ride.pending_board)
-            on_ride_count = len(ride.on_ride)
-            ahead = pending + on_ride_count
-            if ride.capacity_per_sec <= 0:
+            elif ride.capacity_per_sec <= 0:
                 ride.current_wait_sec = 9999.0
             else:
+                pending = len(ride.pending_board)
+                on_ride_count = len(ride.on_ride)
+                ahead = pending + on_ride_count
                 until_board = max(0.0, ride.next_board_sec - now_sec)
                 ride.current_wait_sec = until_board + ahead / ride.capacity_per_sec
+            self.open_mask[i] = ride.status == RideStatus.OPEN
+            self.wait_arr[i] = ride.current_wait_sec
 
     def schedule_boarding(self, wheel: TimingWheel, ride_id: int, party_id: int, now_sec: int) -> None:
         ride = self.rides[ride_id]
@@ -108,18 +108,18 @@ class RideManager:
         return self.trigger_breakdown(wheel, ride_id, now_sec)
 
     def trigger_breakdown(self, wheel: TimingWheel, ride_id: int, now_sec: int) -> list[int]:
-        """Break a ride. Returns party ids needing immediate routing at entrance."""
         ride = self.rides[ride_id]
         if ride.status == RideStatus.BROKEN:
             return []
 
         ride.status = RideStatus.BROKEN
-        self.invalidate_router_cache()
         repair = self.rng.randint(config.BREAKDOWN_REPAIR_MIN_SEC, config.BREAKDOWN_REPAIR_MAX_SEC)
         ride.broken_until_sec = now_sec + repair
         ride.cumulative_downtime_sec += repair
         ride.last_breakdown_sec = now_sec
         ride.generation += 1
+        self.open_mask[ride_id] = False
+        self.wait_arr[ride_id] = 9999.0
 
         wheel.schedule(
             ride.broken_until_sec,
@@ -127,7 +127,6 @@ class RideManager:
         )
 
         route_now: list[int] = []
-
         for pid in list(ride.pending_board.keys()):
             route_now.append(pid)
             ride.evacuation.append(pid)
@@ -157,8 +156,8 @@ class RideManager:
         if ride.status != RideStatus.BROKEN:
             return False
         ride.status = RideStatus.OPEN
-        self.invalidate_router_cache()
         ride.next_board_sec = float(now_sec)
+        self.open_mask[ride_id] = True
         return True
 
     def pop_evacuation(self, ride_id: int) -> int | None:
