@@ -36,6 +36,8 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
   simulator.py        ← run_day() entry point
   metrics.py          ← KPI collection
   benchmark.py        ← performance harness
+  native/             ← C++ DES core + pybind11 `_park_sim`
+  tools/              ← export_native_data.py (graph → C++ header)
   router/
     base.py           ← Router protocol, get_router()
     heuristic.py      ← Phase 1 baseline router
@@ -55,7 +57,7 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
 | [breakdowns.md](docs/breakdowns.md) | `rides.py`, `events.py` | Breakdown, evacuation deque, re-route rules |
 | [heuristic-router.md](docs/heuristic-router.md) | `router/heuristic.py` | Balking, idle walk, force-pick fallback |
 | [metrics.md](docs/metrics.md) | `metrics.py` | KPI definitions and sampling |
-| [benchmark.md](docs/benchmark.md) | `benchmark.py` | How to run perf tests |
+| [native-simulator.md](docs/native-simulator.md) | `native/`, `_park_sim` | C++ extension build and Python API |
 
 ## Phase Roadmap
 

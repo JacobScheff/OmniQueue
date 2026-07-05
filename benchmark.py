@@ -8,7 +8,7 @@ import sys
 import time
 
 from router.numba_routing import has_numba
-from simulator import run_day
+from simulator import native_backend_name, run_day
 
 
 def main() -> None:
@@ -16,9 +16,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--router", type=str, default="heuristic")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="auto",
+        choices=["auto", "native", "python"],
+        help="Simulation backend (auto prefers C++ when built)",
+    )
     args = parser.parse_args()
 
-    if args.router == "heuristic" and not has_numba():
+    if args.backend == "python" and args.router == "heuristic" and not has_numba():
         print(
             "Warning: numba is not installed; using pure-Python routing (slower).\n"
             "Install with: pip install -r requirements.txt",
@@ -32,15 +39,21 @@ def main() -> None:
         seed = args.seed + i
         print(f"Run {i + 1}/{args.runs}...", flush=True)
         t0 = time.perf_counter()
-        metrics = run_day(seed=seed, router=args.router)
+        metrics = run_day(seed=seed, router=args.router, backend=args.backend)
         elapsed = time.perf_counter() - t0
         times.append(elapsed)
         last = metrics
         print(f"  {elapsed:.3f}s", flush=True)
 
     avg = sum(times) / len(times)
+    backend_label = args.backend
+    if args.backend == "auto":
+        backend_label = native_backend_name() if native_backend_name() == "native" else "python"
+
     print(f"Runs: {args.runs}")
-    print(f"Routing backend: {'numba' if has_numba() else 'python'}")
+    print(f"Backend: {backend_label}")
+    if backend_label == "python" and args.router == "heuristic":
+        print(f"Routing: {'numba' if has_numba() else 'python'}")
     print(f"Wall time avg: {avg:.4f}s (min={min(times):.4f}s, max={max(times):.4f}s)")
     if last:
         print(f"Parties: {last.total_parties}, Guests: {last.total_guests}")

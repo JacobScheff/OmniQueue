@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import time
 
@@ -15,6 +16,32 @@ from rides import RideManager
 from router.base import Router, get_router
 from timing_wheel import TimingWheel
 from park_types import EXIT_RIDE_ID, Event, EventType, PartyState, RideStatus, ROUTE_IDLE_CODE
+
+
+def _native_available() -> bool:
+    try:
+        import _park_sim  # type: ignore[import-not-found]
+
+        return bool(_park_sim.is_available())
+    except ImportError:
+        return False
+
+
+def _metrics_from_native(result) -> DayMetrics:
+    return DayMetrics(
+        total_parties=result.total_parties,
+        total_guests=result.total_guests,
+        rides_completed=result.rides_completed,
+        parties_exited=result.parties_exited,
+        breakdown_count=result.breakdown_count,
+        wait_variance_samples=list(result.wait_variance_samples),
+        mean_wait_samples=list(result.mean_wait_samples),
+        wall_time_sec=result.wall_time_sec,
+    )
+
+
+def native_backend_name() -> str:
+    return "native" if _native_available() else "unavailable"
 
 
 class Simulator:
@@ -46,7 +73,6 @@ class Simulator:
         for spawn_sec, party_id in schedules:
             self.wheel.schedule(spawn_sec, Event(spawn_event, party_id=party_id))
 
-        exited = PartyState.EXITED
         entrance_idx = int(self.graph.entrance_node_idx)
 
         while not self.wheel.empty():
@@ -231,7 +257,35 @@ class Simulator:
         )
 
 
-def run_day(seed: int = 0, router: str | None = None) -> DayMetrics:
-    r = get_router(router) if router else None
+def run_day(
+    seed: int = 0,
+    router: str | None = None,
+    backend: str | None = None,
+) -> DayMetrics:
+    """Run one simulated park day.
+
+    backend:
+      - ``auto`` (default): use C++ extension when built, else Python
+      - ``native``: require C++ extension
+      - ``python``: force Python simulator
+    """
+    selected = backend or os.environ.get("OMNIQUEUE_BACKEND", "auto")
+    router_name = router or config.ROUTER
+
+    if selected in ("auto", "native"):
+        if router_name not in ("heuristic", None):
+            if selected == "native":
+                raise ValueError("C++ backend currently supports heuristic routing only.")
+        elif _native_available():
+            import _park_sim  # type: ignore[import-not-found]
+
+            return _metrics_from_native(_park_sim.run_day(seed))
+
+        if selected == "native":
+            raise ImportError(
+                "C++ extension _park_sim is not built. Run: pip install -e ."
+            )
+
+    r = get_router(router_name) if router_name else None
     sim = Simulator(seed=seed, router=r)
     return sim.run_day()
