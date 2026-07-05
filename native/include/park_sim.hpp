@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -17,6 +18,12 @@ constexpr int kBreakdownRepairMinSec = 15 * 60;
 constexpr int kBreakdownRepairMaxSec = 60 * 60;
 constexpr int kMetricsSampleIntervalSec = 300;
 constexpr int kMinDwellSec = 2 * 3600;
+
+constexpr int kGuestFeatDim = 45;
+constexpr int kRideDynamicFeatDim = 5;
+constexpr int kEnvDynamicFeatDim = 4;
+constexpr int kNumActions = 37;  // 35 rides + exit + idle
+constexpr int kFlatObsDim = kGuestFeatDim + kNumRides * kRideDynamicFeatDim + kEnvDynamicFeatDim;
 
 constexpr double kTotalGuestsMean = 50000.0;
 constexpr double kTotalGuestsStd = 2500.0;
@@ -76,8 +83,61 @@ struct DayMetricsResult {
     double rides_per_party() const {
         return static_cast<double>(rides_completed) / std::max(1, total_parties);
     }
+
+    double avg_wait_variance() const {
+        if (wait_variance_samples.empty()) {
+            return 0.0;
+        }
+        double sum = 0.0;
+        for (double v : wait_variance_samples) {
+            sum += v;
+        }
+        return sum / static_cast<double>(wait_variance_samples.size());
+    }
 };
 
+struct Observation {
+    std::array<float, kGuestFeatDim> guest{};
+    std::array<float, kNumRides * kRideDynamicFeatDim> ride{};
+    std::array<float, kEnvDynamicFeatDim> env{};
+
+    std::array<float, kFlatObsDim> flat() const;
+};
+
+struct BCSample {
+    Observation obs;
+    int action = 0;
+};
+
+struct EnvStepResult {
+    Observation obs;
+    float reward = 0.0f;
+    bool done = false;
+    bool has_obs = false;
+    DayMetricsResult metrics;
+};
+
+int action_from_target(int target_ride_id);
+int target_from_action(int action);
+
 DayMetricsResult run_day(uint64_t seed);
+std::vector<BCSample> collect_bc_dataset(int num_days, uint64_t seed_start);
+
+class ParkEnv {
+public:
+    explicit ParkEnv(uint64_t seed = 0);
+    ~ParkEnv();
+    ParkEnv(const ParkEnv&) = delete;
+    ParkEnv& operator=(const ParkEnv&) = delete;
+    ParkEnv(ParkEnv&& other) noexcept;
+    ParkEnv& operator=(ParkEnv&& other) noexcept;
+
+    Observation reset(uint64_t seed);
+    EnvStepResult step(int action);
+
+private:
+    struct Impl;
+    Impl* impl_;
+};
 
 }  // namespace park

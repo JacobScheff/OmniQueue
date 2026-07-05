@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <memory>
 #include <optional>
 #include <random>
 #include <unordered_map>
@@ -17,7 +18,7 @@
 
 namespace park {
 
-namespace {
+namespace detail {
 
 namespace gd = graph_data;
 
@@ -334,6 +335,73 @@ public:
             std::chrono::duration<double>(t1 - t0).count();
         return metrics_;
     }
+
+    void set_bc_recorder(std::vector<BCSample>* out) { bc_out_ = out; }
+
+    void env_begin(uint64_t seed) {
+        hold_routing_ = true;
+        env_done_ = false;
+        env_now_sec_ = 0;
+        env_queue_.clear();
+        env_queue_pos_ = 0;
+        last_var_sample_count_ = 0;
+        rng_ = Rng(seed);
+        reset();
+        spawn_day();
+        metrics_.total_parties = parties_.count;
+        metrics_.total_guests = total_guests_;
+        for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
+            wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
+        }
+    }
+
+    bool env_pump() {
+        while (env_queue_pos_ >= env_queue_.size()) {
+            env_queue_.clear();
+            env_queue_pos_ = 0;
+            if (env_done_ || wheel_.empty()) {
+                env_done_ = true;
+                return false;
+            }
+            if (!env_tick()) {
+                env_done_ = true;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    int env_current_party() const {
+        return env_queue_[env_queue_pos_];
+    }
+
+    int env_now_sec() const { return env_now_sec_; }
+
+    Observation env_build_obs(int party_id) const {
+        return build_observation(party_id, env_now_sec_);
+    }
+
+    void env_apply_action(int action) {
+        assign_route(env_current_party(), target_from_action(action), env_now_sec_);
+        ++env_queue_pos_;
+    }
+
+    float env_reward_delta() {
+        const size_t n = metrics_.wait_variance_samples.size();
+        if (n <= last_var_sample_count_) {
+            return -0.001f;
+        }
+        const double var = metrics_.wait_variance_samples.back();
+        last_var_sample_count_ = n;
+        return static_cast<float>(-var / 1'000'000.0);
+    }
+
+    DayMetricsResult env_finalize() {
+        metrics_.wall_time_sec = 0.0;
+        return metrics_;
+    }
+
+    bool env_is_done() const { return env_done_ && env_queue_pos_ >= env_queue_.size(); }
 
 private:
     static void append_deciding(const std::vector<int32_t>& src, std::vector<int32_t>& dst) {
@@ -703,6 +771,23 @@ private:
             return;
         }
 
+        if (bc_out_ != nullptr) {
+            for (int pid : ids) {
+                const int target = route_one(
+                    pid, now_sec, parties_, open_mask_, wait_arr_, duration_arr_, rng_.uniform01());
+                bc_out_->push_back({build_observation(pid, now_sec), action_from_target(target)});
+                assign_route(pid, target, now_sec);
+            }
+            return;
+        }
+
+        if (hold_routing_) {
+            env_queue_ = std::move(ids);
+            env_queue_pos_ = 0;
+            env_now_sec_ = now_sec;
+            return;
+        }
+
         route_batch(
             ids,
             now_sec,
@@ -754,6 +839,125 @@ private:
         wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
     }
 
+    bool env_tick() {
+        auto [now_sec, events] = wheel_.pop_next();
+        if (now_sec > kDaySeconds) {
+            return false;
+        }
+        env_now_sec_ = now_sec;
+
+        update_wait_estimates(now_sec);
+        maybe_sample(now_sec);
+
+        for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
+            auto route_now = maybe_breakdown(ride_id, now_sec);
+            if (route_now.has_value()) {
+                metrics_.breakdown_count += 1;
+                on_breakdown(ride_id, *route_now, now_sec);
+                if (!env_queue_.empty()) {
+                    return true;
+                }
+            }
+        }
+
+        std::vector<int32_t> deciding;
+        deciding.reserve(events.size());
+
+        for (const auto& event : events) {
+            switch (event.type) {
+                case EventType::PartySpawn:
+                    parties_.location_node_idx[event.party_id] = gd::kEntranceNodeIdx;
+                    deciding.push_back(event.party_id);
+                    break;
+                case EventType::ArriveAtDestination:
+                    append_deciding(handle_arrive(event.party_id, now_sec), deciding);
+                    break;
+                case EventType::RideStart:
+                    handle_ride_start(event, now_sec);
+                    break;
+                case EventType::RideComplete:
+                    deciding.push_back(event.party_id);
+                    handle_ride_complete(event.party_id, event.ride_id);
+                    break;
+                case EventType::BreakdownEnd:
+                    on_breakdown_end(event.ride_id, event.ride_generation, now_sec);
+                    break;
+                case EventType::EvacuateParty:
+                    append_deciding(handle_evacuate(event, now_sec), deciding);
+                    break;
+            }
+        }
+
+        if (!deciding.empty()) {
+            route_parties(deciding, now_sec);
+            if (!env_queue_.empty()) {
+                return true;
+            }
+        }
+        return !wheel_.empty();
+    }
+
+    Observation build_observation(int party_id, int now_sec) const {
+        Observation obs{};
+        for (int i = 0; i < kNumRides; ++i) {
+            obs.guest[static_cast<size_t>(i)] = parties_.preferences[party_id][i];
+        }
+        obs.guest[35] = parties_.party_size[party_id] / 8.0f;
+        obs.guest[36] = parties_.effective_speed[party_id] / 2.0f;
+        obs.guest[37] = static_cast<float>(parties_.leave_sec[party_id] - now_sec) / static_cast<float>(kDaySeconds);
+        obs.guest[38] = static_cast<float>(parties_.location_node_idx[party_id]) / static_cast<float>(gd::kNumNodes);
+        obs.guest[39] = parties_.rides_completed[party_id] / 20.0f;
+        int must_count = 0;
+        float balk_sum = 0.0f;
+        for (int i = 0; i < kNumRides; ++i) {
+            must_count += parties_.must_do_remaining[party_id][i];
+            balk_sum += parties_.balk_sec[party_id][i];
+        }
+        obs.guest[40] = static_cast<float>(must_count) / 5.0f;
+        obs.guest[41] = gd::kNodeIdxToRide[parties_.location_node_idx[party_id]] >= 0 ? 1.0f : 0.0f;
+        obs.guest[42] = parties_.state[party_id] / 16.0f;
+        obs.guest[43] = balk_sum / static_cast<float>(kNumRides) / 3600.0f;
+        obs.guest[44] = parties_.walk_target_ride[party_id] >= 0 ? 1.0f : 0.0f;
+
+        for (int r = 0; r < kNumRides; ++r) {
+            const size_t base = static_cast<size_t>(r * kRideDynamicFeatDim);
+            obs.ride[base + 0] = std::min(wait_arr_[r], 3600.0f) / 3600.0f;
+            obs.ride[base + 1] = static_cast<float>(rides_[r].incoming) / 100.0f;
+            obs.ride[base + 2] = open_mask_[r] ? 1.0f : 0.0f;
+            obs.ride[base + 3] = static_cast<float>(duration_arr_[r]) / 900.0f;
+            obs.ride[base + 4] = static_cast<float>(gd::kRideCapacityPerSec[r]);
+        }
+
+        double mean = 0.0;
+        double var = 0.0;
+        int broken = 0;
+        int valid = 0;
+        for (int r = 0; r < kNumRides; ++r) {
+            if (!open_mask_[r]) {
+                ++broken;
+            }
+            if (wait_arr_[r] < 9000.0f) {
+                mean += wait_arr_[r];
+                ++valid;
+            }
+        }
+        if (valid > 0) {
+            mean /= valid;
+            for (int r = 0; r < kNumRides; ++r) {
+                if (wait_arr_[r] < 9000.0f) {
+                    const double d = wait_arr_[r] - mean;
+                    var += d * d;
+                }
+            }
+            var /= valid;
+        }
+        obs.env[0] = static_cast<float>(now_sec) / static_cast<float>(kDaySeconds);
+        obs.env[1] = static_cast<float>(mean / 3600.0);
+        obs.env[2] = static_cast<float>(var / 1'000'000.0);
+        obs.env[3] = static_cast<float>(broken) / static_cast<float>(kNumRides);
+        return obs;
+    }
+
     Rng rng_;
     PartyArrays parties_;
     std::array<Ride, kNumRides> rides_{};
@@ -771,12 +975,122 @@ private:
         }
         return arr;
     }();
+
+    bool hold_routing_ = false;
+    bool env_done_ = false;
+    int env_now_sec_ = 0;
+    std::vector<int32_t> env_queue_;
+    size_t env_queue_pos_ = 0;
+    size_t last_var_sample_count_ = 0;
+    std::vector<BCSample>* bc_out_ = nullptr;
 };
 
-}  // namespace
+}  // namespace detail
 
-DayMetricsResult run_day(uint64_t seed) {
-    Simulator sim(seed);
+std::array<float, kFlatObsDim> Observation::flat() const {
+    std::array<float, kFlatObsDim> out{};
+    size_t idx = 0;
+    for (float v : guest) {
+        out[idx++] = v;
+    }
+    for (float v : ride) {
+        out[idx++] = v;
+    }
+    for (float v : env) {
+        out[idx++] = v;
+    }
+    return out;
+}
+
+int action_from_target(int target_ride_id) {
+    if (target_ride_id == kExitRideId) {
+        return kNumRides;
+    }
+    if (target_ride_id == kRouteIdleCode) {
+        return kNumRides + 1;
+    }
+    return target_ride_id;
+}
+
+int target_from_action(int action) {
+    if (action == kNumRides) {
+        return kExitRideId;
+    }
+    if (action == kNumRides + 1) {
+        return kRouteIdleCode;
+    }
+    return action;
+}
+
+std::vector<BCSample> collect_bc_dataset(const int num_days, const uint64_t seed_start) {
+    std::vector<BCSample> samples;
+    samples.reserve(static_cast<size_t>(num_days) * 50000);
+    for (int day = 0; day < num_days; ++day) {
+        detail::Simulator sim(seed_start + static_cast<uint64_t>(day));
+        sim.set_bc_recorder(&samples);
+        sim.run();
+    }
+    return samples;
+}
+
+struct ParkEnv::Impl {
+    std::unique_ptr<detail::Simulator> sim;
+    uint64_t seed = 0;
+    float episode_reward = 0.0f;
+};
+
+ParkEnv::ParkEnv(const uint64_t seed) : impl_(new Impl()) {
+    impl_->seed = seed;
+    impl_->sim = std::make_unique<detail::Simulator>(seed);
+}
+
+ParkEnv::~ParkEnv() {
+    delete impl_;
+}
+
+ParkEnv::ParkEnv(ParkEnv&& other) noexcept : impl_(other.impl_) {
+    other.impl_ = nullptr;
+}
+
+ParkEnv& ParkEnv::operator=(ParkEnv&& other) noexcept {
+    if (this != &other) {
+        delete impl_;
+        impl_ = other.impl_;
+        other.impl_ = nullptr;
+    }
+    return *this;
+}
+
+Observation ParkEnv::reset(const uint64_t seed) {
+    impl_->seed = seed;
+    impl_->episode_reward = 0.0f;
+    impl_->sim = std::make_unique<detail::Simulator>(seed);
+    impl_->sim->env_begin(seed);
+    impl_->sim->env_pump();
+    return impl_->sim->env_build_obs(impl_->sim->env_current_party());
+}
+
+EnvStepResult ParkEnv::step(const int action) {
+    EnvStepResult result{};
+    result.reward = impl_->sim->env_reward_delta();
+    impl_->episode_reward += result.reward;
+    impl_->sim->env_apply_action(action);
+
+    if (impl_->sim->env_pump()) {
+        result.has_obs = true;
+        result.obs = impl_->sim->env_build_obs(impl_->sim->env_current_party());
+        return result;
+    }
+
+    result.done = true;
+    result.has_obs = false;
+    result.metrics = impl_->sim->env_finalize();
+    result.reward += static_cast<float>(-result.metrics.avg_wait_variance() / 1000.0);
+    return result;
+}
+
+DayMetricsResult run_day(const uint64_t seed) {
+    detail::Simulator sim(seed);
     return sim.run();
 }
 
