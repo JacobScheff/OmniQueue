@@ -1,10 +1,10 @@
 # Parties
 
-**Module:** `parties.py`, `park_types.py`
+**Module:** `native/src/park_sim.cpp` (`PartyArrays`, `spawn_day`)
 
 ## Overview
 
-Guests are grouped into **parties** stored in a **struct-of-arrays** layout for fast Numba routing.
+Guests are grouped into **parties** stored in a **struct-of-arrays** layout inside the C++ simulator.
 
 ## Core Arrays
 
@@ -18,7 +18,7 @@ Guests are grouped into **parties** stored in a **struct-of-arrays** layout for 
 | `walk_target_ride` | int32 | Ride id while walking (-1 if none) |
 | `state` | int8 | `PartyState` bitmask value |
 
-`PartyPool.get(party_id)` materializes a `Party` dataclass for tests only; the simulator hot path uses arrays directly.
+Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`).
 
 ## Spawn Model
 
@@ -36,7 +36,7 @@ Guests are grouped into **parties** stored in a **struct-of-arrays** layout for 
 
 ## Balk Thresholds
 
-```python
+```
 balk_sec[r] = BASE_BALK_SEC + BALK_SCALE × preference[r] ** BALK_PREF_EXP
 ```
 

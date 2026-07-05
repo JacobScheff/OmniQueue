@@ -4,10 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 
-from router.numba_routing import has_numba
 from simulator import native_backend_name, run_day
 
 
@@ -20,17 +18,10 @@ def main() -> None:
         "--backend",
         type=str,
         default="auto",
-        choices=["auto", "native", "python"],
-        help="Simulation backend (auto prefers C++ when built)",
+        choices=["auto", "native"],
+        help="Simulation backend (requires built C++ extension)",
     )
     args = parser.parse_args()
-
-    if args.backend == "python" and args.router == "heuristic" and not has_numba():
-        print(
-            "Warning: numba is not installed; using pure-Python routing (slower).\n"
-            "Install with: pip install -r requirements.txt",
-            file=sys.stderr,
-        )
 
     times: list[float] = []
     last = None
@@ -48,12 +39,10 @@ def main() -> None:
     avg = sum(times) / len(times)
     backend_label = args.backend
     if args.backend == "auto":
-        backend_label = native_backend_name() if native_backend_name() == "native" else "python"
+        backend_label = native_backend_name()
 
     print(f"Runs: {args.runs}")
     print(f"Backend: {backend_label}")
-    if backend_label == "python" and args.router == "heuristic":
-        print(f"Routing: {'numba' if has_numba() else 'python'}")
     print(f"Wall time avg: {avg:.4f}s (min={min(times):.4f}s, max={max(times):.4f}s)")
     if last:
         print(f"Parties: {last.total_parties}, Guests: {last.total_guests}")

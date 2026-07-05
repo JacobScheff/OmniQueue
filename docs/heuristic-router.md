@@ -1,10 +1,10 @@
 # Heuristic Router
 
-**Module:** `router/heuristic.py`, `router/numba_routing.py`
+**Module:** `native/src/park_sim.cpp` (`route_one`, `route_batch`)
 
 ## Overview
 
-Phase 1 baseline router using **preference-ordered balking**, accelerated with a **Numba `@njit` kernel** (`route_batch_numba`). Selectable via `config.ROUTER = "heuristic"`.
+Phase 1 baseline router using **preference-ordered balking**, implemented in C++. Selected when `config.ROUTER = "heuristic"` (the default for `simulator.run_day()`).
 
 ## Selection Algorithm
 
@@ -23,15 +23,14 @@ If no ride passes:
 ## Batch Execution
 
 - Parties routed in chunks of `MAX_ROUTE_BATCH` (256).
-- Walk times read from `graph.base_walk_to_rides[node_idx, ride_id]` inside Numba (no Python per-ride calls).
+- Walk times read from `graph_data::kBaseWalkToRides[node_idx, ride_id]`.
 
-## Switching Routers
+## Usage
 
 ```python
-config.ROUTER = "heuristic"  # or "ppo" (Phase 3)
-run_day(seed=0, router="heuristic")
+from simulator import run_day
+
+metrics = run_day(seed=0)  # heuristic routing in C++
 ```
 
-## Dependencies
-
-Requires `numba` for full speed (see `requirements.txt`). If Numba is not installed, the same kernel runs as pure Python automatically (correct but slower).
+PPO routing (`config.ROUTER = "ppo"`) is Phase 3 and not yet wired to the native simulator.

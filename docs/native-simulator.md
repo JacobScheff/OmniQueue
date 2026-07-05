@@ -4,7 +4,7 @@
 
 ## Overview
 
-The performance-critical discrete event simulator runs in **C++17** and is exposed to Python via **`_park_sim`**. PyTorch / RL code stays in Python; call `run_day(seed)` for fast rollouts.
+The discrete event simulator and heuristic router run in **C++17** and are exposed to Python via **`_park_sim`**. PyTorch / RL code stays in Python; call `run_day(seed)` for fast rollouts.
 
 ## Build (Windows, macOS, Linux)
 
@@ -31,21 +31,22 @@ pip install -e .
 from simulator import run_day, native_backend_name
 
 print(native_backend_name())  # "native" or "unavailable"
-metrics = run_day(seed=42)            # auto: C++ if built
+metrics = run_day(seed=42)
 metrics = run_day(seed=42, backend="native")
-metrics = run_day(seed=42, backend="python")  # reference impl
 ```
 
-Environment variable: `OMNIQUEUE_BACKEND=auto|native|python`
+Environment variable: `OMNIQUEUE_BACKEND=auto|native`
+
+The legacy Python DES (`backend="python"`) was removed; build the native extension to run simulations.
 
 ## Benchmark
 
 ```bash
-python benchmark.py --seed 42 --runs 5 --backend auto
+python benchmark.py --seed 42 --runs 5
 python benchmark.py --seed 42 --runs 5 --backend native
 ```
 
-On a typical Linux VM, native runs are **~25–30× faster** than the Python+Numba reference (~0.2s vs ~6.5s per day). Windows without Numba is often ~24s/day in Python; native should land near **sub-second** once built with `pip install -e .`.
+Typical throughput is **~0.2s per full park day** (~50k guests) on modern hardware.
 
 ## RL / PyTorch Integration (Phase 2–3)
 
@@ -55,5 +56,6 @@ On a typical Linux VM, native runs are **~25–30× faster** than the Python+Num
 
 ## Notes
 
-- C++ uses `std::mt19937_64`; metrics will **not** match the Python reference byte-for-byte for the same seed.
-- C++ backend supports **heuristic routing only** for now. PPO actions will be passed from Python in a later API.
+- C++ uses `std::mt19937_64` for party spawn and routing randomness.
+- Spawn/router timing constants in `native/include/park_sim.hpp` must stay in sync with `config.py` manually until a shared export step exists.
+- Heuristic routing only for now. PPO actions will be passed from Python in a later API.

@@ -5,8 +5,11 @@
 ## Running
 
 ```bash
-python3 benchmark.py --seed 0 --runs 5 --router heuristic
+python3 benchmark.py --seed 0 --runs 5
+python3 benchmark.py --seed 42 --runs 5 --backend native
 ```
+
+Requires the C++ extension (`pip install -e .`).
 
 ## Output
 
@@ -14,11 +17,9 @@ Reports average/min/max wall time, party count, guest count, rides completed, ri
 
 ## Notes
 
-- Full-scale runs (~50k guests) target fast throughput for RL training.
-- Tier 1 optimizations: struct-of-arrays parties, bucket timing wheel, precomputed walk rows, Numba routing.
-- Compare before/after with the same seed:
+- Full-scale runs (~50k guests) target ~0.2s/day on modern hardware for RL training throughput.
+- Compare runs with the same seed via `--seed`.
 
 ```bash
 python3 benchmark.py --seed 42 --runs 5
-python3 -m cProfile -s cumulative benchmark.py --runs 1
 ```

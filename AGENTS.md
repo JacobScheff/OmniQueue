@@ -8,7 +8,7 @@ Build a centralized, AI-driven routing system for a theme park that dynamically 
 2. **Pathway congestion** — avoid bottlenecks (future phases).
 3. **Guest satisfaction** — match parties to preferred rides.
 
-Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing wheel** at 1-second resolution. Phase 1 delivers the fast simulator and a switchable **heuristic router**. Later phases add PyTorch (Pointer Actor-Critic), PPO via CleanRL, and Pygame visualization.
+Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, implemented in **C++17** and exposed to Python via **`_park_sim`**. Phase 1 delivers fast rollouts and a built-in **heuristic router**. Later phases add PyTorch (Pointer Actor-Critic), PPO via CleanRL, and Pygame visualization.
 
 ## Enforced Rules
 
@@ -16,7 +16,7 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
 2. **Never modify legacy folders** — treat them as read-only reference if needed; do not edit them.
 3. **Party-based simulation** — route parties, not individuals. Party speed models min-of-member walking speeds.
 4. **Second resolution** — park day is 8:00 AM–11:00 PM (54,000 seconds).
-5. **Switchable router** — `config.ROUTER` selects `"heuristic"` or `"ppo"`. Heuristic routing uses a **Numba** kernel (`router/numba_routing.py`).
+5. **Switchable router** — `config.ROUTER` selects `"heuristic"` (C++ built-in) or `"ppo"` (Phase 3 stub).
 6. **Documentation stays current** — any behavior change must update the matching file in `docs/` in the same change.
 7. **No land-themed preferences** — party preferences are random with must-do boosts only.
 8. **Breakdown realism** — queued parties decide immediately at the ride entrance but evacuate one party every 4 seconds; on-ride parties evacuate last without ride completion credit.
@@ -27,20 +27,14 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
 /
   AGENTS.md           ← you are here
   config.py           ← rides, graph, spawn, router constants
-  park_types.py       ← EventType, PartyState, Event, Party, Ride
-  timing_wheel.py     ← min-heap DES scheduler
-  park_graph.py       ← A* pathfinding + precomputed walk matrix
-  parties.py          ← party pool, spawn, preferences
-  rides.py            ← ride state, queues, breakdown/evacuation
-  events.py           ← event handler dispatch
-  simulator.py        ← run_day() entry point
-  metrics.py          ← KPI collection
+  park_graph.py       ← A* pathfinding + precomputed walk matrix (export input)
+  simulator.py        ← run_day() Python wrapper → _park_sim
+  metrics.py          ← DayMetrics dataclass
   benchmark.py        ← performance harness
-  native/             ← C++ DES core + pybind11 `_park_sim`
+  native/             ← C++ DES core + heuristic router + pybind11 `_park_sim`
   tools/              ← export_native_data.py (graph → C++ header)
   router/
-    base.py           ← Router protocol, get_router()
-    heuristic.py      ← Phase 1 baseline router
+    base.py           ← Router protocol, get_router() (PPO Phase 3)
     ppo.py            ← Phase 3 stub
   docs/               ← feature documentation (see index below)
   tests/              ← unit and integration tests
@@ -50,20 +44,28 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
 
 | Doc | Module | Description |
 |-----|--------|-------------|
-| [timing-wheel.md](docs/timing-wheel.md) | `timing_wheel.py` | Bucket-array scheduler, event batching |
+| [timing-wheel.md](docs/timing-wheel.md) | `native/src/park_sim.cpp` | Bucket-array scheduler, event batching |
 | [park-graph.md](docs/park-graph.md) | `park_graph.py` | Macro graph, A*, walk matrix |
-| [parties.md](docs/parties.md) | `parties.py` | Spawn, size, speed, preferences, must-do |
-| [rides-and-queues.md](docs/rides-and-queues.md) | `rides.py` | Capacity, implicit FIFO boarding, wait calc |
-| [breakdowns.md](docs/breakdowns.md) | `rides.py`, `events.py` | Breakdown, evacuation deque, re-route rules |
-| [heuristic-router.md](docs/heuristic-router.md) | `router/heuristic.py` | Balking, idle walk, force-pick fallback |
-| [metrics.md](docs/metrics.md) | `metrics.py` | KPI definitions and sampling |
+| [parties.md](docs/parties.md) | `native/src/park_sim.cpp` | Spawn, size, speed, preferences, must-do |
+| [rides-and-queues.md](docs/rides-and-queues.md) | `native/src/park_sim.cpp` | Capacity, implicit FIFO boarding, wait calc |
+| [breakdowns.md](docs/breakdowns.md) | `native/src/park_sim.cpp` | Breakdown, evacuation deque, re-route rules |
+| [heuristic-router.md](docs/heuristic-router.md) | `native/src/park_sim.cpp` | Balking, idle walk, force-pick fallback |
+| [metrics.md](docs/metrics.md) | `metrics.py`, C++ metrics | KPI definitions and sampling |
 | [native-simulator.md](docs/native-simulator.md) | `native/`, `_park_sim` | C++ extension build and Python API |
+| [benchmark.md](docs/benchmark.md) | `benchmark.py` | Performance harness |
 
 ## Phase Roadmap
 
 | Phase | Deliverable |
 |-------|-------------|
-| **1** (current) | Fast DES + heuristic router + docs |
+| **1** (current) | C++ DES + heuristic router + docs |
 | **2** | PyTorch `ParkRouterModel` + behavioral cloning |
 | **3** | CleanRL PPO integration |
 | **4** | Pygame visualization with trained model |
+
+## Build
+
+```bash
+pip install -e .
+python tools/export_native_data.py   # after config/graph changes
+```
