@@ -27,7 +27,7 @@ def main() -> None:
 
     if args.backend == "python" and args.router == "heuristic" and not has_numba():
         print(
-            "Warning: Python backend without numba will be slow.\n"
+            "Warning: numba is not installed; using pure-Python routing (slower).\n"
             "Install with: pip install -r requirements.txt",
             file=sys.stderr,
         )

@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import random
 import time
-from collections import defaultdict
 
 import numpy as np
 
