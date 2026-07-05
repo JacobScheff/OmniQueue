@@ -47,7 +47,9 @@ python training/ppo_train.py \
   --save-every 500000
 ```
 
-Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `--subsample-size` random routing decisions per day. Expect ~0.2–2 minutes per day on CPU depending on hardware.
+Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `--subsample-size` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, default `--inference-batch-size 256`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
+
+Expect ~10–60 seconds per rollout day depending on hardware (vs minutes with the old per-step Python loop).
 
 Legacy: `--total-timesteps 500000` is treated as ~1 full day (`500000 // 500000`).
 

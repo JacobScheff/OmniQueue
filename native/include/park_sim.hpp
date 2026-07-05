@@ -117,6 +117,15 @@ struct EnvStepResult {
     DayMetricsResult metrics;
 };
 
+struct RolloutBatchResult {
+    std::vector<float> obs;
+    std::vector<float> rewards;
+    int n_obs = 0;
+    int n_rewards = 0;
+    bool episode_done = false;
+    DayMetricsResult metrics;
+};
+
 int action_from_target(int target_ride_id);
 int target_from_action(int action);
 
@@ -134,6 +143,7 @@ public:
 
     Observation reset(uint64_t seed);
     EnvStepResult step(int action);
+    RolloutBatchResult exchange_batch(const std::vector<int>& actions, int max_obs);
 
 private:
     struct Impl;

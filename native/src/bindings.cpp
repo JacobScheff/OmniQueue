@@ -18,6 +18,27 @@ py::array_t<float> observation_flat(const park::Observation& obs) {
     return arr;
 }
 
+py::array_t<float> vector_to_obs_batch(const std::vector<float>& data, int n) {
+    if (n <= 0) {
+        return py::array_t<float>(std::vector<py::ssize_t>{0, park::kFlatObsDim});
+    }
+    py::array_t<float> arr({n, park::kFlatObsDim});
+    std::memcpy(
+        arr.mutable_data(),
+        data.data(),
+        static_cast<size_t>(n) * park::kFlatObsDim * sizeof(float));
+    return arr;
+}
+
+py::array_t<float> vector_to_rewards(const std::vector<float>& data) {
+    const py::ssize_t n = static_cast<py::ssize_t>(data.size());
+    py::array_t<float> arr(n);
+    if (n > 0) {
+        std::memcpy(arr.mutable_data(), data.data(), data.size() * sizeof(float));
+    }
+    return arr;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_park_sim, m) {
@@ -76,10 +97,28 @@ PYBIND11_MODULE(_park_sim, m) {
         .def_readonly("has_obs", &park::EnvStepResult::has_obs)
         .def_readonly("metrics", &park::EnvStepResult::metrics);
 
+    py::class_<park::RolloutBatchResult>(m, "RolloutBatchResult")
+        .def_readonly("n_obs", &park::RolloutBatchResult::n_obs)
+        .def_readonly("n_rewards", &park::RolloutBatchResult::n_rewards)
+        .def_readonly("episode_done", &park::RolloutBatchResult::episode_done)
+        .def_readonly("metrics", &park::RolloutBatchResult::metrics)
+        .def_property_readonly("obs", [](const park::RolloutBatchResult& self) {
+            return vector_to_obs_batch(self.obs, self.n_obs);
+        })
+        .def_property_readonly("rewards", [](const park::RolloutBatchResult& self) {
+            return vector_to_rewards(self.rewards);
+        });
+
     py::class_<park::ParkEnv>(m, "ParkEnv")
         .def(py::init<uint64_t>(), py::arg("seed") = 0)
         .def("reset", &park::ParkEnv::reset, py::arg("seed"))
-        .def("step", &park::ParkEnv::step, py::arg("action"));
+        .def("step", &park::ParkEnv::step, py::arg("action"))
+        .def(
+            "exchange_batch",
+            &park::ParkEnv::exchange_batch,
+            py::arg("actions"),
+            py::arg("max_obs"),
+            "Apply a batch of actions, then collect up to max_obs pending observations.");
 
     m.attr("NUM_RIDES") = park::kNumRides;
     m.attr("NUM_ACTIONS") = park::kNumActions;

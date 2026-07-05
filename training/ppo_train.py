@@ -19,10 +19,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+import _park_sim
 from model import obs_flat_to_tensors
 from training.checkpoint import default_model, load_checkpoint, save_checkpoint
-from training.env import ParkRoutingEnv
-from training.features import GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
 
 
 def _log(msg: str) -> None:
@@ -90,6 +90,7 @@ def _collect_episode(
     seed: int,
     max_routing_steps: int,
     subsample_size: int,
+    inference_batch_size: int,
     *,
     gamma: float,
     gae_lambda: float,
@@ -97,9 +98,9 @@ def _collect_episode(
     day_label: str = "",
     env_label: str = "",
 ) -> EpisodeBatch:
-    """Run one full park day (until terminated) and optionally subsample transitions."""
-    env = ParkRoutingEnv(seed=seed)
-    obs, _ = env.reset(seed=seed)
+    """Run one full park day via native C++ sim + batched policy inference."""
+    env = _park_sim.ParkEnv(seed)
+    env.reset(seed)
 
     obs_buf: list[np.ndarray] = []
     action_buf: list[int] = []
@@ -115,41 +116,86 @@ def _collect_episode(
     last_log_step = 0
     prefix = " ".join(part for part in (day_label, env_label) if part)
 
-    while routing_steps < max_routing_steps:
-        obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-        with torch.no_grad():
-            action, logprob, _, value = agent.get_action_and_value(obs_t)
+    pending_actions: list[int] = []
+    staged_obs: np.ndarray | None = None
+    staged_actions: np.ndarray | None = None
+    staged_logprobs: np.ndarray | None = None
+    staged_values: np.ndarray | None = None
 
-        obs_buf.append(obs.copy())
-        action_buf.append(int(action.item()))
-        logprob_buf.append(float(logprob.item()))
-        value_buf.append(float(value.item()))
+    def _record_rewards(rewards_arr: np.ndarray, terminal: bool) -> None:
+        nonlocal routing_steps, episode_return, last_log_step
+        if staged_obs is None or staged_actions is None:
+            raise RuntimeError("Rollout batch state missing staged transitions.")
+        if staged_logprobs is None or staged_values is None:
+            raise RuntimeError("Rollout batch state missing staged policy outputs.")
 
-        obs, reward, terminated, truncated, info = env.step(int(action.item()))
-        reward_buf.append(float(reward))
-        episode_return += float(reward)
-        routing_steps += 1
-        done_buf.append(1.0 if (terminated or truncated) else 0.0)
+        for i in range(len(rewards_arr)):
+            obs_row = staged_obs[i]
+            obs_buf.append(obs_row.copy())
+            action_buf.append(int(staged_actions[i]))
+            logprob_buf.append(float(staged_logprobs[i]))
+            value_buf.append(float(staged_values[i]))
+            reward_buf.append(float(rewards_arr[i]))
+            episode_return += float(rewards_arr[i])
+            routing_steps += 1
+            done_buf.append(1.0 if terminal and i == len(rewards_arr) - 1 else 0.0)
 
-        if log_every > 0 and routing_steps - last_log_step >= log_every:
-            elapsed = time.perf_counter() - rollout_t0
-            steps_per_sec = routing_steps / max(elapsed, 1e-6)
-            remaining = max(max_routing_steps - routing_steps, 0)
-            eta_sec = remaining / max(steps_per_sec, 1e-6)
-            env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
-            mean_wait_min = float(obs[env_offset + 1]) * 60.0
-            wait_var = float(obs[env_offset + 2]) * 1_000_000.0
-            _log(
-                f"{prefix} rollout progress: steps={routing_steps:,} "
-                f"park_time={_park_time_label(obs)} return={episode_return:.2f} "
-                f"mean_wait={mean_wait_min:.0f}m wait_var={wait_var:.0f} "
-                f"speed={steps_per_sec:,.0f} steps/s eta={eta_sec / 60.0:.1f}m"
-            )
-            last_log_step = routing_steps
+            if log_every > 0 and routing_steps - last_log_step >= log_every:
+                elapsed = time.perf_counter() - rollout_t0
+                steps_per_sec = routing_steps / max(elapsed, 1e-6)
+                remaining = max(max_routing_steps - routing_steps, 0)
+                eta_sec = remaining / max(steps_per_sec, 1e-6)
+                env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+                mean_wait_min = float(obs_row[env_offset + 1]) * 60.0
+                wait_var = float(obs_row[env_offset + 2]) * 1_000_000.0
+                _log(
+                    f"{prefix} rollout progress: steps={routing_steps:,} "
+                    f"park_time={_park_time_label(obs_row)} return={episode_return:.2f} "
+                    f"mean_wait={mean_wait_min:.0f}m wait_var={wait_var:.0f} "
+                    f"speed={steps_per_sec:,.0f} steps/s eta={eta_sec / 60.0:.1f}m"
+                )
+                last_log_step = routing_steps
 
-        if terminated or truncated:
-            terminal_info = info.get("metrics", {})
+    episode_done = False
+    while routing_steps < max_routing_steps and not episode_done:
+        obs_cap = inference_batch_size
+        remaining = max_routing_steps - routing_steps
+        if remaining <= 0:
             break
+
+        result = env.exchange_batch(pending_actions, obs_cap)
+        pending_actions = []
+
+        if result.n_rewards > 0:
+            rewards_arr = np.asarray(result.rewards, dtype=np.float32)
+            _record_rewards(rewards_arr, result.episode_done)
+
+        if result.episode_done:
+            terminal_info = {
+                "avg_wait_variance": result.metrics.avg_wait_variance(),
+                "rides_completed": result.metrics.rides_completed,
+                "rides_per_party": result.metrics.rides_per_party(),
+            }
+            break
+
+        if result.n_obs <= 0:
+            break
+
+        obs_np = np.asarray(result.obs, dtype=np.float32)
+        if obs_np.ndim == 1:
+            obs_np = obs_np.reshape(1, FLAT_OBS_DIM)
+        if obs_np.shape[0] > remaining:
+            obs_np = obs_np[:remaining]
+
+        obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
+        with torch.no_grad():
+            actions, logprobs, _, values = agent.get_action_and_value(obs_t)
+
+        staged_obs = obs_np
+        staged_actions = actions.detach().cpu().numpy()
+        staged_logprobs = logprobs.detach().cpu().numpy()
+        staged_values = values.detach().cpu().numpy()
+        pending_actions = [int(a) for a in staged_actions.tolist()]
 
     if not obs_buf:
         raise RuntimeError("Episode collected zero routing steps.")
@@ -312,8 +358,8 @@ def train(args: argparse.Namespace) -> None:
     _log(f"Model parameters: {num_params:,}")
     _log(
         f"PPO full-day mode: target_days={args.total_days}, num_envs={args.num_envs}, "
-        f"subsample={args.subsample_size}, save_every={args.save_every} routing steps, "
-        f"log_every={args.log_every} rollout steps"
+        f"subsample={args.subsample_size}, inference_batch={args.inference_batch_size}, "
+        f"save_every={args.save_every} routing steps, log_every={args.log_every} rollout steps"
     )
     _log(
         "Primary metrics: wait_var (lower is better), rides_per_party (higher is better), "
@@ -346,6 +392,7 @@ def train(args: argparse.Namespace) -> None:
                     args.seed + days_done + i,
                     args.max_routing_steps,
                     args.subsample_size,
+                    args.inference_batch_size,
                     gamma=args.gamma,
                     gae_lambda=args.gae_lambda,
                     log_every=args.log_every,
@@ -489,6 +536,12 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--save-dir", type=str, default="checkpoints/ppo")
     parser.add_argument("--save-every", type=int, default=500_000, help="Save every N routing steps")
+    parser.add_argument(
+        "--inference-batch-size",
+        type=int,
+        default=256,
+        help="Policy inference batch size during native C++ rollout (higher=faster, more VRAM)",
+    )
     parser.add_argument(
         "--log-every",
         type=int,

@@ -403,6 +403,58 @@ public:
 
     bool env_is_done() const { return env_done_ && env_queue_pos_ >= env_queue_.size(); }
 
+    bool env_ensure_routing_ready() {
+        while (env_queue_pos_ >= env_queue_.size()) {
+            env_queue_.clear();
+            env_queue_pos_ = 0;
+            if (env_done_ || wheel_.empty()) {
+                env_done_ = true;
+                return false;
+            }
+            if (!env_tick()) {
+                env_done_ = true;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    int env_peek_obs_batch(const int max_batch, std::vector<float>& flat_out) {
+        if (max_batch <= 0 || env_queue_pos_ >= env_queue_.size()) {
+            return 0;
+        }
+        const int available = static_cast<int>(env_queue_.size() - env_queue_pos_);
+        const int n = std::min(max_batch, available);
+        flat_out.reserve(flat_out.size() + static_cast<size_t>(n) * kFlatObsDim);
+        for (int i = 0; i < n; ++i) {
+            const int party_id = env_queue_[env_queue_pos_ + static_cast<size_t>(i)];
+            const auto flat = build_observation(party_id, env_now_sec_).flat();
+            flat_out.insert(flat_out.end(), flat.begin(), flat.end());
+        }
+        return n;
+    }
+
+    bool env_apply_actions(
+        const std::vector<int>& actions,
+        std::vector<float>& rewards,
+        bool& done,
+        DayMetricsResult& metrics) {
+        done = false;
+        for (int action : actions) {
+            rewards.push_back(env_reward_delta());
+            env_apply_action(action);
+        }
+        if (!env_pump()) {
+            done = true;
+            metrics = env_finalize();
+            if (!rewards.empty()) {
+                rewards.back() += static_cast<float>(-metrics.avg_wait_variance() / 1000.0);
+            }
+            return false;
+        }
+        return true;
+    }
+
 private:
     static void append_deciding(const std::vector<int32_t>& src, std::vector<int32_t>& dst) {
         dst.insert(dst.end(), src.begin(), src.end());
@@ -1086,6 +1138,36 @@ EnvStepResult ParkEnv::step(const int action) {
     result.has_obs = false;
     result.metrics = impl_->sim->env_finalize();
     result.reward += static_cast<float>(-result.metrics.avg_wait_variance() / 1000.0);
+    impl_->episode_reward += static_cast<float>(-result.metrics.avg_wait_variance() / 1000.0);
+    return result;
+}
+
+RolloutBatchResult ParkEnv::exchange_batch(const std::vector<int>& actions, const int max_obs) {
+    RolloutBatchResult result{};
+    if (!actions.empty()) {
+        impl_->sim->env_apply_actions(actions, result.rewards, result.episode_done, result.metrics);
+        result.n_rewards = static_cast<int>(result.rewards.size());
+        for (float reward : result.rewards) {
+            impl_->episode_reward += reward;
+        }
+        if (result.episode_done) {
+            return result;
+        }
+    }
+
+    if (max_obs <= 0) {
+        return result;
+    }
+
+    if (!impl_->sim->env_ensure_routing_ready()) {
+        result.episode_done = true;
+        if (result.n_rewards == 0) {
+            result.metrics = impl_->sim->env_finalize();
+        }
+        return result;
+    }
+
+    result.n_obs = impl_->sim->env_peek_obs_batch(max_obs, result.obs);
     return result;
 }
 
