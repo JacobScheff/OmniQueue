@@ -5,7 +5,7 @@
 ## Overview
 
 1. **Phase 2 — Behavioral cloning:** mine heuristic routing decisions from the C++ simulator and train `ParkRouterModel` via cross-entropy loss.
-2. **Phase 3 — PPO:** fine-tune the policy in `ParkEnv` (one routing decision per step) with a CleanRL-style PPO loop.
+2. **Phase 3 — PPO:** fine-tune the policy on **complete park days** (`ParkEnv` runs until the day ends, ~500k routing decisions/day). PPO trains on a random subsample of transitions for memory efficiency.
 
 Checkpoints save automatically to `--save-dir` during training (`bc_step_*.pt`, `bc_final.pt`, `ppo_step_*.pt`, `ppo_final.pt`).
 
@@ -40,11 +40,16 @@ Warm-start from BC (recommended):
 python training/ppo_train.py \
   --seed 42 \
   --init-checkpoint checkpoints/bc/bc_final.pt \
-  --total-timesteps 500000 \
-  --num-envs 4 \
+  --total-days 20 \
+  --num-envs 1 \
+  --subsample-size 8192 \
   --save-dir checkpoints/ppo \
-  --save-every 10000
+  --save-every 500000
 ```
+
+Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `--subsample-size` random routing decisions per day. Expect ~0.2–2 minutes per day on CPU depending on hardware.
+
+Legacy: `--total-timesteps 500000` is treated as ~1 full day (`500000 // 500000`).
 
 Output: `checkpoints/ppo/ppo_final.pt`
 
