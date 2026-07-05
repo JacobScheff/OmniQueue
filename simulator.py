@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 import time
-from collections import defaultdict
 
 import numpy as np
 
@@ -15,7 +14,7 @@ from parties import PartyPool
 from rides import RideManager
 from router.base import Router, get_router
 from timing_wheel import TimingWheel
-from park_types import EXIT_RIDE_ID, Event, EventType, PartyState, RideStatus
+from park_types import EXIT_RIDE_ID, Event, EventType, PartyState, RideStatus, ROUTE_IDLE_CODE
 
 
 class Simulator:
@@ -34,19 +33,21 @@ class Simulator:
         self.rides = RideManager(self.rng)
         self.metrics = MetricsCollector()
         self.wheel = TimingWheel()
-        self.walking_to_ride: dict[int, set[int]] = defaultdict(set)
-        self._walk_targets: dict[int, tuple[int | None, int]] = {}
 
     def run_day(self) -> DayMetrics:
         t0 = time.perf_counter()
         self._reset()
 
         schedules = self.parties.spawn_day(self.np_rng)
-        total_guests = sum(self.parties.get(pid).party_size for _, pid in schedules)
-        self.metrics.on_day_start(len(schedules), total_guests)
+        total_guests = int(self.parties.party_size.sum())
+        self.metrics.on_day_start(self.parties.count, total_guests)
 
+        spawn_event = EventType.PARTY_SPAWN
         for spawn_sec, party_id in schedules:
-            self.wheel.schedule(spawn_sec, Event(EventType.PARTY_SPAWN, party_id=party_id))
+            self.wheel.schedule(spawn_sec, Event(spawn_event, party_id=party_id))
+
+        exited = PartyState.EXITED
+        entrance_idx = int(self.graph.entrance_node_idx)
 
         while not self.wheel.empty():
             now_sec, events = self.wheel.pop_next()
@@ -54,7 +55,6 @@ class Simulator:
                 break
 
             self.rides.update_wait_estimates(now_sec)
-            self.rides.invalidate_router_cache()
             self.metrics.maybe_sample(now_sec, self.rides.wait_times())
 
             for ride_id in range(config.NUM_RIDES):
@@ -66,23 +66,20 @@ class Simulator:
             deciding: list[int] = []
 
             for event in events:
-                match event.type:
-                    case EventType.PARTY_SPAWN:
-                        party = self.parties.get(event.party_id)
-                        party.location_node = self.graph.entrance_node
-                        deciding.append(event.party_id)
-                    case EventType.ARRIVE_AT_DESTINATION:
-                        deciding.extend(self._handle_arrive(event.party_id, now_sec))
-                    case EventType.RIDE_START:
-                        deciding.extend(self._handle_ride_start(event, now_sec))
-                    case EventType.RIDE_COMPLETE:
-                        deciding.extend(
-                            self._handle_ride_complete(event.party_id, event.ride_id, now_sec)
-                        )
-                    case EventType.BREAKDOWN_END:
-                        self.rides.on_breakdown_end(event.ride_id, event.ride_generation, now_sec)
-                    case EventType.EVACUATE_PARTY:
-                        deciding.extend(self._handle_evacuate(event, now_sec))
+                if event.type == EventType.PARTY_SPAWN:
+                    self.parties.location_node_idx[event.party_id] = entrance_idx
+                    deciding.append(event.party_id)
+                elif event.type == EventType.ARRIVE_AT_DESTINATION:
+                    deciding.extend(self._handle_arrive(event.party_id, now_sec))
+                elif event.type == EventType.RIDE_START:
+                    self._handle_ride_start(event, now_sec)
+                elif event.type == EventType.RIDE_COMPLETE:
+                    deciding.append(event.party_id)
+                    self._handle_ride_complete(event.party_id, event.ride_id)
+                elif event.type == EventType.BREAKDOWN_END:
+                    self.rides.on_breakdown_end(event.ride_id, event.ride_generation, now_sec)
+                elif event.type == EventType.EVACUATE_PARTY:
+                    deciding.extend(self._handle_evacuate(event, now_sec))
 
             if deciding:
                 self._route_parties(deciding, now_sec)
@@ -94,81 +91,63 @@ class Simulator:
         self.rides = RideManager(self.rng)
         self.metrics = MetricsCollector()
         self.wheel = TimingWheel()
-        self.walking_to_ride = defaultdict(set)
-        self._walk_targets = {}
 
     def _on_breakdown(self, ride_id: int, route_at_entrance: list[int], now_sec: int) -> None:
-        entrance = self.rides.get(ride_id).node_id
-
-        for pid in list(self.walking_to_ride.get(ride_id, set())):
-            self._cancel_walk(pid)
-            self._route_parties([pid], now_sec)
-
-        for pid in route_at_entrance:
-            party = self.parties.get(pid)
-            party.location_node = entrance
-            party.state = PartyState.EVACUATING
+        ride_node_idx = int(self.rides.ride_node_idx[ride_id])
+        walker_pids = np.where(self.parties.walk_target_ride == ride_id)[0]
+        for pid in walker_pids:
+            self._cancel_walk(int(pid))
+        if walker_pids.size:
+            self._route_parties(walker_pids.tolist(), now_sec)
 
         if route_at_entrance:
+            for pid in route_at_entrance:
+                self.parties.location_node_idx[pid] = ride_node_idx
+                self.parties.state[pid] = int(PartyState.EVACUATING)
             self._route_parties(route_at_entrance, now_sec)
 
     def _cancel_walk(self, party_id: int) -> None:
-        if party_id not in self._walk_targets:
-            return
-        target_ride, _ = self._walk_targets.pop(party_id)
-        if target_ride is not None and target_ride >= 0:
-            self.walking_to_ride[target_ride].discard(party_id)
+        target_ride = int(self.parties.walk_target_ride[party_id])
+        if target_ride >= 0:
             self.rides.decrement_incoming(target_ride)
+            self.parties.walk_target_ride[party_id] = -1
 
     def _handle_arrive(self, party_id: int, now_sec: int) -> list[int]:
-        party = self.parties.get(party_id)
-        if party_id in self._walk_targets:
-            target_ride, _ = self._walk_targets.pop(party_id)
-            if target_ride is not None and target_ride >= 0:
-                self.walking_to_ride[target_ride].discard(party_id)
-                self.rides.decrement_incoming(target_ride)
+        self._cancel_walk(party_id)
+        self.parties.location_node_idx[party_id] = self.parties.target_node_idx[party_id]
 
-        party.location_node = party.target_node
-
-        if party.target_ride_id == EXIT_RIDE_ID:
-            party.state = PartyState.EXITED
+        target_ride = int(self.parties.target_ride_id[party_id])
+        if target_ride == EXIT_RIDE_ID:
+            self.parties.state[party_id] = int(PartyState.EXITED)
             self.metrics.on_party_exit()
             return []
 
-        if party.target_ride_id is None:
+        if target_ride == ROUTE_IDLE_CODE:
             return [party_id]
 
-        ride_id = party.target_ride_id
-        ride = self.rides.get(ride_id)
-
-        if ride.status == RideStatus.BROKEN:
+        if self.rides.rides[target_ride].status == RideStatus.BROKEN:
             return [party_id]
 
-        party.state = PartyState.IN_QUEUE
-        self.rides.schedule_boarding(self.wheel, ride_id, party_id, now_sec)
+        self.parties.state[party_id] = int(PartyState.IN_QUEUE)
+        self.rides.schedule_boarding(self.wheel, target_ride, party_id, now_sec)
         return []
 
-    def _handle_ride_start(self, event: Event, now_sec: int) -> list[int]:
+    def _handle_ride_start(self, event: Event, now_sec: int) -> None:
         if not self.rides.on_ride_start(event.ride_id, event.party_id, event.ride_generation):
-            return []
-
-        party = self.parties.get(event.party_id)
-        party.state = PartyState.ON_RIDE
-        ride = self.rides.get(event.ride_id)
+            return
+        self.parties.state[event.party_id] = int(PartyState.ON_RIDE)
+        duration = int(self.rides.duration_arr[event.ride_id])
         self.wheel.schedule(
-            now_sec + ride.duration_sec,
+            now_sec + duration,
             Event(EventType.RIDE_COMPLETE, party_id=event.party_id, ride_id=event.ride_id),
         )
-        return []
 
-    def _handle_ride_complete(self, party_id: int, ride_id: int, now_sec: int) -> list[int]:
-        party = self.parties.get(party_id)
+    def _handle_ride_complete(self, party_id: int, ride_id: int) -> None:
         self.rides.on_ride_complete(ride_id, party_id)
-        self.parties.on_ride_completed(party, ride_id)
+        self.parties.on_ride_completed(party_id, ride_id)
         self.metrics.on_ride_complete()
-        party.location_node = self.rides.get(ride_id).node_id
-        party.state = PartyState.WALKING
-        return [party_id]
+        self.parties.location_node_idx[party_id] = self.rides.ride_node_idx[ride_id]
+        self.parties.state[party_id] = int(PartyState.WALKING)
 
     def _handle_evacuate(self, event: Event, now_sec: int) -> list[int]:
         ride = self.rides.get(event.ride_id)
@@ -180,9 +159,8 @@ class Simulator:
             ride.evacuation_active = False
             return []
 
-        party = self.parties.get(pid)
-        party.location_node = ride.node_id
-        party.state = PartyState.WALKING
+        self.parties.location_node_idx[pid] = self.rides.ride_node_idx[event.ride_id]
+        self.parties.state[pid] = int(PartyState.WALKING)
 
         if self.rides.has_evacuation_pending(event.ride_id):
             self.rides.schedule_next_evacuation(self.wheel, event.ride_id, now_sec)
@@ -190,19 +168,15 @@ class Simulator:
         return [pid]
 
     def _route_parties(self, party_ids: list[int], now_sec: int) -> None:
-        unique_ids: list[int] = []
-        seen: set[int] = set()
-        for pid in party_ids:
-            if pid in seen:
-                continue
-            party = self.parties.get(pid)
-            if party.state == PartyState.EXITED:
-                continue
-            unique_ids.append(pid)
-            seen.add(pid)
-
-        if not unique_ids:
+        if not party_ids:
             return
+
+        ids = np.fromiter(party_ids, dtype=np.int32, count=len(party_ids))
+        exited = int(PartyState.EXITED)
+        active_mask = self.parties.state[ids] != exited
+        if not np.any(active_mask):
+            return
+        unique_ids = np.unique(ids[active_mask]).tolist()
 
         decisions = self.router.route_batch(
             unique_ids, self.parties, self.rides, self.graph, now_sec, self.np_rng
@@ -212,53 +186,47 @@ class Simulator:
             self._assign_route(party_id, target, now_sec)
 
     def _assign_route(self, party_id: int, target, now_sec: int) -> None:
-        party = self.parties.get(party_id)
-        if party.state == PartyState.EXITED:
+        if self.parties.state[party_id] == int(PartyState.EXITED):
             return
 
         self._cancel_walk(party_id)
+        from_idx = int(self.parties.location_node_idx[party_id])
+        speed = float(self.parties.effective_speed[party_id])
 
         if target == EXIT_RIDE_ID:
-            party.target_ride_id = EXIT_RIDE_ID
-            dest = self.graph.entrance_node
-            party.target_node = dest
-            walk = self.graph.party_walk_time(party.location_node, dest, party.effective_speed)
-            party.state = PartyState.WALKING
-            party.arrival_sec = now_sec + walk
-            self._walk_targets[party_id] = (EXIT_RIDE_ID, dest)
+            dest_idx = int(self.graph.entrance_node_idx)
+            walk = self.graph.party_walk_sec(from_idx, dest_idx, speed)
+            self.parties.target_ride_id[party_id] = EXIT_RIDE_ID
+            self.parties.target_node_idx[party_id] = dest_idx
+            self.parties.state[party_id] = int(PartyState.WALKING)
             self.wheel.schedule(
-                party.arrival_sec,
+                now_sec + walk,
                 Event(EventType.ARRIVE_AT_DESTINATION, party_id=party_id),
             )
             return
 
         if target is None:
-            dest = self.graph.random_idle_node(self.np_rng, party.location_node)
-            party.target_ride_id = None
-            party.target_node = dest
-            walk = self.graph.party_walk_time(party.location_node, dest, party.effective_speed)
-            party.state = PartyState.WALKING
-            party.arrival_sec = now_sec + walk
-            self._walk_targets[party_id] = (None, dest)
+            dest_idx = self.graph.random_idle_node_idx(self.np_rng, from_idx)
+            walk = self.graph.party_walk_sec(from_idx, dest_idx, speed)
+            self.parties.target_ride_id[party_id] = ROUTE_IDLE_CODE
+            self.parties.target_node_idx[party_id] = dest_idx
+            self.parties.state[party_id] = int(PartyState.WALKING)
             self.wheel.schedule(
-                party.arrival_sec,
+                now_sec + walk,
                 Event(EventType.ARRIVE_AT_DESTINATION, party_id=party_id),
             )
             return
 
         ride_id = int(target)
-        ride = self.rides.get(ride_id)
-        dest = ride.node_id
-        party.target_ride_id = ride_id
-        party.target_node = dest
-        walk = self.graph.party_walk_time(party.location_node, dest, party.effective_speed)
-        party.state = PartyState.WALKING
-        party.arrival_sec = now_sec + walk
-        self._walk_targets[party_id] = (ride_id, dest)
-        self.walking_to_ride[ride_id].add(party_id)
+        dest_idx = int(self.rides.ride_node_idx[ride_id])
+        walk = self.graph.party_walk_to_ride_sec(from_idx, ride_id, speed)
+        self.parties.target_ride_id[party_id] = ride_id
+        self.parties.target_node_idx[party_id] = dest_idx
+        self.parties.state[party_id] = int(PartyState.WALKING)
+        self.parties.walk_target_ride[party_id] = ride_id
         self.rides.increment_incoming(ride_id)
         self.wheel.schedule(
-            party.arrival_sec,
+            now_sec + walk,
             Event(EventType.ARRIVE_AT_DESTINATION, party_id=party_id),
         )
 

@@ -4,19 +4,19 @@
 
 ## Overview
 
-The discrete event simulator uses a **min-heap** scheduler keyed by integer seconds. Events scheduled for the same second are batched and processed in FIFO enqueue order.
+The discrete event simulator uses a **bucket-array timing wheel**: one list per simulated second (0–54000). Scheduling appends to a bucket in **O(1)**; advancing time scans forward with a cursor until a non-empty bucket is found.
 
 ## API
 
 | Method | Description |
 |--------|-------------|
-| `schedule(at_second, event)` | Insert event at `at_second` (O(log n)) |
-| `pop_next()` | Advance to earliest second and return `(second, [events])` |
-| `empty()` | True when no events remain |
-| `peek_time()` | Next scheduled second without popping |
+| `schedule(at_second, event)` | Append event to second `at_second` (O(1)) |
+| `pop_next()` | Advance cursor to next non-empty second and return its events |
+| `empty()` | True when no future events remain |
+| `peek_time()` | Next occupied second without popping |
 
 ## Design Notes
 
-- The heap stores `(at_second, sequence, Event)` tuples for stable ordering.
-- A true O(1) timing wheel can replace this module later without changing event handlers.
-- Park day runs from second `0` to `54000` (8:00 AM–11:00 PM).
+- Same-second events preserve FIFO append order within the bucket.
+- Seconds beyond `DAY_SECONDS` are clamped to the end of the day.
+- A min-heap implementation remains a drop-in alternative if memory becomes a concern (54001 bucket lists).

@@ -4,7 +4,21 @@
 
 ## Overview
 
-Guests are grouped into **parties**. The simulator uses struct-of-arrays via a `PartyPool` containing `Party` dataclass instances.
+Guests are grouped into **parties** stored in a **struct-of-arrays** layout for fast Numba routing.
+
+## Core Arrays
+
+| Array | dtype | Description |
+|-------|-------|-------------|
+| `leave_sec` | int32 | Scheduled park departure second |
+| `location_node_idx` | int32 | Current graph node index |
+| `effective_speed` | float32 | Party walking speed (min-of-member draw) |
+| `preference_order` | int16 × 35 | Pre-sorted ride indices per party |
+| `balk_sec` | float32 × 35 | Precomputed balk thresholds |
+| `walk_target_ride` | int32 | Ride id while walking (-1 if none) |
+| `state` | int8 | `PartyState` bitmask value |
+
+`PartyPool.get(party_id)` materializes a `Party` dataclass for tests only; the simulator hot path uses arrays directly.
 
 ## Spawn Model
 
@@ -15,32 +29,15 @@ Guests are grouped into **parties**. The simulator uses struct-of-arrays via a `
 | Arrival peak | ~11:00 AM (bell curve) |
 | Dwell time | Mean **10 h**, σ = 2 h, min 2 h |
 
-## Party Speed
-
-Each party draws per-member speeds from a log-normal distribution and uses the **minimum** (right-skewed, modeling slowest-member pace):
-
-```python
-effective_speed = min(lognormal(member_speeds))
-```
-
-## Preferences
-
-- Random uniform weights per ride, normalized to sum ≈ 1.
-- **Not land-themed.**
-- Must-do rides receive a `MUST_DO_PREF_BOOST` multiplier.
-
 ## Must-Do Lists
 
 - Count per party: uniform **0–4** rides.
 - Unfinished must-dos sort first in `preference_order`.
-- Cleared on successful ride completion.
 
 ## Balk Thresholds
-
-Precomputed per party at spawn:
 
 ```python
 balk_sec[r] = BASE_BALK_SEC + BALK_SCALE × preference[r] ** BALK_PREF_EXP
 ```
 
-Higher preference → willing to wait longer.
+Precomputed at spawn and refreshed when a must-do ride is completed.

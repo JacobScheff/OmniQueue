@@ -16,7 +16,7 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
 2. **Never modify legacy folders** — treat them as read-only reference if needed; do not edit them.
 3. **Party-based simulation** — route parties, not individuals. Party speed models min-of-member walking speeds.
 4. **Second resolution** — park day is 8:00 AM–11:00 PM (54,000 seconds).
-5. **Switchable router** — `config.ROUTER` selects `"heuristic"` or `"ppo"`. Both must share the same observation/action interface for fair comparison.
+5. **Switchable router** — `config.ROUTER` selects `"heuristic"` or `"ppo"`. Heuristic routing uses a **Numba** kernel (`router/numba_routing.py`).
 6. **Documentation stays current** — any behavior change must update the matching file in `docs/` in the same change.
 7. **No land-themed preferences** — party preferences are random with must-do boosts only.
 8. **Breakdown realism** — queued parties decide immediately at the ride entrance but evacuate one party every 4 seconds; on-ride parties evacuate last without ride completion credit.
@@ -48,7 +48,7 @@ Training uses a **Discrete Event Simulator (DES)** with a **min-heap timing whee
 
 | Doc | Module | Description |
 |-----|--------|-------------|
-| [timing-wheel.md](docs/timing-wheel.md) | `timing_wheel.py` | Min-heap scheduler, event batching |
+| [timing-wheel.md](docs/timing-wheel.md) | `timing_wheel.py` | Bucket-array scheduler, event batching |
 | [park-graph.md](docs/park-graph.md) | `park_graph.py` | Macro graph, A*, walk matrix |
 | [parties.md](docs/parties.md) | `parties.py` | Spawn, size, speed, preferences, must-do |
 | [rides-and-queues.md](docs/rides-and-queues.md) | `rides.py` | Capacity, implicit FIFO boarding, wait calc |

@@ -30,8 +30,8 @@ class RideStatus(IntEnum):
 
 # Sentinel ride id meaning "exit the park"
 EXIT_RIDE_ID = -1
-# Sentinel node id for idle wander targets (resolved at handler time)
-IDLE_TARGET_SENTINEL = -2
+# Router output: idle wander (resolved to random node in simulator)
+ROUTE_IDLE_CODE = -2
 
 
 @dataclass(slots=True)

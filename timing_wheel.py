@@ -1,19 +1,19 @@
-"""Min-heap timing wheel for the discrete event simulator."""
+"""Bucket-array timing wheel for O(1) event scheduling."""
 
 from __future__ import annotations
 
-import heapq
-from itertools import count
-
+import config
 from park_types import Event
 
 
 class TimingWheel:
-    """Schedule events at integer seconds; pop earliest second batch."""
+    """Schedule events at integer seconds using per-second buckets."""
 
-    def __init__(self) -> None:
-        self._heap: list[tuple[int, int, Event]] = []
-        self._counter = count()
+    def __init__(self, day_seconds: int = config.DAY_SECONDS) -> None:
+        self._day_seconds = day_seconds
+        self._buckets: list[list[Event]] = [[] for _ in range(day_seconds + 1)]
+        self._cursor = 0
+        self._max_scheduled = -1
         self._current_sec = 0
 
     @property
@@ -23,26 +23,42 @@ class TimingWheel:
     def schedule(self, at_second: int, event: Event) -> None:
         if at_second < self._current_sec:
             at_second = self._current_sec
-        heapq.heappush(self._heap, (at_second, next(self._counter), event))
+        if at_second > self._day_seconds:
+            at_second = self._day_seconds
+        self._buckets[at_second].append(event)
+        if at_second > self._max_scheduled:
+            self._max_scheduled = at_second
 
     def empty(self) -> bool:
-        return not self._heap
+        if self._max_scheduled < 0:
+            return True
+        if self._cursor > self._max_scheduled:
+            return True
+        while self._cursor <= self._max_scheduled and not self._buckets[self._cursor]:
+            self._cursor += 1
+        return self._cursor > self._max_scheduled
 
     def peek_time(self) -> int | None:
-        if not self._heap:
+        if self.empty():
             return None
-        return self._heap[0][0]
+        cursor = self._cursor
+        while cursor <= self._max_scheduled and not self._buckets[cursor]:
+            cursor += 1
+        return cursor if cursor <= self._max_scheduled else None
 
     def pop_next(self) -> tuple[int, list[Event]]:
-        if not self._heap:
+        if self.empty():
             return self._current_sec, []
 
-        next_sec = self._heap[0][0]
-        self._current_sec = next_sec
-        events: list[Event] = []
+        while self._cursor <= self._max_scheduled and not self._buckets[self._cursor]:
+            self._cursor += 1
 
-        while self._heap and self._heap[0][0] == next_sec:
-            _, _, event = heapq.heappop(self._heap)
-            events.append(event)
+        if self._cursor > self._max_scheduled:
+            return self._current_sec, []
 
-        return next_sec, events
+        self._current_sec = self._cursor
+        events = self._buckets[self._cursor]
+        self._buckets[self._cursor] = []
+        sec = self._cursor
+        self._cursor += 1
+        return sec, events

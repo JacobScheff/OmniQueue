@@ -1,44 +1,37 @@
 # Heuristic Router
 
-**Module:** `router/heuristic.py`, `router/base.py`
+**Module:** `router/heuristic.py`, `router/numba_routing.py`
 
 ## Overview
 
-Phase 1 baseline router using **preference-ordered balking**. Selectable via `config.ROUTER = "heuristic"`. The PPO router (`router/ppo.py`) raises `NotImplementedError` until Phase 3.
+Phase 1 baseline router using **preference-ordered balking**, accelerated with a **Numba `@njit` kernel** (`route_batch_numba`). Selectable via `config.ROUTER = "heuristic"`.
 
 ## Selection Algorithm
 
-For each party, iterate rides in `preference_order` (must-dos first, then descending preference):
+For each party, iterate `preference_order` and pick the **first** ride where:
 
-1. Skip if party is already at that ride, ride is closed, or insufficient time remains.
-2. Pick the **first** ride where `current_wait_sec ≤ balk_sec[ride]`.
+1. Not already at that ride, ride is open, enough time remains.
+2. `current_wait_sec ≤ balk_sec[ride]`.
 
 If no ride passes:
 
 | Probability | Action |
 |-------------|--------|
-| 50% | Idle wander to random node within 2 hops |
-| 50% | Force-pick first feasible ride (ignore balk threshold) |
+| 50% | Idle wander (`ROUTE_IDLE_CODE`) → random node within 2 hops |
+| 50% | Force-pick first feasible ride (ignore balk) |
 
-If force-pick fails → exit park (`EXIT_RIDE_ID = -1`).
+## Batch Execution
 
-## Balk Formula
-
-```python
-balk_sec = BASE_BALK_SEC + BALK_SCALE × preference ** BALK_PREF_EXP
-```
-
-Defaults: `BASE=600`, `SCALE=2400`, `EXP=1.5`.
+- Parties routed in chunks of `MAX_ROUTE_BATCH` (256).
+- Walk times read from `graph.base_walk_to_rides[node_idx, ride_id]` inside Numba (no Python per-ride calls).
 
 ## Switching Routers
 
 ```python
-# config.py
-ROUTER = "heuristic"  # or "ppo" (Phase 3)
-
-# programmatic
-from simulator import run_day
+config.ROUTER = "heuristic"  # or "ppo" (Phase 3)
 run_day(seed=0, router="heuristic")
 ```
 
-Both routers must implement `Router.route_batch()` in `router/base.py`.
+## Dependencies
+
+Requires `numba` for full speed (see `requirements.txt`). If Numba is not installed, the same kernel runs as pure Python automatically (correct but slower).
