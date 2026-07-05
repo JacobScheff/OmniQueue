@@ -34,4 +34,4 @@ run_day(seed=0, router="heuristic")
 
 ## Dependencies
 
-Requires `numba` (see `requirements.txt`). The kernel is cached on first compile (`cache=True`).
+Requires `numba` for full speed (see `requirements.txt`). If Numba is not installed, the same kernel runs as pure Python automatically (correct but slower).
