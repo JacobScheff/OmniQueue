@@ -22,7 +22,31 @@ import torch.optim as optim
 from model import obs_flat_to_tensors
 from training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from training.env import ParkRoutingEnv
-from training.features import FLAT_OBS_DIM
+from training.features import GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+
+
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def _format_device(device: torch.device) -> str:
+    if device.type != "cuda":
+        return "cpu"
+    name = torch.cuda.get_device_name(device)
+    cap = torch.cuda.get_device_capability(device)
+    return f"cuda ({name}, sm_{cap[0]}{cap[1]})"
+
+
+def _park_time_label(obs: np.ndarray) -> str:
+    env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    frac = float(obs[env_offset])
+    hour = 8.0 + frac * 15.0
+    hours = int(hour)
+    minutes = int(round((hour - hours) * 60.0))
+    if minutes == 60:
+        hours += 1
+        minutes = 0
+    return f"{hours:02d}:{minutes:02d}"
 
 
 @dataclass
@@ -36,6 +60,8 @@ class EpisodeBatch:
     episode_return: float
     avg_wait_variance: float
     rides_completed: int
+    rides_per_party: float
+    rollout_sec: float
 
 
 class Agent(nn.Module):
@@ -67,6 +93,9 @@ def _collect_episode(
     *,
     gamma: float,
     gae_lambda: float,
+    log_every: int = 0,
+    day_label: str = "",
+    env_label: str = "",
 ) -> EpisodeBatch:
     """Run one full park day (until terminated) and optionally subsample transitions."""
     env = ParkRoutingEnv(seed=seed)
@@ -82,6 +111,9 @@ def _collect_episode(
     episode_return = 0.0
     terminal_info: dict = {}
     routing_steps = 0
+    rollout_t0 = time.perf_counter()
+    last_log_step = 0
+    prefix = " ".join(part for part in (day_label, env_label) if part)
 
     while routing_steps < max_routing_steps:
         obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
@@ -99,12 +131,30 @@ def _collect_episode(
         routing_steps += 1
         done_buf.append(1.0 if (terminated or truncated) else 0.0)
 
+        if log_every > 0 and routing_steps - last_log_step >= log_every:
+            elapsed = time.perf_counter() - rollout_t0
+            steps_per_sec = routing_steps / max(elapsed, 1e-6)
+            remaining = max(max_routing_steps - routing_steps, 0)
+            eta_sec = remaining / max(steps_per_sec, 1e-6)
+            env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+            mean_wait_min = float(obs[env_offset + 1]) * 60.0
+            wait_var = float(obs[env_offset + 2]) * 1_000_000.0
+            _log(
+                f"{prefix} rollout progress: steps={routing_steps:,} "
+                f"park_time={_park_time_label(obs)} return={episode_return:.2f} "
+                f"mean_wait={mean_wait_min:.0f}m wait_var={wait_var:.0f} "
+                f"speed={steps_per_sec:,.0f} steps/s eta={eta_sec / 60.0:.1f}m"
+            )
+            last_log_step = routing_steps
+
         if terminated or truncated:
             terminal_info = info.get("metrics", {})
             break
 
     if not obs_buf:
         raise RuntimeError("Episode collected zero routing steps.")
+
+    rollout_sec = time.perf_counter() - rollout_t0
 
     rewards_t = torch.tensor(reward_buf, dtype=torch.float32, device=device)
     values_t = torch.tensor(value_buf, dtype=torch.float32, device=device)
@@ -136,6 +186,8 @@ def _collect_episode(
         episode_return=episode_return,
         avg_wait_variance=float(terminal_info.get("avg_wait_variance", 0.0)),
         rides_completed=int(terminal_info.get("rides_completed", 0)),
+        rides_per_party=float(terminal_info.get("rides_per_party", 0.0)),
+        rollout_sec=rollout_sec,
     )
 
 
@@ -163,20 +215,34 @@ def _compute_gae(
     return advantages, returns
 
 
+@dataclass
+class PPOStats:
+    pg_loss: float
+    v_loss: float
+    entropy: float
+    approx_kl: float
+    clipfrac: float
+    update_sec: float
+
+
 def _ppo_update(
     agent: Agent,
     optimizer: optim.Optimizer,
     batch: EpisodeBatch,
     args: argparse.Namespace,
-) -> tuple[float, float]:
+) -> PPOStats:
     batch_size = batch.obs.shape[0]
     minibatch_size = max(1, batch_size // args.num_minibatches)
     indices = np.arange(batch_size)
 
     last_pg_loss = 0.0
     last_v_loss = 0.0
+    last_entropy = 0.0
+    last_approx_kl = 0.0
+    last_clipfrac = 0.0
     mb_adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
+    update_t0 = time.perf_counter()
     for _ in range(args.update_epochs):
         np.random.shuffle(indices)
         for start in range(0, batch_size, minibatch_size):
@@ -203,10 +269,24 @@ def _ppo_update(
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
 
+            with torch.no_grad():
+                approx_kl = ((ratio - 1.0) - logratio).mean()
+                clipfrac = ((ratio - 1.0).abs() > args.clip_coef).float().mean()
+
             last_pg_loss = float(pg_loss.item())
             last_v_loss = float(v_loss.item())
+            last_entropy = float(entropy_loss.item())
+            last_approx_kl = float(approx_kl.item())
+            last_clipfrac = float(clipfrac.item())
 
-    return last_pg_loss, last_v_loss
+    return PPOStats(
+        pg_loss=last_pg_loss,
+        v_loss=last_v_loss,
+        entropy=last_entropy,
+        approx_kl=last_approx_kl,
+        clipfrac=last_clipfrac,
+        update_sec=time.perf_counter() - update_t0,
+    )
 
 
 def train(args: argparse.Namespace) -> None:
@@ -217,31 +297,48 @@ def train(args: argparse.Namespace) -> None:
 
     agent = Agent().to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    num_params = sum(p.numel() for p in agent.parameters())
 
     global_step = 0
+    init_extra: dict = {}
     if args.init_checkpoint:
-        agent.model, global_step, _ = load_checkpoint(args.init_checkpoint, device, optimizer)
-        print(f"Loaded init checkpoint: {args.init_checkpoint}", flush=True)
+        agent.model, global_step, init_extra = load_checkpoint(args.init_checkpoint, device, optimizer)
+        _log(f"Loaded init checkpoint: {args.init_checkpoint} (prior step={global_step})")
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    print(
+    _log(f"PyTorch {torch.__version__} on {_format_device(device)}")
+    _log(f"Model parameters: {num_params:,}")
+    _log(
         f"PPO full-day mode: target_days={args.total_days}, num_envs={args.num_envs}, "
-        f"subsample={args.subsample_size}, save_every={args.save_every} routing steps",
-        flush=True,
+        f"subsample={args.subsample_size}, save_every={args.save_every} routing steps, "
+        f"log_every={args.log_every} rollout steps"
     )
+    _log(
+        "Primary metrics: wait_var (lower is better), rides_per_party (higher is better), "
+        "day_return (sum of step rewards, usually negative)"
+    )
+    if init_extra:
+        _log(f"Init checkpoint metadata: {init_extra}")
 
     days_done = 0
     update = 0
     last_save_step = 0
+    best_wait_var = float("inf")
+    day_durations: list[float] = []
 
     while days_done < args.total_days:
         update += 1
         t0 = time.perf_counter()
+        day_num = days_done + 1
+        day_label = f"[day {day_num}/{args.total_days}]"
+
+        _log(f"{day_label} starting rollout (seed={args.seed + days_done})...")
 
         episodes: list[EpisodeBatch] = []
         for i in range(args.num_envs):
+            env_label = f"[env {i + 1}/{args.num_envs}]" if args.num_envs > 1 else ""
             episodes.append(
                 _collect_episode(
                     agent,
@@ -251,7 +348,21 @@ def train(args: argparse.Namespace) -> None:
                     args.subsample_size,
                     gamma=args.gamma,
                     gae_lambda=args.gae_lambda,
+                    log_every=args.log_every,
+                    day_label=day_label,
+                    env_label=env_label,
                 )
+            )
+
+        rollout_sec = sum(ep.rollout_sec for ep in episodes)
+        raw_steps = sum(ep.routing_steps for ep in episodes)
+        for i, ep in enumerate(episodes):
+            env_label = f" env={i + 1}" if args.num_envs > 1 else ""
+            _log(
+                f"{day_label}{env_label} rollout done: steps={ep.routing_steps:,} "
+                f"return={ep.episode_return:.2f} wait_var={ep.avg_wait_variance:.0f} "
+                f"rides={ep.rides_completed:,} rides/party={ep.rides_per_party:.2f} "
+                f"time={ep.rollout_sec:.1f}s ({ep.routing_steps / max(ep.rollout_sec, 1e-6):,.0f} steps/s)"
             )
 
         combined_obs = torch.cat([ep.obs for ep in episodes], dim=0)
@@ -266,29 +377,49 @@ def train(args: argparse.Namespace) -> None:
             logprobs=combined_logprobs,
             advantages=combined_advantages,
             returns=combined_returns,
-            routing_steps=sum(ep.routing_steps for ep in episodes),
+            routing_steps=raw_steps,
             episode_return=float(np.mean([ep.episode_return for ep in episodes])),
             avg_wait_variance=float(np.mean([ep.avg_wait_variance for ep in episodes])),
             rides_completed=int(np.mean([ep.rides_completed for ep in episodes])),
+            rides_per_party=float(np.mean([ep.rides_per_party for ep in episodes])),
+            rollout_sec=rollout_sec,
         )
 
         global_step += batch.routing_steps
         days_done += args.num_envs
+        day_durations.append(rollout_sec)
 
         if args.anneal_lr:
             frac = 1.0 - (days_done / max(1, args.total_days))
             optimizer.param_groups[0]["lr"] = max(frac, 0.05) * args.learning_rate
 
-        pg_loss, v_loss = _ppo_update(agent, optimizer, batch, args)
+        lr = optimizer.param_groups[0]["lr"]
+        _log(
+            f"{day_label} PPO update on {batch.obs.shape[0]:,} samples "
+            f"(subsampled from {raw_steps:,}) lr={lr:.2e}..."
+        )
+        stats = _ppo_update(agent, optimizer, batch, args)
         elapsed = time.perf_counter() - t0
 
-        print(
-            f"update={update} days={days_done}/{args.total_days} "
-            f"routing_steps={batch.routing_steps} train_samples={batch.obs.shape[0]} "
-            f"day_return={batch.episode_return:.2f} wait_var={batch.avg_wait_variance:.0f} "
-            f"rides={batch.rides_completed} pg_loss={pg_loss:.4f} v_loss={v_loss:.4f} "
-            f"elapsed={elapsed:.1f}s",
-            flush=True,
+        if batch.avg_wait_variance < best_wait_var:
+            best_wait_var = batch.avg_wait_variance
+            best_marker = " new_best"
+        else:
+            best_marker = ""
+
+        avg_day_sec = float(np.mean(day_durations))
+        remaining_days = max(args.total_days - days_done, 0)
+        eta_sec = avg_day_sec * remaining_days
+
+        _log(
+            f"{day_label} update={update} global_steps={global_step:,} "
+            f"train_samples={batch.obs.shape[0]:,} "
+            f"return={batch.episode_return:.2f} wait_var={batch.avg_wait_variance:.0f}{best_marker} "
+            f"rides={batch.rides_completed:,} rides/party={batch.rides_per_party:.2f} "
+            f"pg_loss={stats.pg_loss:.4f} v_loss={stats.v_loss:.4f} "
+            f"entropy={stats.entropy:.3f} kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
+            f"rollout={rollout_sec:.1f}s update={stats.update_sec:.1f}s total={elapsed:.1f}s "
+            f"eta={eta_sec / 60.0:.1f}m for {remaining_days} day(s)"
         )
 
         if global_step - last_save_step >= args.save_every:
@@ -303,9 +434,10 @@ def train(args: argparse.Namespace) -> None:
                     "update": update,
                     "days_done": days_done,
                     "avg_wait_variance": batch.avg_wait_variance,
+                    "rides_per_party": batch.rides_per_party,
                 },
             )
-            print(f"Saved checkpoint: {ckpt}", flush=True)
+            _log(f"Saved checkpoint: {ckpt}")
             last_save_step = global_step
 
     final_path = save_dir / "ppo_final.pt"
@@ -314,9 +446,12 @@ def train(args: argparse.Namespace) -> None:
         agent.model,
         optimizer,
         global_step,
-        {"phase": "ppo", "days_done": days_done},
+        {"phase": "ppo", "days_done": days_done, "best_wait_var": best_wait_var},
     )
-    print(f"PPO complete. Final checkpoint: {final_path}", flush=True)
+    _log(
+        f"PPO complete after {days_done} day(s) and {global_step:,} routing steps. "
+        f"Best wait_var={best_wait_var:.0f}. Final checkpoint: {final_path}"
+    )
 
 
 def main() -> None:
@@ -354,6 +489,12 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--save-dir", type=str, default="checkpoints/ppo")
     parser.add_argument("--save-every", type=int, default=500_000, help="Save every N routing steps")
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=50_000,
+        help="Print rollout progress every N routing decisions (0 disables)",
+    )
     parser.add_argument(
         "--init-checkpoint",
         type=str,
