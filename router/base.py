@@ -1,4 +1,4 @@
-"""Router protocol and factory."""
+"""Router protocol and factory (Phase 3 PPO)."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ class Router(Protocol):
 def get_router(name: str | None = None) -> Router:
     router_name = name or config.ROUTER
     if router_name == "heuristic":
-        from router.heuristic import HeuristicRouter
-
-        return HeuristicRouter()
+        raise RuntimeError(
+            "Heuristic routing runs inside the C++ simulator. Call simulator.run_day() instead."
+        )
     if router_name == "ppo":
         from router.ppo import PPORouter
 

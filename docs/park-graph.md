@@ -27,7 +27,7 @@ actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 1. Adjust hub/ride coordinates in `config.py`.
 2. Add or remove edges in `MACRO_EDGES`.
 3. Assign rides to land hubs via `RIDE_HUB`.
-4. Restart the simulator — the matrix rebuilds automatically.
+4. Regenerate native data: `python tools/export_native_data.py` then `pip install -e .`
 
 ## API
 
@@ -36,6 +36,6 @@ actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 | `walk_time(from_node, to_node)` | Base walk seconds at nominal speed |
 | `party_walk_sec(from_idx, to_idx, speed)` | Walk seconds between node indices |
 | `party_walk_to_ride_sec(from_idx, ride_id, speed)` | Walk seconds to a ride leaf |
-| `base_walk_to_rides` | `(num_nodes, 35)` int32 matrix for Numba routing |
+| `base_walk_to_rides` | `(num_nodes, 35)` int32 matrix exported to `graph_data.hpp` |
 | `node_idx_to_ride` | Maps node index → ride id (-1 if not a ride) |
 | `random_idle_node(rng, node, max_hops=2)` | Random reachable node for idle wandering |

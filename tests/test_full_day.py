@@ -1,12 +1,12 @@
-"""Full-day integration smoke test (small guest count)."""
+"""Full-day integration smoke test."""
 
-import config
-from simulator import run_day
+import pytest
+
+from simulator import native_backend_name, run_day
 
 
-def test_full_day_smoke(monkeypatch):
-    monkeypatch.setattr(config, "TOTAL_GUESTS_MEAN", 500)
-    monkeypatch.setattr(config, "TOTAL_GUESTS_STD", 50)
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_full_day_smoke():
     metrics = run_day(seed=123)
     assert metrics.total_parties > 0
     assert metrics.rides_completed > 0
