@@ -1,6 +1,5 @@
 """Training and model smoke tests."""
 
-import pytest
 import torch
 
 from model import ParkRouterModel, obs_flat_to_tensors
@@ -28,11 +27,3 @@ def test_obs_flat_to_tensors():
     assert guest.shape == (4, 1, GUEST_FEAT_DIM)
     assert ride.shape == (4, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     assert env.shape == (4, ENV_DYNAMIC_FEAT_DIM)
-
-
-@pytest.mark.skipif(True, reason="optional: requires built extension and time")
-def test_collect_bc_smoke():
-    import _park_sim
-
-    samples = _park_sim.collect_bc_dataset(1, 0)
-    assert len(samples) > 0

@@ -1,16 +1,25 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
+
+from training.features import (
+    ENV_DYNAMIC_FEAT_DIM,
+    GUEST_FEAT_DIM,
+    NUM_RIDES,
+    RIDE_DYNAMIC_FEAT_DIM,
+)
 
 
 class ParkRouterModel(nn.Module):
     def __init__(
         self,
-        guest_feat_dim,
-        num_rides,
-        ride_dynamic_feat_dim,
-        environment_dynamic_feat_dim,
-        d_model=128,
-        num_actions=None,
+        guest_feat_dim: int,
+        num_rides: int,
+        ride_dynamic_feat_dim: int,
+        environment_dynamic_feat_dim: int,
+        d_model: int = 128,
+        num_actions: int | None = None,
     ):
         super().__init__()
 
@@ -38,7 +47,12 @@ class ParkRouterModel(nn.Module):
             nn.Linear(d_model, 1),
         )
 
-    def forward(self, guest_dynamic_features, ride_dynamic_features, environment_dynamic_features):
+    def forward(
+        self,
+        guest_dynamic_features: torch.Tensor,
+        ride_dynamic_features: torch.Tensor,
+        environment_dynamic_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, num_guests, _ = guest_dynamic_features.size()
 
         env_for_rides = environment_dynamic_features.unsqueeze(1).expand(-1, self.num_rides, -1)
@@ -70,26 +84,14 @@ class ParkRouterModel(nn.Module):
 
         return logits, global_value
 
-    def act(self, guest_dynamic_features, ride_dynamic_features, environment_dynamic_features):
-        logits, value = self.forward(guest_dynamic_features, ride_dynamic_features, environment_dynamic_features)
-        dist = torch.distributions.Categorical(logits=logits[:, 0, :])
-        action = dist.sample()
-        logprob = dist.log_prob(action)
-        return action, logprob, value.squeeze(-1), dist.entropy()
 
-
-def obs_flat_to_tensors(obs_flat: torch.Tensor):
+def obs_flat_to_tensors(
+    obs_flat: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Convert flattened observation vectors to model inputs (batch, 1 guest)."""
-    guest_dim = 45
-    ride_dim = 35 * 5
-    guest = obs_flat[:, :guest_dim].unsqueeze(1)
-    ride = obs_flat[:, guest_dim : guest_dim + ride_dim].view(-1, 35, 5)
-    env = obs_flat[:, guest_dim + ride_dim :]
+    guest_end = GUEST_FEAT_DIM
+    ride_end = guest_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    guest = obs_flat[:, :guest_end].unsqueeze(1)
+    ride = obs_flat[:, guest_end:ride_end].view(-1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+    env = obs_flat[:, ride_end:]
     return guest, ride, env
-
-
-if __name__ == "__main__":
-    model = ParkRouterModel(guest_feat_dim=45, num_rides=35, ride_dynamic_feat_dim=5, environment_dynamic_feat_dim=4)
-    print(model)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Total parameters: {total_params}")

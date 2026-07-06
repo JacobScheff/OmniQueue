@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 import _park_sim
+import config
 from model import obs_flat_to_tensors
 from training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
@@ -37,7 +38,6 @@ def _require_batched_rollout_api() -> None:
         "This PPO script requires a rebuilt native extension with ParkEnv.exchange_batch.\n"
         "Your _park_sim module is out of date. From the repo root, rebuild:\n"
         "  pip install -e .\n"
-        "On Windows you need Visual Studio Build Tools (C++ workload) installed first.\n"
         "Verify with: python -c \"import _park_sim; print(hasattr(_park_sim.ParkEnv,'exchange_batch'))\""
     )
 
@@ -63,6 +63,39 @@ def _park_time_label(obs: np.ndarray) -> str:
 
 
 @dataclass
+class PPOConfig:
+    """PPO run configuration.
+
+    Runtime parameters are provided via CLI. All hyperparameters default to
+    the values in ``config.py``; edit that file to change training behaviour
+    without touching the script.
+    """
+    # Runtime parameters (set via CLI)
+    seed: int = 42
+    total_days: int = 20
+    num_envs: int = 1
+    device: str = "cpu"
+    init_checkpoint: str | None = None
+    anneal_lr: bool = config.PPO_ANNEAL_LR
+    # Hyperparameters (from config.py)
+    learning_rate: float = config.PPO_LEARNING_RATE
+    gamma: float = config.PPO_GAMMA
+    gae_lambda: float = config.PPO_GAE_LAMBDA
+    num_minibatches: int = config.PPO_NUM_MINIBATCHES
+    update_epochs: int = config.PPO_UPDATE_EPOCHS
+    clip_coef: float = config.PPO_CLIP_COEF
+    ent_coef: float = config.PPO_ENT_COEF
+    vf_coef: float = config.PPO_VF_COEF
+    max_grad_norm: float = config.PPO_MAX_GRAD_NORM
+    subsample_size: int = config.PPO_SUBSAMPLE_SIZE
+    max_routing_steps: int = config.PPO_MAX_ROUTING_STEPS
+    inference_batch_size: int = config.PPO_INFERENCE_BATCH_SIZE
+    save_dir: str = config.PPO_SAVE_DIR
+    save_every: int = config.PPO_SAVE_EVERY
+    log_every: int = config.PPO_LOG_EVERY
+
+
+@dataclass
 class EpisodeBatch:
     obs: torch.Tensor
     actions: torch.Tensor
@@ -75,6 +108,16 @@ class EpisodeBatch:
     rides_completed: int
     rides_per_party: float
     rollout_sec: float
+
+
+@dataclass
+class PPOStats:
+    pg_loss: float
+    v_loss: float
+    entropy: float
+    approx_kl: float
+    clipfrac: float
+    update_sec: float
 
 
 class Agent(nn.Module):
@@ -99,15 +142,10 @@ class Agent(nn.Module):
 
 def _collect_episode(
     agent: Agent,
+    cfg: PPOConfig,
     device: torch.device,
     seed: int,
-    max_routing_steps: int,
-    subsample_size: int,
-    inference_batch_size: int,
     *,
-    gamma: float,
-    gae_lambda: float,
-    log_every: int = 0,
     day_label: str = "",
     env_label: str = "",
 ) -> EpisodeBatch:
@@ -153,10 +191,10 @@ def _collect_episode(
             routing_steps += 1
             done_buf.append(1.0 if terminal and i == len(rewards_arr) - 1 else 0.0)
 
-            if log_every > 0 and routing_steps - last_log_step >= log_every:
+            if cfg.log_every > 0 and routing_steps - last_log_step >= cfg.log_every:
                 elapsed = time.perf_counter() - rollout_t0
                 steps_per_sec = routing_steps / max(elapsed, 1e-6)
-                remaining = max(max_routing_steps - routing_steps, 0)
+                remaining = max(cfg.max_routing_steps - routing_steps, 0)
                 eta_sec = remaining / max(steps_per_sec, 1e-6)
                 env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
                 mean_wait_min = float(obs_row[env_offset + 1]) * 60.0
@@ -170,13 +208,12 @@ def _collect_episode(
                 last_log_step = routing_steps
 
     episode_done = False
-    while routing_steps < max_routing_steps and not episode_done:
-        obs_cap = inference_batch_size
-        remaining = max_routing_steps - routing_steps
+    while routing_steps < cfg.max_routing_steps and not episode_done:
+        remaining = cfg.max_routing_steps - routing_steps
         if remaining <= 0:
             break
 
-        result = env.exchange_batch(pending_actions, obs_cap)
+        result = env.exchange_batch(pending_actions, cfg.inference_batch_size)
         pending_actions = []
 
         if result.n_rewards > 0:
@@ -219,7 +256,7 @@ def _collect_episode(
     values_t = torch.tensor(value_buf, dtype=torch.float32, device=device)
     dones_t = torch.tensor(done_buf, dtype=torch.float32, device=device)
     advantages_t, returns_t = _compute_gae(
-        rewards_t, values_t, dones_t, gamma=gamma, gae_lambda=gae_lambda
+        rewards_t, values_t, dones_t, gamma=cfg.gamma, gae_lambda=cfg.gae_lambda
     )
 
     obs_t = torch.tensor(np.stack(obs_buf), dtype=torch.float32, device=device)
@@ -227,8 +264,8 @@ def _collect_episode(
     logprobs_t = torch.tensor(logprob_buf, dtype=torch.float32, device=device)
 
     n = obs_t.shape[0]
-    if subsample_size > 0 and n > subsample_size:
-        idx = torch.tensor(sorted(random.sample(range(n), subsample_size)), device=device)
+    if cfg.subsample_size > 0 and n > cfg.subsample_size:
+        idx = torch.tensor(sorted(random.sample(range(n), cfg.subsample_size)), device=device)
         obs_t = obs_t[idx]
         actions_t = actions_t[idx]
         logprobs_t = logprobs_t[idx]
@@ -274,24 +311,14 @@ def _compute_gae(
     return advantages, returns
 
 
-@dataclass
-class PPOStats:
-    pg_loss: float
-    v_loss: float
-    entropy: float
-    approx_kl: float
-    clipfrac: float
-    update_sec: float
-
-
 def _ppo_update(
     agent: Agent,
     optimizer: optim.Optimizer,
     batch: EpisodeBatch,
-    args: argparse.Namespace,
+    cfg: PPOConfig,
 ) -> PPOStats:
     batch_size = batch.obs.shape[0]
-    minibatch_size = max(1, batch_size // args.num_minibatches)
+    minibatch_size = max(1, batch_size // cfg.num_minibatches)
     indices = np.arange(batch_size)
 
     last_pg_loss = 0.0
@@ -302,7 +329,7 @@ def _ppo_update(
     mb_adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
     update_t0 = time.perf_counter()
-    for _ in range(args.update_epochs):
+    for _ in range(cfg.update_epochs):
         np.random.shuffle(indices)
         for start in range(0, batch_size, minibatch_size):
             end = min(start + minibatch_size, batch_size)
@@ -316,21 +343,21 @@ def _ppo_update(
 
             adv = mb_adv[mb]
             pg_loss1 = -adv * ratio
-            pg_loss2 = -adv * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+            pg_loss2 = -adv * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             v_loss = 0.5 * ((new_value - batch.returns[mb]) ** 2).mean()
             entropy_loss = entropy.mean()
-            loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+            loss = pg_loss - cfg.ent_coef * entropy_loss + cfg.vf_coef * v_loss
 
             optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+            nn.utils.clip_grad_norm_(agent.parameters(), cfg.max_grad_norm)
             optimizer.step()
 
             with torch.no_grad():
                 approx_kl = ((ratio - 1.0) - logratio).mean()
-                clipfrac = ((ratio - 1.0).abs() > args.clip_coef).float().mean()
+                clipfrac = ((ratio - 1.0).abs() > cfg.clip_coef).float().mean()
 
             last_pg_loss = float(pg_loss.item())
             last_v_loss = float(v_loss.item())
@@ -348,32 +375,32 @@ def _ppo_update(
     )
 
 
-def train(args: argparse.Namespace) -> None:
+def train(cfg: PPOConfig) -> None:
     _require_batched_rollout_api()
-    device = torch.device(args.device)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    device = torch.device(cfg.device)
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
 
     agent = Agent().to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
     num_params = sum(p.numel() for p in agent.parameters())
 
     global_step = 0
     init_extra: dict = {}
-    if args.init_checkpoint:
-        agent.model, global_step, init_extra = load_checkpoint(args.init_checkpoint, device, optimizer)
-        _log(f"Loaded init checkpoint: {args.init_checkpoint} (prior step={global_step})")
+    if cfg.init_checkpoint:
+        agent.model, global_step, init_extra = load_checkpoint(cfg.init_checkpoint, device, optimizer)
+        _log(f"Loaded init checkpoint: {cfg.init_checkpoint} (prior step={global_step})")
 
-    save_dir = Path(args.save_dir)
+    save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     _log(f"PyTorch {torch.__version__} on {_format_device(device)}")
     _log(f"Model parameters: {num_params:,}")
     _log(
-        f"PPO full-day mode: target_days={args.total_days}, num_envs={args.num_envs}, "
-        f"subsample={args.subsample_size}, inference_batch={args.inference_batch_size}, "
-        f"save_every={args.save_every} routing steps, log_every={args.log_every} rollout steps"
+        f"PPO full-day mode: target_days={cfg.total_days}, num_envs={cfg.num_envs}, "
+        f"subsample={cfg.subsample_size}, inference_batch={cfg.inference_batch_size}, "
+        f"save_every={cfg.save_every} routing steps, log_every={cfg.log_every} rollout steps"
     )
     _log(
         "Primary metrics: wait_var (lower is better), rides_per_party (higher is better), "
@@ -388,28 +415,25 @@ def train(args: argparse.Namespace) -> None:
     best_wait_var = float("inf")
     day_durations: list[float] = []
 
-    while days_done < args.total_days:
+    while days_done < cfg.total_days:
         update += 1
         t0 = time.perf_counter()
+        # Clamp so we never simulate more days than requested
+        envs_this_update = min(cfg.num_envs, cfg.total_days - days_done)
         day_num = days_done + 1
-        day_label = f"[day {day_num}/{args.total_days}]"
+        day_label = f"[day {day_num}/{cfg.total_days}]"
 
-        _log(f"{day_label} starting rollout (seed={args.seed + days_done})...")
+        _log(f"{day_label} starting rollout (seed={cfg.seed + days_done})...")
 
         episodes: list[EpisodeBatch] = []
-        for i in range(args.num_envs):
-            env_label = f"[env {i + 1}/{args.num_envs}]" if args.num_envs > 1 else ""
+        for i in range(envs_this_update):
+            env_label = f"[env {i + 1}/{envs_this_update}]" if envs_this_update > 1 else ""
             episodes.append(
                 _collect_episode(
                     agent,
+                    cfg,
                     device,
-                    args.seed + days_done + i,
-                    args.max_routing_steps,
-                    args.subsample_size,
-                    args.inference_batch_size,
-                    gamma=args.gamma,
-                    gae_lambda=args.gae_lambda,
-                    log_every=args.log_every,
+                    cfg.seed + days_done + i,
                     day_label=day_label,
                     env_label=env_label,
                 )
@@ -418,7 +442,7 @@ def train(args: argparse.Namespace) -> None:
         rollout_sec = sum(ep.rollout_sec for ep in episodes)
         raw_steps = sum(ep.routing_steps for ep in episodes)
         for i, ep in enumerate(episodes):
-            env_label = f" env={i + 1}" if args.num_envs > 1 else ""
+            env_label = f" env={i + 1}" if envs_this_update > 1 else ""
             _log(
                 f"{day_label}{env_label} rollout done: steps={ep.routing_steps:,} "
                 f"return={ep.episode_return:.2f} wait_var={ep.avg_wait_variance:.0f} "
@@ -447,19 +471,19 @@ def train(args: argparse.Namespace) -> None:
         )
 
         global_step += batch.routing_steps
-        days_done += args.num_envs
+        days_done += envs_this_update
         day_durations.append(rollout_sec)
 
-        if args.anneal_lr:
-            frac = 1.0 - (days_done / max(1, args.total_days))
-            optimizer.param_groups[0]["lr"] = max(frac, 0.05) * args.learning_rate
+        if cfg.anneal_lr:
+            frac = 1.0 - (days_done / max(1, cfg.total_days))
+            optimizer.param_groups[0]["lr"] = max(frac, 0.05) * cfg.learning_rate
 
         lr = optimizer.param_groups[0]["lr"]
         _log(
             f"{day_label} PPO update on {batch.obs.shape[0]:,} samples "
             f"(subsampled from {raw_steps:,}) lr={lr:.2e}..."
         )
-        stats = _ppo_update(agent, optimizer, batch, args)
+        stats = _ppo_update(agent, optimizer, batch, cfg)
         elapsed = time.perf_counter() - t0
 
         if batch.avg_wait_variance < best_wait_var:
@@ -469,7 +493,7 @@ def train(args: argparse.Namespace) -> None:
             best_marker = ""
 
         avg_day_sec = float(np.mean(day_durations))
-        remaining_days = max(args.total_days - days_done, 0)
+        remaining_days = max(cfg.total_days - days_done, 0)
         eta_sec = avg_day_sec * remaining_days
 
         _log(
@@ -483,7 +507,7 @@ def train(args: argparse.Namespace) -> None:
             f"eta={eta_sec / 60.0:.1f}m for {remaining_days} day(s)"
         )
 
-        if global_step - last_save_step >= args.save_every:
+        if global_step - last_save_step >= cfg.save_every:
             ckpt = save_dir / f"ppo_step_{global_step}.pt"
             save_checkpoint(
                 ckpt,
@@ -516,7 +540,13 @@ def train(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PPO training on full park-day episodes")
+    parser = argparse.ArgumentParser(
+        description=(
+            "PPO training on full park-day episodes. "
+            "Hyperparameters (learning rate, gamma, GAE, PPO clip, etc.) "
+            "are configured in config.py — edit that file to tune them."
+        )
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--total-days",
@@ -524,70 +554,31 @@ def main() -> None:
         default=20,
         help="Number of complete park days to simulate (each day ~500k routing decisions)",
     )
-    parser.add_argument("--learning-rate", type=float, default=2.5e-4)
     parser.add_argument("--num-envs", type=int, default=1, help="Parallel full days per update")
-    parser.add_argument(
-        "--subsample-size",
-        type=int,
-        default=8192,
-        help="Random transitions per day used for PPO update (full day still simulated)",
-    )
-    parser.add_argument(
-        "--max-routing-steps",
-        type=int,
-        default=600_000,
-        help="Safety cap on routing decisions per day",
-    )
-    parser.add_argument("--anneal-lr", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--num-minibatches", type=int, default=4)
-    parser.add_argument("--update-epochs", type=int, default=4)
-    parser.add_argument("--clip-coef", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.01)
-    parser.add_argument("--vf-coef", type=float, default=0.5)
-    parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--save-dir", type=str, default="checkpoints/ppo")
-    parser.add_argument("--save-every", type=int, default=500_000, help="Save every N routing steps")
-    parser.add_argument(
-        "--inference-batch-size",
-        type=int,
-        default=256,
-        help="Policy inference batch size during native C++ rollout (higher=faster, more VRAM)",
-    )
-    parser.add_argument(
-        "--log-every",
-        type=int,
-        default=50_000,
-        help="Print rollout progress every N routing decisions (0 disables)",
-    )
     parser.add_argument(
         "--init-checkpoint",
         type=str,
         default="",
-        help="Optional BC checkpoint (e.g. checkpoints/bc/bc_final.pt)",
+        help="Optional BC checkpoint for warm-start (e.g. checkpoints/bc/bc_final.pt)",
     )
-    # Legacy alias — maps to total-days estimate when users pass old flag
     parser.add_argument(
-        "--total-timesteps",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
+        "--anneal-lr",
+        action=argparse.BooleanOptionalAction,
+        default=config.PPO_ANNEAL_LR,
+        help="Linearly decay LR over total_days (default from config.PPO_ANNEAL_LR)",
     )
-    parser.add_argument("--num-steps", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.init_checkpoint == "":
-        args.init_checkpoint = None
-    if args.total_timesteps is not None:
-        # ~500k routing decisions per full day
-        args.total_days = max(1, args.total_timesteps // 500_000)
-        print(
-            f"Note: --total-timesteps is deprecated; treating {args.total_timesteps} as "
-            f"~{args.total_days} full day(s). Use --total-days directly.",
-            flush=True,
-        )
-    train(args)
+
+    cfg = PPOConfig(
+        seed=args.seed,
+        total_days=args.total_days,
+        num_envs=args.num_envs,
+        device=args.device,
+        init_checkpoint=args.init_checkpoint or None,
+        anneal_lr=args.anneal_lr,
+    )
+    train(cfg)
 
 
 if __name__ == "__main__":

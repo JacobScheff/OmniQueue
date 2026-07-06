@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
-from park_graph import build_graph, get_park_graph  # noqa: E402
+from park_graph import get_park_graph  # noqa: E402
 
 
 def _fmt_int_row(values: list[int]) -> str:
@@ -27,15 +27,13 @@ def _fmt_float_row(values: list[float]) -> str:
 
 
 def main() -> None:
-    graph = build_graph()
     park = get_park_graph()
-    node_ids = sorted(graph.node_coords.keys())
+    graph = park._graph
+    node_ids = park._node_ids
     num_nodes = len(node_ids)
+    idx_of = park._index_of
 
-    walk_rows = []
-    for i in range(num_nodes):
-        walk_rows.append([graph.walk_time_sec[i][j] for j in range(num_nodes)])
-
+    walk_rows = [list(graph.walk_time_sec[i]) for i in range(num_nodes)]
     walk_to_rides = park.base_walk_to_rides.tolist()
     node_idx_to_ride = park.node_idx_to_ride.tolist()
     ride_node_idx = park.ride_node_idx.tolist()
@@ -93,9 +91,8 @@ def main() -> None:
     lines.append("")
     lines.append("inline const std::vector<std::vector<int>> kIdleNeighborNodeIdx = {")
 
-    idx_of = {nid: i for i, nid in enumerate(node_ids)}
-    for node_id in node_ids:
-        idxs = [idx_of[n] for n in idle_neighbors[node_ids.index(node_id)] if n in idx_of]
+    for i, node_id in enumerate(node_ids):
+        idxs = [idx_of[n] for n in idle_neighbors[i] if n in idx_of]
         if idxs:
             lines.append(f"    {_fmt_int_row(idxs)},")
         else:

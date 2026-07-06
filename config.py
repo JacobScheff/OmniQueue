@@ -38,7 +38,6 @@ BALK_PREF_EXP = 1.5
 MUST_DO_PREF_BOOST = 10.0
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
-FORCE_PICK_IDLE_SEC = 60  # nominal time for forced pick before re-eval
 MAX_ROUTE_BATCH = 256
 
 # --- Metrics ---
@@ -169,15 +168,39 @@ MACRO_EDGES.extend([
     (NODE_CENTRAL_PLAZA, NODE_NEW_ORLEANS_HUB),
 ])
 
+# ---------------------------------------------------------------------------
+# Behavioral Cloning (Phase 2) training defaults
+# ---------------------------------------------------------------------------
+BC_SAVE_DIR = "checkpoints/bc"
+BC_SAVE_EVERY = 500        # save checkpoint every N optimizer steps
+BC_EPOCHS = 3
+BC_BATCH_SIZE = 512
+BC_LR = 3e-4
+
+# ---------------------------------------------------------------------------
+# PPO (Phase 3) training defaults
+# Override individual values here rather than via command-line flags.
+# ---------------------------------------------------------------------------
+PPO_SAVE_DIR = "checkpoints/ppo"
+PPO_SAVE_EVERY = 500_000          # save checkpoint every N routing steps
+PPO_LEARNING_RATE = 2.5e-4
+PPO_ANNEAL_LR = True              # linearly decay LR over total_days
+PPO_GAMMA = 0.99                  # discount factor
+PPO_GAE_LAMBDA = 0.95             # GAE lambda
+PPO_NUM_MINIBATCHES = 4           # PPO minibatch count per update
+PPO_UPDATE_EPOCHS = 4             # PPO epochs per day
+PPO_CLIP_COEF = 0.2               # PPO clipping epsilon
+PPO_ENT_COEF = 0.01               # entropy bonus coefficient
+PPO_VF_COEF = 0.5                 # value loss coefficient
+PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
+PPO_SUBSAMPLE_SIZE = 8192         # random transitions per day used for update
+PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
+PPO_INFERENCE_BATCH_SIZE = 256    # policy inference batch size during C++ rollout
+PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
+
 
 def ride_node_id(ride_id: int) -> int:
     return RIDE_NODE_OFFSET + ride_id
-
-
-def ride_id_from_node(node_id: int) -> int | None:
-    if node_id >= RIDE_NODE_OFFSET:
-        return node_id - RIDE_NODE_OFFSET
-    return None
 
 
 def get_ride_configs() -> list[dict]:
