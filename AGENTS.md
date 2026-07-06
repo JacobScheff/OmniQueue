@@ -32,6 +32,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
   metrics.py          ← DayMetrics dataclass
   model.py            ← ParkRouterModel (pointer actor-critic)
   training/           ← bc_train.py, ppo_train.py, eval_policy.py
+  benchmark.py        ← performance harness
   native/             ← C++ DES core + heuristic router + pybind11 `_park_sim`
   tools/              ← export_native_data.py (graph → C++ header)
   router/
