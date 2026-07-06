@@ -72,3 +72,11 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 pip install -e .
 python tools/export_native_data.py   # after config/graph changes
 ```
+
+## Cursor Cloud specific instructions
+
+- **System dependency:** building the `_park_sim` C++ extension requires the Python dev headers (`python3-dev`, providing `/usr/include/python3.12`). These are installed at the VM/snapshot level; without them `pip install -e .` fails at the CMake `find_package(pybind11)` step. This is not part of the per-startup update script.
+- **Editable install uses `--user --break-system-packages`:** the base image marks the system Python as externally managed (PEP 668), so installs go to `~/.local`. Use `python3` / `python3 -m pytest` directly (there is no virtualenv to activate). The `pytest` console script lives in `~/.local/bin`, which is not on `PATH` — invoke it as `python3 -m pytest`.
+- **After editing `config.py` or `park_graph.py`:** run `python tools/export_native_data.py` to regenerate `native/generated/graph_data.hpp`, then re-run `pip install -e .` — the C++ extension embeds that data at compile time and will not pick up changes otherwise.
+- **Running things:** tests via `python3 -m pytest`; a full park-day simulation via `python3 benchmark.py --seed 42 --runs 3`; BC training via `python3 training/bc_train.py ...` (see `docs/training.md`). There is no GUI in Phase 1 (Pygame visualization is Phase 4).
+- **Verify the native backend** is active with `python3 -c "from simulator import native_backend_name; print(native_backend_name())"` (should print `native`).
