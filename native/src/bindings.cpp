@@ -135,4 +135,5 @@ PYBIND11_MODULE(_park_sim, m) {
         py::arg("seed_start") = 0,
         "Collect heuristic routing samples for behavioral cloning.");
     m.def("is_available", []() { return true; });
+    m.attr("HAS_EXCHANGE_BATCH") = true;
 }

@@ -29,6 +29,19 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _require_batched_rollout_api() -> None:
+    """Fail fast when the installed C++ extension predates exchange_batch."""
+    if hasattr(_park_sim.ParkEnv, "exchange_batch"):
+        return
+    raise RuntimeError(
+        "This PPO script requires a rebuilt native extension with ParkEnv.exchange_batch.\n"
+        "Your _park_sim module is out of date. From the repo root, rebuild:\n"
+        "  pip install -e .\n"
+        "On Windows you need Visual Studio Build Tools (C++ workload) installed first.\n"
+        "Verify with: python -c \"import _park_sim; print(hasattr(_park_sim.ParkEnv,'exchange_batch'))\""
+    )
+
+
 def _format_device(device: torch.device) -> str:
     if device.type != "cuda":
         return "cpu"
@@ -336,6 +349,7 @@ def _ppo_update(
 
 
 def train(args: argparse.Namespace) -> None:
+    _require_batched_rollout_api()
     device = torch.device(args.device)
     random.seed(args.seed)
     np.random.seed(args.seed)
