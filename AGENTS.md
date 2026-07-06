@@ -30,6 +30,8 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
   park_graph.py       ← A* pathfinding + precomputed walk matrix (export input)
   simulator.py        ← run_day() Python wrapper → _park_sim
   metrics.py          ← DayMetrics dataclass
+  model.py            ← ParkRouterModel (pointer actor-critic)
+  training/           ← bc_train.py, ppo_train.py, eval_policy.py
   benchmark.py        ← performance harness
   native/             ← C++ DES core + heuristic router + pybind11 `_park_sim`
   tools/              ← export_native_data.py (graph → C++ header)
@@ -53,14 +55,15 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | [metrics.md](docs/metrics.md) | `metrics.py`, C++ metrics | KPI definitions and sampling |
 | [native-simulator.md](docs/native-simulator.md) | `native/`, `_park_sim` | C++ extension build and Python API |
 | [benchmark.md](docs/benchmark.md) | `benchmark.py` | Performance harness |
+| [training.md](docs/training.md) | `model.py`, `training/` | BC + PPO training and checkpoints |
 
 ## Phase Roadmap
 
 | Phase | Deliverable |
 |-------|-------------|
 | **1** (current) | C++ DES + heuristic router + docs |
-| **2** | PyTorch `ParkRouterModel` + behavioral cloning |
-| **3** | CleanRL PPO integration |
+| **2** | PyTorch `ParkRouterModel` + behavioral cloning (`training/bc_train.py`) |
+| **3** | PPO fine-tuning in `ParkEnv` (`training/ppo_train.py`) |
 | **4** | Pygame visualization with trained model |
 
 ## Build
