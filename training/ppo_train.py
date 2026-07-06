@@ -22,6 +22,7 @@ import torch.optim as optim
 import _park_sim
 from model import obs_flat_to_tensors
 from training.checkpoint import default_model, load_checkpoint, save_checkpoint
+from training.policy_export import export_model_torchscript
 from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
 
 
@@ -30,16 +31,28 @@ def _log(msg: str) -> None:
 
 
 def _require_batched_rollout_api() -> None:
-    """Fail fast when the installed C++ extension predates exchange_batch."""
+    """Fail fast when the installed C++ extension predates rollout APIs."""
     if hasattr(_park_sim.ParkEnv, "exchange_batch"):
         return
+    if getattr(_park_sim, "HAS_NATIVE_PPO_ROLLOUT", False) and hasattr(_park_sim, "collect_ppo_rollout"):
+        return
     raise RuntimeError(
-        "This PPO script requires a rebuilt native extension with ParkEnv.exchange_batch.\n"
+        "This PPO script requires a rebuilt native extension with ParkEnv.exchange_batch "
+        "or collect_ppo_rollout.\n"
         "Your _park_sim module is out of date. From the repo root, rebuild:\n"
         "  pip install -e .\n"
-        "On Windows you need Visual Studio Build Tools (C++ workload) installed first.\n"
-        "Verify with: python -c \"import _park_sim; print(hasattr(_park_sim.ParkEnv,'exchange_batch'))\""
+        "On Windows you need Visual Studio Build Tools (C++ workload) installed first."
     )
+
+
+def _native_libtorch_rollout_available() -> bool:
+    return bool(getattr(_park_sim, "HAS_NATIVE_PPO_ROLLOUT", False)) and hasattr(
+        _park_sim, "collect_ppo_rollout"
+    )
+
+
+def _sync_policy_torchscript(agent: Agent, policy_ts_path: Path, device: torch.device) -> None:
+    export_model_torchscript(agent.model, policy_ts_path, device)
 
 
 def _format_device(device: torch.device) -> str:
@@ -97,7 +110,7 @@ class Agent(nn.Module):
         return action, dist.log_prob(action), dist.entropy(), value.flatten()
 
 
-def _collect_episode(
+def _collect_episode_python(
     agent: Agent,
     device: torch.device,
     seed: int,
@@ -111,7 +124,7 @@ def _collect_episode(
     day_label: str = "",
     env_label: str = "",
 ) -> EpisodeBatch:
-    """Run one full park day via native C++ sim + batched policy inference."""
+    """Run one full park day via C++ sim + Python/LibTorch batched inference."""
     env = _park_sim.ParkEnv(seed)
     env.reset(seed)
 
@@ -250,6 +263,111 @@ def _collect_episode(
     )
 
 
+def _collect_episode_libtorch(
+    policy_ts_path: Path,
+    device: torch.device,
+    seed: int,
+    subsample_size: int,
+    *,
+    gamma: float,
+    gae_lambda: float,
+    day_label: str = "",
+    env_label: str = "",
+) -> EpisodeBatch:
+    """Full-day rollout with policy inference entirely in C++ (LibTorch)."""
+    prefix = " ".join(part for part in (day_label, env_label) if part)
+    if prefix:
+        _log(f"{prefix} native LibTorch rollout (policy={policy_ts_path.name})...")
+
+    rollout_t0 = time.perf_counter()
+    result = _park_sim.collect_ppo_rollout(
+        str(policy_ts_path),
+        seed,
+        subsample_size,
+        True,
+        str(device),
+        gamma,
+        gae_lambda,
+    )
+    rollout_sec = time.perf_counter() - rollout_t0
+
+    obs_t = torch.as_tensor(np.asarray(result.obs, dtype=np.float32), dtype=torch.float32, device=device)
+    actions_t = torch.as_tensor(np.asarray(result.actions, dtype=np.int64), dtype=torch.long, device=device)
+    logprobs_t = torch.as_tensor(np.asarray(result.logprobs, dtype=np.float32), dtype=torch.float32, device=device)
+    advantages_t = torch.as_tensor(np.asarray(result.advantages, dtype=np.float32), dtype=torch.float32, device=device)
+    returns_t = torch.as_tensor(np.asarray(result.returns, dtype=np.float32), dtype=torch.float32, device=device)
+
+    if prefix:
+        steps_per_sec = result.total_steps / max(result.wall_time_sec, 1e-6)
+        _log(
+            f"{prefix} native rollout done: steps={result.total_steps:,} "
+            f"train_samples={result.n:,} return={result.episode_return:.2f} "
+            f"wait_var={result.metrics.avg_wait_variance():.0f} "
+            f"rides/party={result.metrics.rides_per_party():.2f} "
+            f"native={result.wall_time_sec:.1f}s wall={rollout_sec:.1f}s ({steps_per_sec:,.0f} steps/s)"
+        )
+
+    return EpisodeBatch(
+        obs=obs_t,
+        actions=actions_t,
+        logprobs=logprobs_t,
+        advantages=advantages_t,
+        returns=returns_t,
+        routing_steps=result.total_steps,
+        episode_return=float(result.episode_return),
+        avg_wait_variance=float(result.metrics.avg_wait_variance()),
+        rides_completed=int(result.metrics.rides_completed),
+        rides_per_party=float(result.metrics.rides_per_party()),
+        rollout_sec=rollout_sec,
+    )
+
+
+def _collect_episode(
+    agent: Agent,
+    device: torch.device,
+    seed: int,
+    max_routing_steps: int,
+    subsample_size: int,
+    inference_batch_size: int,
+    policy_ts_path: Path,
+    rollout_backend: str,
+    *,
+    gamma: float,
+    gae_lambda: float,
+    log_every: int = 0,
+    day_label: str = "",
+    env_label: str = "",
+) -> EpisodeBatch:
+    if rollout_backend == "libtorch":
+        if not _native_libtorch_rollout_available():
+            raise RuntimeError(
+                "Rollout backend 'libtorch' requires collect_ppo_rollout. Rebuild with: pip install -e ."
+            )
+        return _collect_episode_libtorch(
+            policy_ts_path,
+            device,
+            seed,
+            subsample_size,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            day_label=day_label,
+            env_label=env_label,
+        )
+    return _collect_episode_python(
+        agent,
+        device,
+        seed,
+        max_routing_steps,
+        subsample_size,
+        inference_batch_size,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
+        log_every=log_every,
+        day_label=day_label,
+        env_label=env_label,
+    )
+
+
 def _compute_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
@@ -367,13 +485,22 @@ def train(args: argparse.Namespace) -> None:
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    policy_ts_path = Path(args.policy_ts_path) if args.policy_ts_path else save_dir / "policy.ts.pt"
+
+    rollout_backend = args.rollout_backend
+    if rollout_backend == "libtorch" and not _native_libtorch_rollout_available():
+        _log("LibTorch native rollout unavailable; falling back to python/exchange_batch backend.")
+        rollout_backend = "python"
+
+    _sync_policy_torchscript(agent, policy_ts_path, device)
 
     _log(f"PyTorch {torch.__version__} on {_format_device(device)}")
     _log(f"Model parameters: {num_params:,}")
     _log(
         f"PPO full-day mode: target_days={args.total_days}, num_envs={args.num_envs}, "
-        f"subsample={args.subsample_size}, inference_batch={args.inference_batch_size}, "
-        f"save_every={args.save_every} routing steps, log_every={args.log_every} rollout steps"
+        f"rollout={rollout_backend}, subsample={args.subsample_size}, "
+        f"inference_batch={args.inference_batch_size}, save_every={args.save_every} routing steps, "
+        f"log_every={args.log_every} rollout steps"
     )
     _log(
         "Primary metrics: wait_var (lower is better), rides_per_party (higher is better), "
@@ -395,6 +522,7 @@ def train(args: argparse.Namespace) -> None:
         day_label = f"[day {day_num}/{args.total_days}]"
 
         _log(f"{day_label} starting rollout (seed={args.seed + days_done})...")
+        _sync_policy_torchscript(agent, policy_ts_path, device)
 
         episodes: list[EpisodeBatch] = []
         for i in range(args.num_envs):
@@ -407,6 +535,8 @@ def train(args: argparse.Namespace) -> None:
                     args.max_routing_steps,
                     args.subsample_size,
                     args.inference_batch_size,
+                    policy_ts_path,
+                    rollout_backend,
                     gamma=args.gamma,
                     gae_lambda=args.gae_lambda,
                     log_every=args.log_every,
@@ -460,6 +590,7 @@ def train(args: argparse.Namespace) -> None:
             f"(subsampled from {raw_steps:,}) lr={lr:.2e}..."
         )
         stats = _ppo_update(agent, optimizer, batch, args)
+        _sync_policy_torchscript(agent, policy_ts_path, device)
         elapsed = time.perf_counter() - t0
 
         if batch.avg_wait_variance < best_wait_var:
@@ -551,6 +682,19 @@ def main() -> None:
     parser.add_argument("--save-dir", type=str, default="checkpoints/ppo")
     parser.add_argument("--save-every", type=int, default=500_000, help="Save every N routing steps")
     parser.add_argument(
+        "--rollout-backend",
+        type=str,
+        default="libtorch",
+        choices=["libtorch", "python"],
+        help="libtorch: in-C++ LibTorch rollout (fast). python: exchange_batch + PyTorch inference.",
+    )
+    parser.add_argument(
+        "--policy-ts-path",
+        type=str,
+        default="",
+        help="TorchScript policy path for libtorch rollout (default: <save-dir>/policy.ts.pt)",
+    )
+    parser.add_argument(
         "--inference-batch-size",
         type=int,
         default=256,
@@ -579,6 +723,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.init_checkpoint == "":
         args.init_checkpoint = None
+    if args.policy_ts_path == "":
+        args.policy_ts_path = None
     if args.total_timesteps is not None:
         # ~500k routing decisions per full day
         args.total_days = max(1, args.total_timesteps // 500_000)

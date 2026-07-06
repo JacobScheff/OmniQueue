@@ -50,12 +50,21 @@ Typical throughput is **~0.2s per full park day** (~50k guests) on modern hardwa
 
 ## RL / PyTorch Integration (Phase 2–3)
 
-- **Today:** `run_day(seed)` returns `DayMetrics` for throughput testing and behavioral cloning labels.
-- **Next:** extend `_park_sim` with `ParkEnv` step API and NumPy observation buffers for vectorized PPO.
-- **Policy inference:** keep PyTorch model in Python; pass action tensors into C++ per routing batch.
+- **`ParkEnv`:** step API for Gymnasium-style RL (`reset` / `step` / `exchange_batch`).
+- **`collect_ppo_rollout`:** full-day PPO rollout with **in-C++ LibTorch** policy inference (~15–30s/day).
+- **TorchScript export:** `python tools/export_policy_torchscript.py --checkpoint checkpoints/bc/bc_final.pt`
+
+Build with LibTorch (must match your installed PyTorch):
+
+```bash
+export TORCH_CMAKE_PREFIX=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
+pip install -e . --no-build-isolation
+```
+
+PPO training uses `--rollout-backend libtorch` by default and syncs `<save-dir>/policy.ts.pt` each update.
 
 ## Notes
 
 - C++ uses `std::mt19937_64` for party spawn and routing randomness.
 - Spawn/router timing constants in `native/include/park_sim.hpp` must stay in sync with `config.py` manually until a shared export step exists.
-- Heuristic routing only for now. PPO actions will be passed from Python in a later API.
+- Heuristic routing for `run_day()`. PPO uses TorchScript policy via `collect_ppo_rollout()`.

@@ -47,9 +47,29 @@ python training/ppo_train.py \
   --save-every 500000
 ```
 
-Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `--subsample-size` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, default `--inference-batch-size 256`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
+Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `--subsample-size` random routing decisions per day.
 
-Expect ~10–60 seconds per rollout day depending on hardware (vs minutes with the old per-step Python loop).
+### Rollout backends
+
+| Backend | Flag | Speed (typical) |
+|---------|------|-----------------|
+| **LibTorch (default)** | `--rollout-backend libtorch` | ~15–30s/day — policy inference in C++ |
+| Python batched | `--rollout-backend python` | ~60–120s/day — `exchange_batch` + PyTorch |
+
+LibTorch rollout exports the current weights to TorchScript (`<save-dir>/policy.ts.pt`) before each day.
+
+Build with LibTorch linked to your installed PyTorch:
+
+```bash
+export TORCH_CMAKE_PREFIX=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
+pip install -e . --no-build-isolation
+```
+
+Export a checkpoint manually:
+
+```bash
+python tools/export_policy_torchscript.py --checkpoint checkpoints/bc/bc_final.pt
+```
 
 Legacy: `--total-timesteps 500000` is treated as ~1 full day (`500000 // 500000`).
 

@@ -30,11 +30,20 @@ py::array_t<float> vector_to_obs_batch(const std::vector<float>& data, int n) {
     return arr;
 }
 
-py::array_t<float> vector_to_rewards(const std::vector<float>& data) {
+py::array_t<float> vector_to_float1d(const std::vector<float>& data) {
     const py::ssize_t n = static_cast<py::ssize_t>(data.size());
     py::array_t<float> arr(n);
     if (n > 0) {
         std::memcpy(arr.mutable_data(), data.data(), data.size() * sizeof(float));
+    }
+    return arr;
+}
+
+py::array_t<int> vector_to_int1d(const std::vector<int>& data) {
+    const py::ssize_t n = static_cast<py::ssize_t>(data.size());
+    py::array_t<int> arr(n);
+    if (n > 0) {
+        std::memcpy(arr.mutable_data(), data.data(), data.size() * sizeof(int));
     }
     return arr;
 }
@@ -106,7 +115,35 @@ PYBIND11_MODULE(_park_sim, m) {
             return vector_to_obs_batch(self.obs, self.n_obs);
         })
         .def_property_readonly("rewards", [](const park::RolloutBatchResult& self) {
-            return vector_to_rewards(self.rewards);
+            return vector_to_float1d(self.rewards);
+        });
+
+    py::class_<park::PpoRolloutResult>(m, "PpoRolloutResult")
+        .def_readonly("n", &park::PpoRolloutResult::n)
+        .def_readonly("total_steps", &park::PpoRolloutResult::total_steps)
+        .def_readonly("episode_return", &park::PpoRolloutResult::episode_return)
+        .def_readonly("metrics", &park::PpoRolloutResult::metrics)
+        .def_readonly("wall_time_sec", &park::PpoRolloutResult::wall_time_sec)
+        .def_property_readonly("obs", [](const park::PpoRolloutResult& self) {
+            return vector_to_obs_batch(self.obs, self.n);
+        })
+        .def_property_readonly("actions", [](const park::PpoRolloutResult& self) {
+            return vector_to_int1d(self.actions);
+        })
+        .def_property_readonly("logprobs", [](const park::PpoRolloutResult& self) {
+            return vector_to_float1d(self.logprobs);
+        })
+        .def_property_readonly("values", [](const park::PpoRolloutResult& self) {
+            return vector_to_float1d(self.values);
+        })
+        .def_property_readonly("rewards", [](const park::PpoRolloutResult& self) {
+            return vector_to_float1d(self.rewards);
+        })
+        .def_property_readonly("advantages", [](const park::PpoRolloutResult& self) {
+            return vector_to_float1d(self.advantages);
+        })
+        .def_property_readonly("returns", [](const park::PpoRolloutResult& self) {
+            return vector_to_float1d(self.returns);
         });
 
     py::class_<park::ParkEnv>(m, "ParkEnv")
@@ -134,6 +171,19 @@ PYBIND11_MODULE(_park_sim, m) {
         py::arg("num_days") = 1,
         py::arg("seed_start") = 0,
         "Collect heuristic routing samples for behavioral cloning.");
+    m.def(
+        "collect_ppo_rollout",
+        &park::collect_ppo_rollout,
+        py::arg("policy_path"),
+        py::arg("seed") = 0,
+        py::arg("subsample_size") = 8192,
+        py::arg("stochastic") = true,
+        py::arg("device") = "cpu",
+        py::arg("gamma") = 0.99f,
+        py::arg("gae_lambda") = 0.95f,
+        "Simulate one full park day with in-C++ LibTorch policy inference.");
+    m.def("native_policy_rollout_enabled", &park::native_policy_rollout_enabled);
     m.def("is_available", []() { return true; });
     m.attr("HAS_EXCHANGE_BATCH") = true;
+    m.attr("HAS_NATIVE_PPO_ROLLOUT") = park::native_policy_rollout_enabled();
 }

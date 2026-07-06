@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace park {
@@ -131,6 +132,32 @@ int target_from_action(int action);
 
 DayMetricsResult run_day(uint64_t seed);
 std::vector<BCSample> collect_bc_dataset(int num_days, uint64_t seed_start);
+
+struct PpoRolloutResult {
+    std::vector<float> obs;
+    std::vector<int> actions;
+    std::vector<float> logprobs;
+    std::vector<float> values;
+    std::vector<float> rewards;
+    std::vector<float> advantages;
+    std::vector<float> returns;
+    int n = 0;
+    int total_steps = 0;
+    float episode_return = 0.0f;
+    DayMetricsResult metrics;
+    double wall_time_sec = 0.0;
+};
+
+PpoRolloutResult collect_ppo_rollout(
+    const std::string& policy_path,
+    uint64_t seed,
+    int subsample_size,
+    bool stochastic,
+    const std::string& device,
+    float gamma = 0.99f,
+    float gae_lambda = 0.95f);
+
+bool native_policy_rollout_enabled();
 
 class ParkEnv {
 public:

@@ -6,15 +6,18 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <cstring>
 #include <limits>
-#include <numeric>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
 #include "graph_data.hpp"
+#include "policy_runner.hpp"
 
 namespace park {
 
@@ -336,7 +339,91 @@ public:
         return metrics_;
     }
 
-    void set_bc_recorder(std::vector<BCSample>* out) { bc_out_ = out; }
+    void set_bc_recorder(std::vector<BCSample>* out) {
+        bc_out_ = out;
+        if (bc_out_ != nullptr) {
+            policy_ctx_ = nullptr;
+        }
+    }
+
+    struct PpoStepRecord {
+        std::array<float, kFlatObsDim> obs{};
+        int action = 0;
+        float logprob = 0.0f;
+        float value = 0.0f;
+        float reward = 0.0f;
+    };
+
+    struct PolicyRolloutCtx {
+        PolicyRunner* runner = nullptr;
+        std::vector<PpoStepRecord>* steps = nullptr;
+        bool stochastic = true;
+        std::mt19937_64* rng = nullptr;
+    };
+
+    void set_policy_rollout(PolicyRolloutCtx* ctx) {
+        policy_ctx_ = ctx;
+        if (policy_ctx_ != nullptr) {
+            bc_out_ = nullptr;
+            hold_routing_ = false;
+        }
+    }
+
+    void route_with_policy(const std::vector<int32_t>& ids, int now_sec) {
+        if (policy_ctx_ == nullptr || policy_ctx_->runner == nullptr || policy_ctx_->steps == nullptr) {
+            return;
+        }
+
+        for (size_t start = 0; start < ids.size(); start += kMaxRouteBatch) {
+            const size_t end = std::min(ids.size(), start + kMaxRouteBatch);
+            const int batch_n = static_cast<int>(end - start);
+            if (batch_n <= 0) {
+                continue;
+            }
+
+            std::vector<float> obs_flat(static_cast<size_t>(batch_n) * kFlatObsDim);
+            std::vector<float> rewards(static_cast<size_t>(batch_n));
+            for (int i = 0; i < batch_n; ++i) {
+                rewards[static_cast<size_t>(i)] = env_reward_delta();
+                const int party_id = ids[start + static_cast<size_t>(i)];
+                const auto flat = build_observation(party_id, now_sec).flat();
+                std::memcpy(
+                    obs_flat.data() + static_cast<size_t>(i) * kFlatObsDim,
+                    flat.data(),
+                    kFlatObsDim * sizeof(float));
+            }
+
+            std::vector<int64_t> actions(static_cast<size_t>(batch_n));
+            std::vector<float> logprobs(static_cast<size_t>(batch_n));
+            std::vector<float> values(static_cast<size_t>(batch_n));
+            policy_ctx_->runner->infer_batch(
+                obs_flat.data(),
+                batch_n,
+                actions.data(),
+                logprobs.data(),
+                values.data(),
+                policy_ctx_->stochastic,
+                *policy_ctx_->rng);
+
+            for (int i = 0; i < batch_n; ++i) {
+                PpoStepRecord rec;
+                rec.obs = {};
+                std::memcpy(
+                    rec.obs.data(),
+                    obs_flat.data() + static_cast<size_t>(i) * kFlatObsDim,
+                    kFlatObsDim * sizeof(float));
+                rec.action = static_cast<int>(actions[static_cast<size_t>(i)]);
+                rec.logprob = logprobs[static_cast<size_t>(i)];
+                rec.value = values[static_cast<size_t>(i)];
+                rec.reward = rewards[static_cast<size_t>(i)];
+                policy_ctx_->steps->push_back(rec);
+                assign_route(
+                    ids[start + static_cast<size_t>(i)],
+                    target_from_action(rec.action),
+                    now_sec);
+            }
+        }
+    }
 
     void env_begin(uint64_t seed) {
         hold_routing_ = true;
@@ -833,6 +920,11 @@ private:
             return;
         }
 
+        if (policy_ctx_ != nullptr) {
+            route_with_policy(ids, now_sec);
+            return;
+        }
+
         if (hold_routing_) {
             env_queue_ = std::move(ids);
             env_queue_pos_ = 0;
@@ -1035,6 +1127,7 @@ private:
     size_t env_queue_pos_ = 0;
     size_t last_var_sample_count_ = 0;
     std::vector<BCSample>* bc_out_ = nullptr;
+    PolicyRolloutCtx* policy_ctx_ = nullptr;
 };
 
 }  // namespace detail
@@ -1174,6 +1267,118 @@ RolloutBatchResult ParkEnv::exchange_batch(const std::vector<int>& actions, cons
 DayMetricsResult run_day(const uint64_t seed) {
     detail::Simulator sim(seed);
     return sim.run();
+}
+
+namespace {
+
+void compute_gae_from_steps(
+    const std::vector<detail::Simulator::PpoStepRecord>& steps,
+    float gamma,
+    float gae_lambda,
+    std::vector<float>& advantages,
+    std::vector<float>& returns) {
+    const int n = static_cast<int>(steps.size());
+    advantages.assign(static_cast<size_t>(n), 0.0f);
+    returns.assign(static_cast<size_t>(n), 0.0f);
+    if (n == 0) {
+        return;
+    }
+
+    float last_gae = 0.0f;
+    for (int t = n - 1; t >= 0; --t) {
+        const float next_nonterminal = (t == n - 1) ? 0.0f : 1.0f;
+        const float next_value = (t == n - 1) ? 0.0f : steps[static_cast<size_t>(t + 1)].value;
+        const float delta =
+            steps[static_cast<size_t>(t)].reward + gamma * next_value * next_nonterminal -
+            steps[static_cast<size_t>(t)].value;
+        last_gae = delta + gamma * gae_lambda * next_nonterminal * last_gae;
+        advantages[static_cast<size_t>(t)] = last_gae;
+        returns[static_cast<size_t>(t)] = last_gae + steps[static_cast<size_t>(t)].value;
+    }
+}
+
+void subsample_indices(int total, int subsample_size, std::mt19937_64& rng, std::vector<int>& out_indices) {
+    out_indices.resize(static_cast<size_t>(total));
+    std::iota(out_indices.begin(), out_indices.end(), 0);
+    if (subsample_size > 0 && total > subsample_size) {
+        std::shuffle(out_indices.begin(), out_indices.end(), rng);
+        out_indices.resize(static_cast<size_t>(subsample_size));
+        std::sort(out_indices.begin(), out_indices.end());
+    }
+}
+
+}  // namespace
+
+bool native_policy_rollout_enabled() {
+    return true;
+}
+
+PpoRolloutResult collect_ppo_rollout(
+    const std::string& policy_path,
+    const uint64_t seed,
+    const int subsample_size,
+    const bool stochastic,
+    const std::string& device,
+    const float gamma,
+    const float gae_lambda) {
+    const auto t0 = std::chrono::steady_clock::now();
+
+    PolicyRunner runner(policy_path, device);
+    if (!runner.is_available()) {
+        throw std::runtime_error("PolicyRunner failed to load TorchScript policy.");
+    }
+
+    std::vector<detail::Simulator::PpoStepRecord> steps;
+    steps.reserve(600000);
+    std::mt19937_64 rng(seed);
+    detail::Simulator::PolicyRolloutCtx ctx{&runner, &steps, stochastic, &rng};
+
+    detail::Simulator sim(seed);
+    sim.set_policy_rollout(&ctx);
+    DayMetricsResult metrics = sim.run();
+
+    if (!steps.empty()) {
+        steps.back().reward += static_cast<float>(-metrics.avg_wait_variance() / 1000.0);
+    }
+
+    std::vector<float> advantages;
+    std::vector<float> gae_returns;
+    compute_gae_from_steps(steps, gamma, gae_lambda, advantages, gae_returns);
+
+    PpoRolloutResult result;
+    result.total_steps = static_cast<int>(steps.size());
+    result.metrics = metrics;
+    for (const auto& step : steps) {
+        result.episode_return += step.reward;
+    }
+
+    std::mt19937_64 subsample_rng(seed ^ 0x9E3779B97F4A7C15ULL);
+    std::vector<int> indices;
+    subsample_indices(result.total_steps, subsample_size, subsample_rng, indices);
+
+    result.n = static_cast<int>(indices.size());
+    result.obs.reserve(static_cast<size_t>(result.n) * kFlatObsDim);
+    result.actions.reserve(static_cast<size_t>(result.n));
+    result.logprobs.reserve(static_cast<size_t>(result.n));
+    result.values.reserve(static_cast<size_t>(result.n));
+    result.rewards.reserve(static_cast<size_t>(result.n));
+    result.advantages.reserve(static_cast<size_t>(result.n));
+    result.returns.reserve(static_cast<size_t>(result.n));
+
+    for (int idx : indices) {
+        const auto& step = steps[static_cast<size_t>(idx)];
+        result.obs.insert(result.obs.end(), step.obs.begin(), step.obs.end());
+        result.actions.push_back(step.action);
+        result.logprobs.push_back(step.logprob);
+        result.values.push_back(step.value);
+        result.rewards.push_back(step.reward);
+        result.advantages.push_back(advantages[static_cast<size_t>(idx)]);
+        result.returns.push_back(gae_returns[static_cast<size_t>(idx)]);
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    result.wall_time_sec = std::chrono::duration<double>(t1 - t0).count();
+    return result;
 }
 
 }  // namespace park

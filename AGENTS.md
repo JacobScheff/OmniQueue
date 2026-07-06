@@ -72,3 +72,10 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 pip install -e .
 python tools/export_native_data.py   # after config/graph changes
 ```
+
+LibTorch rollout (links against your installed PyTorch):
+
+```bash
+export TORCH_CMAKE_PREFIX=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
+pip install -e . --no-build-isolation
+```
