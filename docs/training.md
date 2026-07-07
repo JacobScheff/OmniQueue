@@ -7,7 +7,13 @@
 1. **Phase 2 — Behavioral cloning:** mine heuristic routing decisions from the C++ simulator and train `ParkRouterModel` via cross-entropy loss.
 2. **Phase 3 — PPO:** fine-tune the policy on **complete park days** (`ParkEnv` runs until the day ends, ~500k routing decisions/day). PPO trains on a random subsample of transitions for memory efficiency.
 
-Checkpoints save automatically to `--save-dir` during training (`bc_step_*.pt`, `bc_final.pt`, `ppo_step_*.pt`, `ppo_final.pt`).
+Checkpoints save automatically to the configured `save_dir` (`checkpoints/bc/` and `checkpoints/ppo/` by default).
+
+## Configuration
+
+All hyperparameters live in **`config.py`** under the `BC_*` and `PPO_*` sections. Edit that file to tune learning rates, discount factors, clip coefficients, batch sizes, and so on — no command-line flags needed.
+
+The training scripts only accept the small number of **run-time parameters** that typically vary between experiments (seed, number of days, device, etc.).
 
 ## Prerequisites
 
@@ -20,16 +26,11 @@ Requires the C++ extension (`_park_sim`) and PyTorch.
 ## Phase 2: Behavioral Cloning
 
 ```bash
-python training/bc_train.py \
-  --seed 42 \
-  --bc-days 1 \
-  --epochs 3 \
-  --batch-size 512 \
-  --save-dir checkpoints/bc \
-  --save-every 500
+python training/bc_train.py --seed 42 --bc-days 1 --device cpu
 ```
 
 - Labels come from `_park_sim.collect_bc_dataset()` (~500k samples/day).
+- Hyperparameters (`BC_EPOCHS`, `BC_LR`, `BC_BATCH_SIZE`, etc.) are set in `config.py`.
 - Output: `checkpoints/bc/bc_final.pt`
 
 ## Phase 3: PPO
@@ -41,17 +42,14 @@ python training/ppo_train.py \
   --seed 42 \
   --init-checkpoint checkpoints/bc/bc_final.pt \
   --total-days 20 \
-  --num-envs 1 \
-  --subsample-size 8192 \
-  --save-dir checkpoints/ppo \
-  --save-every 500000
+  --device cpu
 ```
 
-Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `--subsample-size` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, default `--inference-batch-size 256`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
+All PPO hyperparameters (`PPO_LEARNING_RATE`, `PPO_GAMMA`, `PPO_GAE_LAMBDA`, `PPO_CLIP_COEF`, etc.) are configured in `config.py`.
 
-Expect ~10–60 seconds per rollout day depending on hardware (vs minutes with the old per-step Python loop).
+Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `PPO_SUBSAMPLE_SIZE` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, batch size `PPO_INFERENCE_BATCH_SIZE`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
 
-Legacy: `--total-timesteps 500000` is treated as ~1 full day (`500000 // 500000`).
+Expect ~10–60 seconds per rollout day depending on hardware.
 
 Output: `checkpoints/ppo/ppo_final.pt`
 

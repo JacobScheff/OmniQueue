@@ -31,3 +31,9 @@ class DayMetrics:
         if not self.wait_variance_samples:
             return 0.0
         return sum(self.wait_variance_samples) / len(self.wait_variance_samples)
+
+    @property
+    def avg_mean_wait(self) -> float:
+        if not self.mean_wait_samples:
+            return 0.0
+        return sum(self.mean_wait_samples) / len(self.mean_wait_samples)

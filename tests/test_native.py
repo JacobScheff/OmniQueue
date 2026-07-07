@@ -10,7 +10,7 @@ def test_native_run_day_smoke():
     metrics = run_day(seed=123, backend="native")
     assert metrics.total_parties > 0
     assert metrics.rides_completed > 0
-    assert metrics.wall_time_sec >= 0
+    assert metrics.wall_time_sec > 0
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")

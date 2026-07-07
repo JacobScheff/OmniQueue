@@ -41,6 +41,10 @@ def run_day(
 ) -> DayMetrics:
     """Run one simulated park day via the C++ extension.
 
+    ``router`` selects which routing strategy to validate ("heuristic" or "ppo").
+    The C++ simulator always runs the built-in heuristic router internally; PPO
+    routing via the native sim is a Phase 3 deliverable.
+
     backend:
       - ``auto`` (default): use C++ when built
       - ``native``: require C++ extension

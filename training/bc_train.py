@@ -7,6 +7,7 @@ import argparse
 import random
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +20,25 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 import _park_sim
+import config
 from training.checkpoint import default_model, save_checkpoint
+
+
+@dataclass
+class BCConfig:
+    """Behavioral cloning run configuration.
+
+    Runtime parameters are set via CLI; hyperparameters default to ``config.py``.
+    """
+    seed: int = 42
+    bc_days: int = 1
+    device: str = "cpu"
+    # Hyperparameters — edit config.py to change defaults
+    epochs: int = config.BC_EPOCHS
+    batch_size: int = config.BC_BATCH_SIZE
+    lr: float = config.BC_LR
+    save_dir: str = config.BC_SAVE_DIR
+    save_every: int = config.BC_SAVE_EVERY
 
 
 class BCDataset(Dataset):
@@ -47,27 +66,27 @@ def collect_samples(num_days: int, seed: int) -> list:
     return samples
 
 
-def train(args: argparse.Namespace) -> None:
-    device = torch.device(args.device)
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
+def train(cfg: BCConfig) -> None:
+    device = torch.device(cfg.device)
+    torch.manual_seed(cfg.seed)
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
 
-    samples = collect_samples(args.bc_days, args.seed)
+    samples = collect_samples(cfg.bc_days, cfg.seed)
     if not samples:
         raise RuntimeError("No BC samples collected.")
 
     dataset = BCDataset(samples)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=False)
 
     model = default_model(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
-    save_dir = Path(args.save_dir)
+    save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     global_step = 0
-    for epoch in range(args.epochs):
+    for epoch in range(cfg.epochs):
         epoch_loss = 0.0
         batches = 0
         for guest, ride, env, action in loader:
@@ -87,31 +106,31 @@ def train(args: argparse.Namespace) -> None:
             batches += 1
             global_step += 1
 
-            if global_step % args.save_every == 0:
+            if global_step % cfg.save_every == 0:
                 ckpt = save_dir / f"bc_step_{global_step}.pt"
                 save_checkpoint(ckpt, model, optimizer, global_step, {"phase": "bc", "epoch": epoch})
                 print(f"Saved checkpoint: {ckpt}", flush=True)
 
         avg_loss = epoch_loss / max(1, batches)
-        print(f"Epoch {epoch + 1}/{args.epochs}  loss={avg_loss:.4f}", flush=True)
+        print(f"Epoch {epoch + 1}/{cfg.epochs}  loss={avg_loss:.4f}", flush=True)
 
     final_path = save_dir / "bc_final.pt"
-    save_checkpoint(final_path, model, optimizer, global_step, {"phase": "bc", "epochs": args.epochs})
+    save_checkpoint(final_path, model, optimizer, global_step, {"phase": "bc", "epochs": cfg.epochs})
     print(f"Training complete. Final checkpoint: {final_path}", flush=True)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Behavioral cloning for ParkRouterModel")
+    parser = argparse.ArgumentParser(
+        description="Behavioral cloning for ParkRouterModel. "
+        "Hyperparameters (epochs, lr, batch-size, etc.) are set in config.py."
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bc-days", type=int, default=1, help="Heuristic days to mine for labels")
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--save-dir", type=str, default="checkpoints/bc")
-    parser.add_argument("--save-every", type=int, default=500, help="Save checkpoint every N optimizer steps")
     args = parser.parse_args()
-    train(args)
+
+    cfg = BCConfig(seed=args.seed, bc_days=args.bc_days, device=args.device)
+    train(cfg)
 
 
 if __name__ == "__main__":
