@@ -38,8 +38,8 @@ constexpr double kBaseWalkingSpeed = 1.4;
 constexpr double kMemberSpeedLogMu = 0.3364722366212129;  // log(1.4)
 constexpr double kMemberSpeedLogSigma = 0.25;
 
-constexpr double kBaseBalkSec = 600.0;
-constexpr double kBalkScale = 2400.0;
+constexpr double kBaseBalkSec = 40.0 * 60.0;  // 40 min floor (mirrored from config.py)
+constexpr double kBalkScale = 5.0 * 60.0;     // +0–5 min by preference^exp (max ~45 min)
 constexpr double kBalkPrefExp = 1.5;
 constexpr double kMustDoPrefBoost = 10.0;
 constexpr double kIdleWalkProb = 0.5;
