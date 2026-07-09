@@ -348,6 +348,7 @@ public:
         rng_ = Rng(seed);
         reset();
         spawn_day();
+        pending_pref_reward_.assign(static_cast<size_t>(parties_.count), 0.0f);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
         for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
@@ -387,13 +388,46 @@ public:
     }
 
     float env_reward_delta() {
+        float reward = 0.0f;
         const size_t n = metrics_.wait_variance_samples.size();
         if (n <= last_var_sample_count_) {
-            return -0.001f;
+            reward = -kRoutingStepPenalty;
+        } else {
+            const double var = metrics_.wait_variance_samples.back();
+            last_var_sample_count_ = n;
+            reward = static_cast<float>(-var / 1'000'000.0);
         }
-        const double var = metrics_.wait_variance_samples.back();
-        last_var_sample_count_ = n;
-        return static_cast<float>(-var / 1'000'000.0);
+        // Flush preference / must-do completion bonus earned since this party's last route.
+        const int party_id = env_current_party();
+        if (party_id >= 0 && static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
+            reward += pending_pref_reward_[static_cast<size_t>(party_id)];
+            pending_pref_reward_[static_cast<size_t>(party_id)] = 0.0f;
+        }
+        return reward;
+    }
+
+    float flush_all_pending_pref_reward() {
+        float total = 0.0f;
+        for (float& v : pending_pref_reward_) {
+            total += v;
+            v = 0.0f;
+        }
+        return total;
+    }
+
+    float unfulfilled_must_do_penalty() const {
+        int remaining = 0;
+        for (int party_id = 0; party_id < parties_.count; ++party_id) {
+            for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
+                remaining += parties_.must_do_remaining[party_id][ride_id];
+            }
+        }
+        return -kUnfulfilledMustDoPenalty * static_cast<float>(remaining);
+    }
+
+    float terminal_reward_bonus() {
+        return static_cast<float>(-metrics_.avg_wait_variance() / 1000.0) + unfulfilled_must_do_penalty() +
+               flush_all_pending_pref_reward();
     }
 
     DayMetricsResult env_finalize() {
@@ -448,7 +482,7 @@ public:
             done = true;
             metrics = env_finalize();
             if (!rewards.empty()) {
-                rewards.back() += static_cast<float>(-metrics.avg_wait_variance() / 1000.0);
+                rewards.back() += terminal_reward_bonus();
             }
             return false;
         }
@@ -470,6 +504,7 @@ private:
         metrics_ = DayMetricsResult{};
         spawn_schedule_.clear();
         total_guests_ = 0;
+        pending_pref_reward_.clear();
     }
 
     void spawn_day() {
@@ -731,7 +766,17 @@ private:
 
         parties_.ride_history[party_id][ride_id] += 1;
         parties_.rides_completed[party_id] += 1;
-        if (parties_.must_do_remaining[party_id][ride_id]) {
+        const bool was_must_do = parties_.must_do_remaining[party_id][ride_id] != 0;
+        // Preference reward only for ParkEnv (PPO). Heuristic/BC days ignore pending.
+        if (hold_routing_ && party_id >= 0 &&
+            static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
+            float bonus = kPrefRewardScale * parties_.preferences[party_id][static_cast<size_t>(ride_id)];
+            if (was_must_do) {
+                bonus += kMustDoCompletionBonus;
+            }
+            pending_pref_reward_[static_cast<size_t>(party_id)] += bonus;
+        }
+        if (was_must_do) {
             parties_.must_do_remaining[party_id][ride_id] = 0;
             compute_preference_order(
                 parties_.preferences[party_id], parties_.must_do_remaining[party_id], parties_.preference_order[party_id]);
@@ -1034,6 +1079,7 @@ private:
     std::vector<int32_t> env_queue_;
     size_t env_queue_pos_ = 0;
     size_t last_var_sample_count_ = 0;
+    std::vector<float> pending_pref_reward_;
     std::vector<BCSample>* bc_out_ = nullptr;
 };
 
@@ -1137,8 +1183,9 @@ EnvStepResult ParkEnv::step(const int action) {
     result.done = true;
     result.has_obs = false;
     result.metrics = impl_->sim->env_finalize();
-    result.reward += static_cast<float>(-result.metrics.avg_wait_variance() / 1000.0);
-    impl_->episode_reward += static_cast<float>(-result.metrics.avg_wait_variance() / 1000.0);
+    const float terminal = impl_->sim->terminal_reward_bonus();
+    result.reward += terminal;
+    impl_->episode_reward += terminal;
     return result;
 }
 

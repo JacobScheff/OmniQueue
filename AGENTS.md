@@ -6,7 +6,7 @@ Build a centralized, AI-driven routing system for a theme park that dynamically 
 
 1. **Wait variance** — balance load across all rides (primary KPI).
 2. **Pathway congestion** — avoid bottlenecks (future phases).
-3. **Guest satisfaction** — match parties to preferred rides.
+3. **Guest satisfaction** — match parties to preferred rides (PPO reward includes preference / must-do terms; see `docs/training.md`).
 
 Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, implemented in **C++17** and exposed to Python via **`_park_sim`**. Phase 1 delivers fast rollouts and a built-in **heuristic router**. Later phases add PyTorch (Pointer Actor-Critic), PPO via CleanRL, and Pygame visualization.
 
