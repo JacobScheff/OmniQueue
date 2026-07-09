@@ -61,3 +61,32 @@ def test_exchange_batch_matches_step():
     assert batch_rewards == pytest.approx(step_rewards, rel=1e-5, abs=1e-5)
     assert batch_metrics.rides_completed == step_metrics.rides_completed
     assert batch_metrics.avg_wait_variance() == pytest.approx(step_metrics.avg_wait_variance(), rel=1e-5)
+
+
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_preference_reward_flushed_after_ride_complete():
+    """Routing after a real RideComplete should flush preference bonus (> step penalty alone)."""
+    import _park_sim
+
+    seed = 11
+    env = _park_sim.ParkEnv(seed)
+    env.reset(seed)
+
+    rewards: list[float] = []
+    rides_seen = 0
+    # Cycle ride targets so parties board and complete attractions.
+    action = 0
+    while True:
+        result = env.step(action)
+        rewards.append(float(result.reward))
+        if result.done:
+            rides_seen = int(result.metrics.rides_completed)
+            break
+        action = (action + 1) % 35
+
+    assert rides_seen > 0
+    # Preference flush: reward = -0.001 + pending_pref (> 0) on post-completion routes.
+    assert any(r > -0.001 for r in rewards[:-1]), (
+        "expected at least one mid-episode reward above the bare step penalty "
+        f"(got max={max(rewards[:-1]):.6f})"
+    )

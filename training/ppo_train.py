@@ -404,7 +404,7 @@ def train(cfg: PPOConfig) -> None:
     )
     _log(
         "Primary metrics: wait_var (lower is better), rides_per_party (higher is better), "
-        "day_return (sum of step rewards, usually negative)"
+        "day_return (wait variance + preference/must-do shaping; often negative)"
     )
     if init_extra:
         _log(f"Init checkpoint metadata: {init_extra}")

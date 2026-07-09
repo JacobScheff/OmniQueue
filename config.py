@@ -198,6 +198,15 @@ PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
 PPO_INFERENCE_BATCH_SIZE = 256    # policy inference batch size during C++ rollout
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 
+# PPO reward shaping — guest preference / must-do (mirrored in park_sim.hpp)
+# On RideComplete: pending += PPO_PREF_REWARD_SCALE * preference[ride]
+#                  + PPO_MUST_DO_COMPLETION_BONUS if that ride was a must-do.
+# Pending is flushed onto that party's next routing-step reward.
+# At episode end: -PPO_UNFULFILLED_MUST_DO_PENALTY * remaining_must_dos (park-wide).
+PPO_PREF_REWARD_SCALE = 0.05
+PPO_MUST_DO_COMPLETION_BONUS = 0.02
+PPO_UNFULFILLED_MUST_DO_PENALTY = 0.005
+
 
 def ride_node_id(ride_id: int) -> int:
     return RIDE_NODE_OFFSET + ride_id
