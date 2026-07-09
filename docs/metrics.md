@@ -18,7 +18,7 @@ KPIs are sampled every `METRICS_SAMPLE_INTERVAL_SEC` (300 s) during simulation i
 | Breakdown count | Number of breakdown events |
 | Wall time | Elapsed time for `_park_sim.run_day()` |
 
-PPO also shapes rewards with guest preference / must-do terms (not separate logged KPIs yet). See `docs/training.md`.
+PPO also shapes rewards with a **dense per-step wait-variance penalty** plus secondary preference / must-do terms. See `docs/training.md`.
 
 ## Usage
 
