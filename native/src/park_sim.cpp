@@ -344,7 +344,6 @@ public:
         env_now_sec_ = 0;
         env_queue_.clear();
         env_queue_pos_ = 0;
-        last_var_sample_count_ = 0;
         rng_ = Rng(seed);
         reset();
         spawn_day();
@@ -387,16 +386,34 @@ public:
         ++env_queue_pos_;
     }
 
-    float env_reward_delta() {
-        float reward = 0.0f;
-        const size_t n = metrics_.wait_variance_samples.size();
-        if (n <= last_var_sample_count_) {
-            reward = -kRoutingStepPenalty;
-        } else {
-            const double var = metrics_.wait_variance_samples.back();
-            last_var_sample_count_ = n;
-            reward = static_cast<float>(-var / 1'000'000.0);
+    double current_wait_variance() const {
+        double mean = 0.0;
+        int valid = 0;
+        for (int r = 0; r < kNumRides; ++r) {
+            if (wait_arr_[r] < 9000.0f) {
+                mean += wait_arr_[r];
+                ++valid;
+            }
         }
+        if (valid <= 0) {
+            return 0.0;
+        }
+        mean /= valid;
+        double var = 0.0;
+        for (int r = 0; r < kNumRides; ++r) {
+            if (wait_arr_[r] < 9000.0f) {
+                const double d = wait_arr_[r] - mean;
+                var += d * d;
+            }
+        }
+        return var / valid;
+    }
+
+    float env_reward_delta() {
+        // Dense wait-variance signal every routing step (not only on 300s KPI samples).
+        const double var = current_wait_variance();
+        float reward = (var > 0.0) ? static_cast<float>(-kWaitVarStepCoef * var / 1'000'000.0)
+                                   : -kRoutingStepPenalty;
         // Flush preference / must-do completion bonus earned since this party's last route.
         const int party_id = env_current_party();
         if (party_id >= 0 && static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
@@ -1078,7 +1095,6 @@ private:
     int env_now_sec_ = 0;
     std::vector<int32_t> env_queue_;
     size_t env_queue_pos_ = 0;
-    size_t last_var_sample_count_ = 0;
     std::vector<float> pending_pref_reward_;
     std::vector<BCSample>* bc_out_ = nullptr;
 };

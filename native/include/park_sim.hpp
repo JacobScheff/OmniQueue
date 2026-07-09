@@ -44,11 +44,12 @@ constexpr double kBalkPrefExp = 1.5;
 constexpr double kMustDoPrefBoost = 10.0;
 constexpr double kIdleWalkProb = 0.5;
 
-// PPO reward shaping (mirrored from config.py PPO_PREF_* / PPO_MUST_DO_* / PPO_UNFULFILLED_*)
-constexpr float kPrefRewardScale = 0.05f;
-constexpr float kMustDoCompletionBonus = 0.02f;
-constexpr float kUnfulfilledMustDoPenalty = 0.005f;
-constexpr float kRoutingStepPenalty = 0.001f;
+// PPO reward shaping (mirrored from config.py PPO_* reward knobs)
+constexpr float kWaitVarStepCoef = 0.002f;  // dense: -coef * var/1e6 every routing step
+constexpr float kPrefRewardScale = 0.01f;
+constexpr float kMustDoCompletionBonus = 0.005f;
+constexpr float kUnfulfilledMustDoPenalty = 0.002f;
+constexpr float kRoutingStepPenalty = 0.001f;  // fallback when no valid wait samples
 
 enum class EventType : uint8_t {
     PartySpawn = 0,
