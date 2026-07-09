@@ -288,6 +288,7 @@ public:
 
             update_wait_estimates(now_sec);
             maybe_sample(now_sec);
+            maybe_record_ride_sample(now_sec);
 
             for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
                 auto route_now = maybe_breakdown(ride_id, now_sec);
@@ -314,7 +315,7 @@ public:
                         break;
                     case EventType::RideComplete:
                         deciding.push_back(event.party_id);
-                        handle_ride_complete(event.party_id, event.ride_id);
+                        handle_ride_complete(event.party_id, event.ride_id, now_sec);
                         break;
                     case EventType::BreakdownEnd:
                         on_breakdown_end(event.ride_id, event.ride_generation, now_sec);
@@ -330,13 +331,24 @@ public:
             }
         }
 
+        finalize_recording();
+
         const auto t1 = std::chrono::steady_clock::now();
         metrics_.wall_time_sec =
             std::chrono::duration<double>(t1 - t0).count();
+        if (recording_ != nullptr) {
+            recording_->metrics = metrics_;
+        }
         return metrics_;
     }
 
     void set_bc_recorder(std::vector<BCSample>* out) { bc_out_ = out; }
+
+    void set_recording(DayRecording* out, int sample_interval_sec = 60) {
+        recording_ = out;
+        viz_sample_interval_sec_ = std::max(1, sample_interval_sec);
+        next_viz_sample_sec_ = 0;
+    }
 
     void env_begin(uint64_t seed) {
         hold_routing_ = true;
@@ -470,6 +482,8 @@ private:
         metrics_ = DayMetricsResult{};
         spawn_schedule_.clear();
         total_guests_ = 0;
+        active_walk_idx_.clear();
+        next_viz_sample_sec_ = 0;
     }
 
     void spawn_day() {
@@ -551,6 +565,7 @@ private:
         parties_.rides_completed.assign(n, 0);
         parties_.preference_order.resize(n);
         parties_.balk_sec.resize(n);
+        active_walk_idx_.assign(n, -1);
 
         for (int i = 0; i < n; ++i) {
             compute_preference_order(parties_.preferences[i], parties_.must_do_remaining[i], parties_.preference_order[i]);
@@ -659,7 +674,7 @@ private:
         std::vector<int32_t> walkers;
         for (int pid = 0; pid < parties_.count; ++pid) {
             if (parties_.walk_target_ride[pid] == ride_id) {
-                cancel_walk(pid);
+                cancel_walk(pid, now_sec, false);
                 walkers.push_back(pid);
             }
         }
@@ -676,16 +691,25 @@ private:
         }
     }
 
-    void cancel_walk(int party_id) {
+    void cancel_walk(int party_id, int now_sec, bool completed) {
         const int target_ride = parties_.walk_target_ride[party_id];
         if (target_ride >= 0) {
             rides_[target_ride].incoming = std::max(0, rides_[target_ride].incoming - 1);
             parties_.walk_target_ride[party_id] = -1;
         }
+        if (recording_ != nullptr) {
+            const int walk_idx = active_walk_idx_[party_id];
+            if (walk_idx >= 0) {
+                auto& walk = recording_->walks[static_cast<size_t>(walk_idx)];
+                walk.end_sec = now_sec;
+                walk.cancelled = completed ? 0 : 1;
+                active_walk_idx_[party_id] = -1;
+            }
+        }
     }
 
     std::vector<int32_t> handle_arrive(int party_id, int now_sec) {
-        cancel_walk(party_id);
+        cancel_walk(party_id, now_sec, true);
         parties_.location_node_idx[party_id] = parties_.target_node_idx[party_id];
 
         const int target_ride = parties_.target_ride_id[party_id];
@@ -725,12 +749,16 @@ private:
             Event{EventType::RideComplete, event.party_id, event.ride_id, 0});
     }
 
-    void handle_ride_complete(int party_id, int ride_id) {
+    void handle_ride_complete(int party_id, int ride_id, int now_sec) {
         auto& ride = rides_[ride_id];
         ride.on_ride.erase(std::remove(ride.on_ride.begin(), ride.on_ride.end(), party_id), ride.on_ride.end());
 
         parties_.ride_history[party_id][ride_id] += 1;
         parties_.rides_completed[party_id] += 1;
+        if (recording_ != nullptr) {
+            recording_->ride_completions.push_back(
+                PartyRideEvent{party_id, now_sec, static_cast<int16_t>(ride_id)});
+        }
         if (parties_.must_do_remaining[party_id][ride_id]) {
             parties_.must_do_remaining[party_id][ride_id] = 0;
             compute_preference_order(
@@ -856,7 +884,7 @@ private:
             return;
         }
 
-        cancel_walk(party_id);
+        cancel_walk(party_id, now_sec, false);
         const int from_idx = parties_.location_node_idx[party_id];
         const float speed = parties_.effective_speed[party_id];
 
@@ -866,6 +894,7 @@ private:
             parties_.target_ride_id[party_id] = kExitRideId;
             parties_.target_node_idx[party_id] = dest_idx;
             parties_.state[party_id] = static_cast<int8_t>(PartyState::Walking);
+            record_walk(party_id, now_sec, walk, from_idx, dest_idx, kExitRideId);
             wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
             return;
         }
@@ -876,6 +905,7 @@ private:
             parties_.target_ride_id[party_id] = kRouteIdleCode;
             parties_.target_node_idx[party_id] = dest_idx;
             parties_.state[party_id] = static_cast<int8_t>(PartyState::Walking);
+            record_walk(party_id, now_sec, walk, from_idx, dest_idx, kRouteIdleCode);
             wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
             return;
         }
@@ -888,6 +918,7 @@ private:
         parties_.state[party_id] = static_cast<int8_t>(PartyState::Walking);
         parties_.walk_target_ride[party_id] = ride_id;
         rides_[ride_id].incoming += 1;
+        record_walk(party_id, now_sec, walk, from_idx, dest_idx, ride_id);
         wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
     }
 
@@ -929,7 +960,7 @@ private:
                     break;
                 case EventType::RideComplete:
                     deciding.push_back(event.party_id);
-                    handle_ride_complete(event.party_id, event.ride_id);
+                    handle_ride_complete(event.party_id, event.ride_id, now_sec);
                     break;
                 case EventType::BreakdownEnd:
                     on_breakdown_end(event.ride_id, event.ride_generation, now_sec);
@@ -1010,6 +1041,70 @@ private:
         return obs;
     }
 
+    void record_walk(int party_id, int now_sec, int walk_sec, int from_idx, int to_idx, int target) {
+        if (recording_ == nullptr) {
+            return;
+        }
+        WalkRecord rec{};
+        rec.party_id = party_id;
+        rec.start_sec = now_sec;
+        rec.end_sec = now_sec + walk_sec;
+        rec.planned_end_sec = now_sec + walk_sec;
+        rec.from_idx = static_cast<int16_t>(from_idx);
+        rec.to_idx = static_cast<int16_t>(to_idx);
+        rec.target_ride = static_cast<int16_t>(target);
+        rec.cancelled = 0;
+        active_walk_idx_[party_id] = static_cast<int>(recording_->walks.size());
+        recording_->walks.push_back(rec);
+    }
+
+    void maybe_record_ride_sample(int now_sec) {
+        if (recording_ == nullptr) {
+            return;
+        }
+        if (now_sec < next_viz_sample_sec_) {
+            return;
+        }
+        RideSample sample{};
+        sample.sec = now_sec;
+        for (int i = 0; i < kNumRides; ++i) {
+            sample.wait[static_cast<size_t>(i)] = wait_arr_[i];
+            sample.broken[static_cast<size_t>(i)] =
+                rides_[i].status == RideStatus::Broken ? 1 : 0;
+            sample.queue_len[static_cast<size_t>(i)] =
+                static_cast<int32_t>(rides_[i].pending_board.size());
+        }
+        recording_->ride_samples.push_back(sample);
+        next_viz_sample_sec_ = now_sec + viz_sample_interval_sec_;
+    }
+
+    void finalize_recording() {
+        if (recording_ == nullptr) {
+            return;
+        }
+        recording_->parties.clear();
+        recording_->parties.reserve(static_cast<size_t>(parties_.count));
+        for (int pid = 0; pid < parties_.count; ++pid) {
+            PartyInfo info{};
+            info.party_id = pid;
+            info.size = parties_.party_size[pid];
+            info.spawn_sec = parties_.spawn_sec[pid];
+            info.leave_sec = parties_.leave_sec[pid];
+            info.rides_completed = parties_.rides_completed[pid];
+            recording_->parties.push_back(info);
+        }
+        // Close any still-active walks at day end.
+        for (int pid = 0; pid < parties_.count; ++pid) {
+            const int walk_idx = active_walk_idx_[pid];
+            if (walk_idx >= 0) {
+                auto& walk = recording_->walks[static_cast<size_t>(walk_idx)];
+                walk.end_sec = kDaySeconds;
+                walk.cancelled = 1;
+                active_walk_idx_[pid] = -1;
+            }
+        }
+    }
+
     Rng rng_;
     PartyArrays parties_;
     std::array<Ride, kNumRides> rides_{};
@@ -1035,6 +1130,11 @@ private:
     size_t env_queue_pos_ = 0;
     size_t last_var_sample_count_ = 0;
     std::vector<BCSample>* bc_out_ = nullptr;
+
+    DayRecording* recording_ = nullptr;
+    int viz_sample_interval_sec_ = 60;
+    int next_viz_sample_sec_ = 0;
+    std::vector<int> active_walk_idx_;
 };
 
 }  // namespace detail
@@ -1174,6 +1274,14 @@ RolloutBatchResult ParkEnv::exchange_batch(const std::vector<int>& actions, cons
 DayMetricsResult run_day(const uint64_t seed) {
     detail::Simulator sim(seed);
     return sim.run();
+}
+
+DayRecording record_day(const uint64_t seed, const int sample_interval_sec) {
+    DayRecording recording;
+    detail::Simulator sim(seed);
+    sim.set_recording(&recording, sample_interval_sec);
+    sim.run();
+    return recording;
 }
 
 }  // namespace park

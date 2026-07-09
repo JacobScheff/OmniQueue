@@ -126,10 +126,54 @@ struct RolloutBatchResult {
     DayMetricsResult metrics;
 };
 
+/** One party walk segment for visualization replay. */
+struct WalkRecord {
+    int32_t party_id = -1;
+    int32_t start_sec = 0;
+    int32_t end_sec = 0;          // actual end (arrival or cancel time)
+    int32_t planned_end_sec = 0;  // scheduled arrival (for position interpolation)
+    int16_t from_idx = 0;
+    int16_t to_idx = 0;
+    int16_t target_ride = -1;  // ride id, kExitRideId, or kRouteIdleCode
+    uint8_t cancelled = 0;
+};
+
+/** Periodic per-ride snapshot for wait / status display. */
+struct RideSample {
+    int32_t sec = 0;
+    std::array<float, kNumRides> wait{};
+    std::array<uint8_t, kNumRides> broken{};
+    std::array<int32_t, kNumRides> queue_len{};
+};
+
+struct PartyInfo {
+    int32_t party_id = 0;
+    int32_t size = 0;
+    int32_t spawn_sec = 0;
+    int32_t leave_sec = 0;
+    int32_t rides_completed = 0;
+};
+
+struct PartyRideEvent {
+    int32_t party_id = -1;
+    int32_t sec = 0;
+    int16_t ride_id = -1;
+};
+
+/** Full-day recording consumed by the Pygame visualizer. */
+struct DayRecording {
+    DayMetricsResult metrics;
+    std::vector<PartyInfo> parties;
+    std::vector<WalkRecord> walks;
+    std::vector<RideSample> ride_samples;
+    std::vector<PartyRideEvent> ride_completions;
+};
+
 int action_from_target(int target_ride_id);
 int target_from_action(int action);
 
 DayMetricsResult run_day(uint64_t seed);
+DayRecording record_day(uint64_t seed, int sample_interval_sec = 60);
 std::vector<BCSample> collect_bc_dataset(int num_days, uint64_t seed_start);
 
 class ParkEnv {
