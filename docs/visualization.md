@@ -20,6 +20,8 @@ python visualize.py --seed 42 --speed 120 --sample-interval 60
 | `--speed` | `60` | Simulated seconds per real second |
 | `--sample-interval` | `60` | Seconds between ride wait/status samples |
 | `--max-seconds` | day length | Optional shorter replay window |
+| `--screenshot` | — | Write one frame and exit |
+| `--screenshot-sec` | `10800` | Simulated second for screenshot |
 
 Controls: **Space** / Play-Pause, scrub slider, **+/-** speed, click a party in the sidebar to track.
 

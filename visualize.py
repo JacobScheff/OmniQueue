@@ -203,6 +203,8 @@ def run_visualizer(
     speed: float = 60.0,
     sample_interval: int = 60,
     max_seconds: int | None = None,
+    screenshot_path: str | None = None,
+    screenshot_sec: float = 3 * 3600,
 ) -> None:
     import pygame
 
@@ -270,6 +272,8 @@ def run_visualizer(
         )
 
     resort()
+    if state.sorted_party_ids:
+        selected_party = state.sorted_party_ids[0]
 
     def draw() -> None:
         screen.fill(BG)
@@ -325,7 +329,7 @@ def run_visualizer(
             color = RIDE_BROKEN if broken else RIDE_OPEN
             pygame.draw.circle(screen, color, (int(x), int(y)), 15)
             pygame.draw.circle(screen, (10, 10, 10), (int(x), int(y)), 15, 1)
-            label = "X" if broken or wait >= 9000 else str(int(min(wait, 999) / 60))
+            label = "X" if broken or wait >= 9000 else str(int(wait / 60))
             wt = wait_font.render(label, True, TEXT)
             screen.blit(wt, (int(x) - wt.get_width() // 2, int(y) - wt.get_height() // 2))
             words = ride["name"].split()
@@ -445,6 +449,15 @@ def run_visualizer(
 
         pygame.display.flip()
 
+    if screenshot_path:
+        float_sec = min(float(screenshot_sec), day_end - 1)
+        playing = False
+        draw()
+        pygame.image.save(screen, screenshot_path)
+        print(f"Wrote screenshot {screenshot_path} at t={format_clock(float_sec)}")
+        pygame.quit()
+        return
+
     running = True
     while running:
         dt = clock.tick(FPS) / 1000.0
@@ -523,12 +536,26 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional shorter day for quick demos",
     )
+    parser.add_argument(
+        "--screenshot",
+        type=str,
+        default=None,
+        help="Write one frame to this path and exit (for CI / docs)",
+    )
+    parser.add_argument(
+        "--screenshot-sec",
+        type=float,
+        default=3 * 3600,
+        help="Simulated second for --screenshot",
+    )
     args = parser.parse_args(argv)
     run_visualizer(
         seed=args.seed,
         speed=args.speed,
         sample_interval=args.sample_interval,
         max_seconds=args.max_seconds,
+        screenshot_path=args.screenshot,
+        screenshot_sec=args.screenshot_sec,
     )
     return 0
 
