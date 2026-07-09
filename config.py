@@ -32,8 +32,8 @@ EVAC_INTERVAL_SEC = 4
 
 # --- Heuristic router ---
 ROUTER = "heuristic"  # "heuristic" | "ppo"
-BASE_BALK_SEC = 600
-BALK_SCALE = 2400
+BASE_BALK_SEC = 40 * 60   # 40 min floor; typical rides stay near this
+BALK_SCALE = 5 * 60       # +0–5 min by preference^BALK_PREF_EXP (max ~45 min)
 BALK_PREF_EXP = 1.5
 MUST_DO_PREF_BOOST = 10.0
 IDLE_WALK_PROB = 0.5

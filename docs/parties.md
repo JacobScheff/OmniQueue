@@ -41,4 +41,4 @@ Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`
 balk_sec[r] = BASE_BALK_SEC + BALK_SCALE × preference[r] ** BALK_PREF_EXP
 ```
 
-Precomputed at spawn and refreshed when a must-do ride is completed.
+Defaults (`config.py` / `park_sim.hpp`): **40 min** base + up to **5 min** from preference (`BALK_SCALE`), so thresholds sit around **40–45 minutes**. Precomputed at spawn and refreshed when a must-do ride is completed.

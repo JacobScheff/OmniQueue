@@ -11,7 +11,7 @@ Phase 1 baseline router using **preference-ordered balking**, implemented in C++
 For each party, iterate `preference_order` and pick the **first** ride where:
 
 1. Not already at that ride, ride is open, enough time remains.
-2. `current_wait_sec ≤ balk_sec[ride]`.
+2. `current_wait_sec ≤ balk_sec[ride]` (defaults ~40–45 min; see `docs/parties.md`).
 
 If no ride passes:
 
