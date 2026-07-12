@@ -59,7 +59,7 @@ NODE_TOMORROW_HUB = 9
 # Ride nodes start at 100 + ride_id
 RIDE_NODE_OFFSET = 100
 
-NUM_RIDES = 35
+NUM_RIDES = 34
 
 # coords in abstract park units (1000x1000-ish layout)
 RIDES: list[dict] = [
@@ -97,7 +97,6 @@ RIDES: list[dict] = [
     {"name": "Astro Orbitor", "capacity_per_hour": 600, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (750, 650)},
     {"name": "Autopia", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (850, 450)},
     {"name": "Finding Nemo Submarine Voyage", "capacity_per_hour": 1000, "duration_sec": 13 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (780, 480)},
-    {"name": "Disneyland Monorail", "capacity_per_hour": 1000, "duration_sec": 15 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (800, 500)},
 ]
 
 ENTRANCE_COORDS = (500, 900)
@@ -128,7 +127,7 @@ RIDE_HUB: list[int] = [
     NODE_FANTASY_HUB, NODE_FANTASY_HUB, NODE_FANTASY_HUB, NODE_FANTASY_HUB,
     NODE_TOONTOWN_HUB, NODE_TOONTOWN_HUB, NODE_TOONTOWN_HUB,
     NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
-    NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
+    NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
 ]
 
 # Macro edges: (node_a, node_b) bidirectional idle-wander topology.

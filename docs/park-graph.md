@@ -33,10 +33,11 @@ python tools/export_native_data.py
 pip install -e .
 ```
 
-`simplify_pathways.py` applies layout polish: Space Mountain on the stub above its
-old spot, Indiana on the southern Adventureland stub, Small World into its plaza
-cluster (lightly thinned), Autopia on the eastern Autopia paths, Main Street
-center-only, dead-ends west of Rise removed, and Buzz’s vertical spur.
+`simplify_pathways.py` applies layout polish: one straight Main Street, Pirates on
+the Adventureland Y-junction, Haunted Mansion in the New Orleans path cluster,
+Small World at the top of its plaza, Space Mountain / Indiana / Autopia stubs,
+Critter↔GE western corridor retained (nowhere scribbles left of Rise removed),
+and Buzz’s vertical spur.
 
 Display coordinates in `config.RIDES` / `HUB_COORDS` are overwritten at import time from the pathways file when present.
 
@@ -62,7 +63,7 @@ actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 | `walk_time(from_node, to_node)` | Base walk seconds at nominal speed |
 | `party_walk_sec(from_idx, to_idx, speed)` | Walk seconds between node indices |
 | `party_walk_to_ride_sec(from_idx, ride_id, speed)` | Walk seconds to a ride leaf |
-| `base_walk_to_rides` | `(num_nodes, 35)` int32 matrix exported to `graph_data.hpp` |
+| `base_walk_to_rides` | `(num_nodes, NUM_RIDES)` int32 matrix exported to `graph_data.hpp` |
 | `node_idx_to_ride` | Maps node index → ride id (-1 if not a ride) |
 | `neighbors_within_hops(node, max_hops)` | Idle-wander candidates on macro adjacency |
 | `path_polyline_for_idx(from_idx, to_idx)` | Walkway polyline in display coords (for viz) |

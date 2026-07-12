@@ -80,7 +80,7 @@ def test_dense_wait_var_reward_is_not_constant_step_penalty():
         rewards.append(float(result.reward))
         if result.done:
             break
-        action = (action + 1) % 35
+        action = (action + 1) % 34
 
     mid = rewards[:-1]
     assert len(mid) > 1000
@@ -108,7 +108,7 @@ def test_preference_reward_flushed_after_ride_complete():
         if result.done:
             rides_seen = int(result.metrics.rides_completed)
             break
-        action = (action + 1) % 35
+        action = (action + 1) % 34
 
     assert rides_seen > 0
     # Must-do bonus (0.005) exceeds typical dense wait-var step penalties mid-day.

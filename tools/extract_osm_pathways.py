@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -84,7 +85,6 @@ RIDE_ALIASES: dict[str, list[str]] = {
     "Astro Orbitor": ["Astro Orbitor"],
     "Autopia": ["Autopia"],
     "Finding Nemo Submarine Voyage": ["Finding Nemo Submarine Voyage"],
-    "Disneyland Monorail": ["Tomorrowland Monorail Station", "Disneyland Monorail"],
 }
 
 # Land hub anchors as (lat, lon) — used when OSM landmarks exist, else ride centroids.
@@ -375,11 +375,12 @@ def main() -> None:
         f"scale={scale:.4f} display-units/m"
     )
 
-    # Light cleanup + ride nudges (Indiana / Rise / Buzz).
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from simplify_pathways import main as simplify_main
+    if not os.environ.get("SKIP_SIMPLIFY"):
+        # Light cleanup + ride nudges (Indiana / Rise / Buzz).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from simplify_pathways import main as simplify_main
 
-    simplify_main()
+        simplify_main()
 
 
 if __name__ == "__main__":

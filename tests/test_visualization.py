@@ -31,9 +31,9 @@ def test_record_day_walk_fields():
 def test_record_day_ride_samples_shape():
     rec = record_day(seed=5, sample_interval_sec=900)
     sample = rec.ride_samples[0]
-    assert len(sample.wait) == 35
-    assert len(sample.broken) == 35
-    assert len(sample.queue_len) == 35
+    assert len(sample.wait) == 34
+    assert len(sample.broken) == 34
+    assert len(sample.queue_len) == 34
     assert sample.sec >= 0
 
 

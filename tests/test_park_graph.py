@@ -16,7 +16,7 @@ def test_walk_times_symmetry():
 def test_walk_times_to_rides_shape():
     graph = get_park_graph()
     walks = graph.walk_times_to_rides(graph.entrance_node, 1.4)
-    assert len(walks) == 35
+    assert len(walks) == 34
     assert all(w > 0 for w in walks)
 
 
