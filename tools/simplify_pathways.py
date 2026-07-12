@@ -244,19 +244,26 @@ def nudge_rides(g: nx.Graph, data: dict) -> None:
     cluster = [
         (n, d["x"], d["y"])
         for n, d in g.nodes(data=True)
-        if 680 <= d["x"] <= 820 and 200 <= d["y"] <= 320
+        if 720 <= d["x"] <= 780 and 200 <= d["y"] <= 300
     ]
     if cluster:
-        # Top edge of the collection near Small World's longitude.
         top_y = min(y for _, _, y in cluster)
+        # Prefer the highest row of the eastern plaza tangle (near Small World's lon).
         top = [
-            (abs(x - swx), y, n, x, y)
+            (y, -g.degree(n), abs(x - 752.0), n, x, y)
             for n, x, y in cluster
-            if y <= top_y + 18
+            if y <= top_y + 8 and g.degree(n) >= 2
         ]
         top.sort()
+        if not top:
+            top = [
+                (y, -g.degree(n), abs(x - 752.0), n, x, y)
+                for n, x, y in cluster
+                if y <= top_y + 12
+            ]
+            top.sort()
         if top:
-            _, _, n, x, y = top[0]
+            _, _, _, n, x, y = top[0]
             rides[SMALL_WORLD]["x"] = round(x, 3)
             rides[SMALL_WORLD]["y"] = round(y, 3)
             rides[SMALL_WORLD]["snap_node"] = n
@@ -497,11 +504,30 @@ def straighten_main_street(g: nx.Graph, data: dict) -> int:
 def prune_rise_left_scribbles(g: nx.Graph, data: dict) -> int:
     """Remove nowhere scribbles left of Rise; keep Critter↔GE western corridor."""
     rides = {int(r["ride_id"]): r for r in data["rides"]}
+    scale = float(data["meta"].get("meters_to_display_scale") or 1.3155)
     rx = float(rides[RISE]["x"])
     ry = float(rides[RISE]["y"])
     keep = _protect_set(g, data)
 
-    # Protect Critter Country ↔ Galaxy's Edge corridor paths.
+    # Snap Rise onto the GE network just south of the NW stub (not a west leaf).
+    ge_nodes = [
+        (abs(d["x"] - 120.0) + 0.3 * abs(d["y"] - 290.0), n, d["x"], d["y"])
+        for n, d in g.nodes(data=True)
+        if 95 <= d["x"] <= 140 and 270 <= d["y"] <= 320 and g.degree(n) >= 2
+    ]
+    ge_nodes.sort()
+    if ge_nodes:
+        old = str(rides[RISE].get("snap_node") or "")
+        _, node, x, y = ge_nodes[0]
+        rides[RISE]["x"] = round(x, 3)
+        rides[RISE]["y"] = round(y, 3)
+        rides[RISE]["snap_node"] = node
+        rides[RISE]["source"] = "simplified:northwest-ge"
+        rx, ry = x, y
+        keep.add(node)
+        if old in g and old != node and g.degree(old) == 1:
+            _trim_spur_to_junction(g, old, keep | {node})
+
     critter = []
     ge = []
     for rid in (TIANA, POOH, DAVY):
@@ -526,7 +552,7 @@ def prune_rise_left_scribbles(g: nx.Graph, data: dict) -> int:
     for n, d in list(g.nodes(data=True)):
         if n in keep:
             continue
-        if d["x"] < rx - 5 and ry - 45 <= d["y"] <= ry + 30:
+        if d["x"] < rx - 8 and ry - 50 <= d["y"] <= ry + 25:
             g.remove_node(n)
             removed += 1
 
@@ -541,6 +567,60 @@ def prune_rise_left_scribbles(g: nx.Graph, data: dict) -> int:
             if d["x"] >= 155 or d["y"] >= 480:
                 continue
             if g.degree(n) <= 1:
+                g.remove_node(n)
+                removed += 1
+                changed = True
+
+    # Flatten edge geometries that poke west of Rise near GE (nowhere scribble look).
+    for u, v, ed in g.edges(data=True):
+        geom = ed.get("geometry") or []
+        if len(geom) < 3:
+            continue
+        # Only touch edges near Rise latitude.
+        ys = [float(p[1]) for p in geom]
+        xs = [float(p[0]) for p in geom]
+        if max(ys) < ry - 40 or min(ys) > ry + 40:
+            continue
+        if min(xs) >= rx - 5:
+            continue
+        # If this edge is on the protected Critter↔GE corridor below Rise, keep detail
+        # when both endpoints are south of Rise.
+        if g.nodes[u]["y"] > ry + 30 and g.nodes[v]["y"] > ry + 30:
+            continue
+        ed["geometry"] = [
+            [round(g.nodes[u]["x"], 2), round(g.nodes[u]["y"], 2)],
+            [round(g.nodes[v]["x"], 2), round(g.nodes[v]["y"], 2)],
+        ]
+        ed["length_m"] = round(
+            max(_hypot((g.nodes[u]["x"], g.nodes[u]["y"]), (g.nodes[v]["x"], g.nodes[v]["y"])) / scale, 0.5),
+            3,
+        )
+    return removed
+
+
+def prune_main_street_side_stubs(g: nx.Graph, data: dict) -> int:
+    """Drop short dead-end stubs sticking out of the straight Main Street."""
+    keep = _protect_set(g, data)
+    hub = data["hubs"]["main_hub"]
+    hub_x = float(hub["x"])
+    hub_y = float(g.nodes[str(hub["snap_node"])]["y"]) if str(hub["snap_node"]) in g else float(hub["y"])
+    ent = data["hubs"]["entrance"]
+    ent_y = float(g.nodes[str(ent["snap_node"])]["y"]) if str(ent["snap_node"]) in g else float(ent["y"])
+    y_lo, y_hi = min(hub_y, ent_y), max(hub_y, ent_y)
+    removed = 0
+    changed = True
+    while changed:
+        changed = False
+        for n in list(g.nodes()):
+            if n in keep or str(n).startswith("synthetic:"):
+                continue
+            d = g.nodes[n]
+            if not (y_lo - 5 <= d["y"] <= y_hi + 5):
+                continue
+            # Stubs off to the side of the vertical.
+            if abs(d["x"] - hub_x) < 8:
+                continue
+            if 500 <= d["x"] <= 660 and g.degree(n) <= 1:
                 g.remove_node(n)
                 removed += 1
                 changed = True
@@ -659,6 +739,7 @@ def main() -> None:
     fix_buzz_vertical_spur(g, data)
 
     ms_removed = straighten_main_street(g, data)
+    ms_stubs = prune_main_street_side_stubs(g, data)
     west_removed = prune_rise_left_scribbles(g, data)
     sw_removed = lightly_simplify_small_world_cluster(g, data)
 
@@ -697,7 +778,7 @@ def main() -> None:
     print(
         f"Simplified {PATH}: nodes {before_n}->{out['meta']['num_nodes']}, "
         f"edges {before_e}->{out['meta']['num_edges']} "
-        f"(ms={ms_removed}, west={west_removed}, sw={sw_removed})"
+        f"(ms={ms_removed}+stubs{ms_stubs}, west={west_removed}, sw={sw_removed})"
     )
     for rid in (RISE, HAUNTED, PIRATES, INDIANA, SMALL_WORLD, SPACE, BUZZ, AUTOPIA):
         r = next(x for x in out["rides"] if int(x["ride_id"]) == rid)
