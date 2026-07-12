@@ -57,7 +57,8 @@ Periodic snapshot: `wait[35]`, `broken[35]`, `queue_len[35]` at `sec`.
 
 ## Display Notes
 
-- Walk paths are **straight lines between macro nodes** (hubs / rides), matching the graph the DES uses for travel times — not pathway polylines.
+- Park pathways are **OSM pedestrian polylines** from `data/pathways.json` (see `docs/park-graph.md`), not straight hub-to-hub spokes.
+- Party walk dots follow the **shortest walkway polyline** between the walk's `from_idx` / `to_idx` nodes (arc-length interpolation).
 - Wait labels on rides show **minutes** (`wait_sec / 60`); broken rides show `X`.
 - Crowd dots are subsampled when more than ~2500 parties are walking at once.
 - PPO / trained-model routing is not wired into recording yet; visualization uses the built-in heuristic day.

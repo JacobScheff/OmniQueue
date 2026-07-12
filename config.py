@@ -21,7 +21,9 @@ DWELL_STD_SEC = 2 * 3600
 MIN_DWELL_SEC = 2 * 3600
 
 # --- Walking ---
-BASE_WALKING_SPEED = 1.4  # graph units per second (~typical walking pace scale)
+# Physical walking pace in meters/second. Pathway edge lengths from OSM are in
+# meters; legacy Euclidean fallback uses the same numeric speed on display units.
+BASE_WALKING_SPEED = 1.4
 MEMBER_SPEED_LOG_MU = math.log(1.4)
 MEMBER_SPEED_LOG_SIGMA = 0.25
 
@@ -129,7 +131,9 @@ RIDE_HUB: list[int] = [
     NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
 ]
 
-# Macro edges: (node_a, node_b) bidirectional; weight = Euclidean distance
+# Macro edges: (node_a, node_b) bidirectional idle-wander topology.
+# Walk times use OSM pathway meters when data/pathways.json is present;
+# otherwise Euclidean distance on display coords.
 MACRO_EDGES: list[tuple[int, int]] = [
     (NODE_ENTRANCE, NODE_MAIN_HUB),
     (NODE_MAIN_HUB, NODE_GALAXY_HUB),
@@ -167,6 +171,9 @@ MACRO_EDGES.extend([
     (NODE_CENTRAL_PLAZA, NODE_TOMORROW_HUB),
     (NODE_CENTRAL_PLAZA, NODE_NEW_ORLEANS_HUB),
 ])
+
+# Display coords are overlaid from data/pathways.json in park_graph.get_park_graph().
+# Fallback abstract coords above remain for environments without the pathways file.
 
 # ---------------------------------------------------------------------------
 # Behavioral Cloning (Phase 2) training defaults

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 import config
+from pathways import load_pathways
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,13 @@ def _euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def build_graph() -> Graph:
-    """Build hub-and-spoke macro graph with ride leaf nodes."""
+    """Build hub-and-spoke macro graph with ride leaf nodes.
+
+    When ``data/pathways.json`` is present, edge weights and all-pairs walk
+    times use OSM pedestrian path lengths (meters). Otherwise Euclidean
+    distances in display units are used (legacy fallback).
+    """
+    pathways = load_pathways()
     node_coords: dict[int, tuple[float, float]] = dict(config.HUB_COORDS)
 
     for ride_id, ride in enumerate(config.RIDES):
@@ -32,9 +39,13 @@ def build_graph() -> Graph:
 
     adjacency: dict[int, list[tuple[int, float]]] = {n: [] for n in node_coords}
 
+    def edge_weight(a: int, b: int) -> float:
+        if pathways is not None:
+            return pathways.path_length_m(a, b)
+        return _euclidean(node_coords[a], node_coords[b])
+
     def add_edge(a: int, b: int) -> None:
-        ca, cb = node_coords[a], node_coords[b]
-        dist = _euclidean(ca, cb)
+        dist = edge_weight(a, b)
         adjacency[a].append((b, dist))
         adjacency[b].append((a, dist))
 
@@ -49,14 +60,23 @@ def build_graph() -> Graph:
     n = len(node_ids)
 
     walk_time = [[0] * n for _ in range(n)]
+    speed = config.BASE_WALKING_SPEED
 
-    for i, src in enumerate(node_ids):
-        for j, dst in enumerate(node_ids):
-            if i == j:
-                continue
-            dist = astar_distance(adjacency, node_coords, src, dst)
-            speed = config.BASE_WALKING_SPEED
-            walk_time[i][j] = max(1, int(math.ceil(dist / speed)))
+    if pathways is not None:
+        # All-pairs along the real walkway network (not limited to MACRO_EDGES).
+        for i, src in enumerate(node_ids):
+            for j, dst in enumerate(node_ids):
+                if i == j:
+                    continue
+                dist_m = pathways.path_length_m(src, dst)
+                walk_time[i][j] = max(1, int(math.ceil(dist_m / speed)))
+    else:
+        for i, src in enumerate(node_ids):
+            for j, dst in enumerate(node_ids):
+                if i == j:
+                    continue
+                dist = astar_distance(adjacency, node_coords, src, dst)
+                walk_time[i][j] = max(1, int(math.ceil(dist / speed)))
 
     return Graph(
         node_coords=node_coords,
@@ -122,6 +142,9 @@ class ParkGraph:
             dtype=np.int32,
         )
 
+        # Lazy cache of walkway polylines between routing node indices (visualization).
+        self._path_polylines: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
     @property
     def entrance_node(self) -> int:
         return config.NODE_ENTRANCE
@@ -161,12 +184,40 @@ class ParkGraph:
             frontier = next_frontier
         return results
 
+    def path_polyline_for_idx(
+        self, from_idx: int, to_idx: int
+    ) -> list[tuple[float, float]]:
+        if from_idx == to_idx:
+            nid = self.idx_to_node(from_idx)
+            return [self._graph.node_coords[nid]]
+        key = (from_idx, to_idx)
+        cached = self._path_polylines.get(key)
+        if cached is not None:
+            return cached
+        pathways = load_pathways()
+        if pathways is not None:
+            src = self.idx_to_node(from_idx)
+            dst = self.idx_to_node(to_idx)
+            poly = pathways.path_polyline(src, dst)
+        else:
+            a = self._graph.node_coords[self.idx_to_node(from_idx)]
+            b = self._graph.node_coords[self.idx_to_node(to_idx)]
+            poly = [a, b]
+        self._path_polylines[key] = poly
+        return poly
+
 
 _GRAPH: ParkGraph | None = None
+_COORDS_APPLIED = False
 
 
 def get_park_graph() -> ParkGraph:
-    global _GRAPH
+    global _GRAPH, _COORDS_APPLIED
+    if not _COORDS_APPLIED:
+        from pathways import apply_pathway_coords
+
+        apply_pathway_coords(config)
+        _COORDS_APPLIED = True
     if _GRAPH is None:
         _GRAPH = ParkGraph()
     return _GRAPH
