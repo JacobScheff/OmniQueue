@@ -33,7 +33,10 @@ python tools/export_native_data.py
 pip install -e .
 ```
 
-`simplify_pathways.py` lightly prunes dangling / exterior branches, nudges Indiana and Rise inward, and replaces Buzz’s looping approach with a vertical spur to the Tomorrowland spine.
+`simplify_pathways.py` applies a **minimal** pass: ride nudges (Indiana beside Jungle
+Cruise; Rise northwest on Galaxy's Edge), Buzz vertical spur, a tiny eastern plaza
+trim, and dangling-leaf cleanup. Critter↔Galaxy's Edge and Matterhorn↔Tomorrowland
+corridors are preserved with most OSM walkway detail intact.
 
 Display coordinates in `config.RIDES` / `HUB_COORDS` are overwritten at import time from the pathways file when present.
 
