@@ -35,6 +35,7 @@ pip install -e .
 
 `simplify_pathways.py` applies layout polish: one straight Main Street, Pirates on
 the Adventureland Y-junction, Haunted Mansion in the New Orleans path cluster,
+Pooh on the Critter Country path bundle (HM↔Critter western link preserved),
 Small World at the top of its plaza, Space Mountain / Indiana / Autopia stubs,
 Critter↔GE western corridor retained (nowhere scribbles left of Rise removed),
 and Buzz’s vertical spur.

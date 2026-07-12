@@ -108,7 +108,11 @@ def _add_edge(g: nx.Graph, a: str, b: str, scale: float) -> None:
 
 
 def _trim_spur_to_junction(g: nx.Graph, leaf: str, keep: set[str]) -> int:
-    """Remove a degree-1 chain up to (but not including) the first branch."""
+    """Remove a degree-1 chain up to (but not including) the first remaining branch.
+
+    After deleting the leaf, a former 3-way junction has degree 2 — stop there so we
+    do not cascade into the main corridor.
+    """
     if leaf not in g or g.degree(leaf) != 1:
         return 0
     removed = 0
@@ -118,7 +122,10 @@ def _trim_spur_to_junction(g: nx.Graph, leaf: str, keep: set[str]) -> int:
         nxt = nbrs[0] if nbrs else None
         g.remove_node(cur)
         removed += 1
-        if nxt is None or g.degree(nxt) >= 3:
+        if nxt is None:
+            break
+        # Former junction (>=3) now has deg >= 2; chain node now has deg 1.
+        if g.degree(nxt) >= 2:
             break
         prev, cur = cur, nxt
     return removed
@@ -231,13 +238,47 @@ def nudge_rides(g: nx.Graph, data: dict) -> None:
         rides[HAUNTED]["snap_node"] = n
         rides[HAUNTED]["source"] = "simplified:nos-cluster"
         keep = _protect_set(g, data) | {n}
+        # Protect Critter Country corridor so spur trim cannot eat the HM↔Critter link.
+        for rid in (TIANA, POOH, DAVY):
+            snap = str(rides[rid]["snap_node"])
+            if snap in g:
+                try:
+                    keep.update(nx.shortest_path(g, n, snap, weight="length_m"))
+                except nx.NetworkXNoPath:
+                    pass
         if old_snap in g and old_snap != n and g.degree(old_snap) == 1:
             _trim_spur_to_junction(g, old_snap, keep)
-        # Drop leftover leaf spur west of the new HM (old approach path).
+        # Only drop leftover dead-end leaves west of HM that are not on Critter paths.
         for leaf in list(_leaf_nodes(g)):
             d = g.nodes[leaf]
             if d["x"] < x - 8 and 600 <= d["y"] <= 670 and leaf not in keep:
                 _trim_spur_to_junction(g, leaf, keep)
+
+    # --- Pooh: pull onto the dense Critter Country path bundle near Tiana/Davy ---
+    bundle = [
+        (n, d["x"], d["y"])
+        for n, d in g.nodes(data=True)
+        if 110 <= d["x"] <= 175 and 500 <= d["y"] <= 545 and g.degree(n) >= 2
+    ]
+    if bundle:
+        best, best_score = None, -1.0
+        for n, x, y in bundle:
+            nearby = sum(1 for _, x2, y2 in bundle if _hypot((x, y), (x2, y2)) < 28)
+            # Prefer denser nodes on the west/north edge of the Davy–Tiana tangle.
+            score = nearby + 0.5 * g.degree(n) - 0.02 * abs(x - 140) - 0.01 * abs(y - 525)
+            if score > best_score:
+                best_score = score
+                best = (n, x, y)
+        if best:
+            old_snap = str(rides[POOH].get("snap_node") or "")
+            n, x, y = best
+            rides[POOH]["x"] = round(x, 3)
+            rides[POOH]["y"] = round(y, 3)
+            rides[POOH]["snap_node"] = n
+            rides[POOH]["source"] = "simplified:critter-bundle"
+            keep = _protect_set(g, data) | {n}
+            if old_snap in g and old_snap != n and g.degree(old_snap) == 1:
+                _trim_spur_to_junction(g, old_snap, keep)
 
     # --- Small World: top (lowest y) of the plaza path collection above it ---
     swx, swy = float(rides[SMALL_WORLD]["x"]), float(rides[SMALL_WORLD]["y"])
@@ -780,7 +821,7 @@ def main() -> None:
         f"edges {before_e}->{out['meta']['num_edges']} "
         f"(ms={ms_removed}+stubs{ms_stubs}, west={west_removed}, sw={sw_removed})"
     )
-    for rid in (RISE, HAUNTED, PIRATES, INDIANA, SMALL_WORLD, SPACE, BUZZ, AUTOPIA):
+    for rid in (RISE, POOH, HAUNTED, PIRATES, INDIANA, SMALL_WORLD, SPACE, BUZZ, AUTOPIA):
         r = next(x for x in out["rides"] if int(x["ride_id"]) == rid)
         print(f"  ride {rid} {r['name']}: ({r['x']}, {r['y']}) snap={r['snap_node']}")
 
