@@ -375,6 +375,12 @@ def main() -> None:
         f"scale={scale:.4f} display-units/m"
     )
 
+    # Light cleanup + ride nudges (Indiana / Rise / Buzz).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from simplify_pathways import main as simplify_main
+
+    simplify_main()
+
 
 if __name__ == "__main__":
     main()

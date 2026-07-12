@@ -28,10 +28,12 @@ Waypoint nodes (`NODE_RIVER_CROSSING`, `NODE_CENTRAL_PLAZA`) still participate i
 Regenerate after OSM refreshes (requires network + `pip install osmnx`):
 
 ```bash
-python tools/extract_osm_pathways.py
+python tools/extract_osm_pathways.py   # also runs tools/simplify_pathways.py
 python tools/export_native_data.py
 pip install -e .
 ```
+
+`simplify_pathways.py` lightly prunes dangling / exterior branches, nudges Indiana and Rise inward, and replaces Buzz’s looping approach with a vertical spur to the Tomorrowland spine.
 
 Display coordinates in `config.RIDES` / `HUB_COORDS` are overwritten at import time from the pathways file when present.
 
