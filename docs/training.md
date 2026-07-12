@@ -53,6 +53,23 @@ Expect ~10–60 seconds per rollout day depending on hardware.
 
 Output: `checkpoints/ppo/ppo_final.pt`
 
+## PPO reward (ParkEnv)
+
+Rewards are emitted **only on routing decisions** (~300k–500k/day). Components (C++ `env_reward_delta` / terminal bonus):
+
+| Component | When | Formula (defaults in `config.py`) |
+|-----------|------|-----------------------------------|
+| **Dense wait variance** | **Every** routing step | `-PPO_WAIT_VAR_STEP_COEF × current_wait_variance / 1e6` (fallback `-0.001` if no valid waits) |
+| Preference / must-do | Party’s **next** routing step after a real `RideComplete` | `PPO_PREF_REWARD_SCALE × preference[ride]` (+ `PPO_MUST_DO_COMPLETION_BONUS` if that ride was a must-do) |
+| Terminal wait variance | Last routing step of the day | `-avg_wait_variance / 1000` |
+| Terminal must-do | Last routing step | `-PPO_UNFULFILLED_MUST_DO_PENALTY × remaining_must_dos` (park-wide) |
+
+`current_wait_variance` is computed from live ride wait estimates at the routing step (same definition as KPI samples). The 300 s metrics sampler still records wait variance for logging / terminal bonus, but **no longer gates** the per-step reward — so GAE can credit load-balancing decisions within a few hundred routing steps instead of waiting ~5 park minutes.
+
+Preference bonuses are **accumulated at ride completion** into a per-party pending buffer and **flushed** when that party is routed again. Breakdown evacuations never call `RideComplete`, so they earn **no** preference credit (see `docs/breakdowns.md`).
+
+Preference scales are intentionally **secondary** to wait variance (`PPO_PREF_REWARD_SCALE=0.01`, must-do `0.005`). Tune via `config.py` (mirrored in `native/include/park_sim.hpp`).
+
 ## Evaluate a checkpoint
 
 ```bash

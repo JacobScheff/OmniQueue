@@ -53,12 +53,11 @@ Typical throughput is **~0.2s per full park day** (~50k guests) on modern hardwa
 
 ## RL / PyTorch Integration (Phase 2–3)
 
-- **Today:** `run_day(seed)` returns `DayMetrics` for throughput testing and behavioral cloning labels.
-- **Next:** extend `_park_sim` with `ParkEnv` step API and NumPy observation buffers for vectorized PPO.
-- **Policy inference:** keep PyTorch model in Python; pass action tensors into C++ per routing batch.
+- `run_day(seed)` returns `DayMetrics` for throughput testing and behavioral cloning labels.
+- `ParkEnv` exposes `reset` / `step` / `exchange_batch` for PPO rollouts (batched policy inference from Python).
+- **Reward contract:** each routing step gets a **dense** wait-variance penalty (`-PPO_WAIT_VAR_STEP_COEF × var/1e6`), plus any **pending preference / must-do bonus** for the party being routed (earned at the previous `RideComplete`). Episode end adds `-avg_wait_variance/1000`, an unfulfilled must-do penalty, and any leftover pending preference. See `docs/training.md`.
 
 ## Notes
 
 - C++ uses `std::mt19937_64` for party spawn and routing randomness.
-- Spawn/router timing constants in `native/include/park_sim.hpp` must stay in sync with `config.py` manually until a shared export step exists.
-- Heuristic routing only for now. PPO actions will be passed from Python in a later API.
+- Spawn/router/PPO reward constants in `native/include/park_sim.hpp` must stay in sync with `config.py` manually until a shared export step exists.

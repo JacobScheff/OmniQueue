@@ -19,6 +19,7 @@ Rides stochastically break down each simulated second with probability `breakdow
 - Rate: **1 party every 4 seconds** (`EVAC_INTERVAL_SEC`).
 - Queue parties (`evacuation` deque) leave first.
 - On-ride parties evacuate last; they do **not** receive ride completion credit.
+- Because evacuation skips `RideComplete`, those parties also earn **no** PPO preference / must-do reward for that visit.
 - After repair, `BreakdownEnd` reopens the ride.
 
 ## Repair

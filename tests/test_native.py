@@ -61,3 +61,58 @@ def test_exchange_batch_matches_step():
     assert batch_rewards == pytest.approx(step_rewards, rel=1e-5, abs=1e-5)
     assert batch_metrics.rides_completed == step_metrics.rides_completed
     assert batch_metrics.avg_wait_variance() == pytest.approx(step_metrics.avg_wait_variance(), rel=1e-5)
+
+
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_dense_wait_var_reward_is_not_constant_step_penalty():
+    """Every routing step should use live wait variance, not a flat -0.001."""
+    import _park_sim
+
+    seed = 7
+    env = _park_sim.ParkEnv(seed)
+    env.reset(seed)
+
+    rewards: list[float] = []
+    # Send parties to rides so queues (and wait variance) actually form.
+    action = 0
+    while True:
+        result = env.step(action)
+        rewards.append(float(result.reward))
+        if result.done:
+            break
+        action = (action + 1) % 35
+
+    mid = rewards[:-1]
+    assert len(mid) > 1000
+    # Dense wait-var penalties vary with park state; not a constant step tax.
+    assert len({round(r, 6) for r in mid}) > 1
+    # Mid-day congestion should produce some clearly negative wait-var penalties.
+    assert min(mid) < -0.0005
+
+
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_preference_reward_flushed_after_ride_complete():
+    """Must-do / preference flush can push a post-completion step reward positive."""
+    import _park_sim
+
+    seed = 11
+    env = _park_sim.ParkEnv(seed)
+    env.reset(seed)
+
+    rewards: list[float] = []
+    rides_seen = 0
+    action = 0
+    while True:
+        result = env.step(action)
+        rewards.append(float(result.reward))
+        if result.done:
+            rides_seen = int(result.metrics.rides_completed)
+            break
+        action = (action + 1) % 35
+
+    assert rides_seen > 0
+    # Must-do bonus (0.005) exceeds typical dense wait-var step penalties mid-day.
+    assert any(r > 0.0 for r in rewards[:-1]), (
+        "expected at least one positive mid-episode reward from preference/must-do flush "
+        f"(got max={max(rewards[:-1]):.6f})"
+    )

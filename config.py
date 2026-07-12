@@ -32,8 +32,8 @@ EVAC_INTERVAL_SEC = 4
 
 # --- Heuristic router ---
 ROUTER = "heuristic"  # "heuristic" | "ppo"
-BASE_BALK_SEC = 600
-BALK_SCALE = 2400
+BASE_BALK_SEC = 40 * 60   # 40 min floor; typical rides stay near this
+BALK_SCALE = 5 * 60       # +0–5 min by preference^BALK_PREF_EXP (max ~45 min)
 BALK_PREF_EXP = 1.5
 MUST_DO_PREF_BOOST = 10.0
 IDLE_WALK_PROB = 0.5
@@ -197,6 +197,18 @@ PPO_SUBSAMPLE_SIZE = 8192         # random transitions per day used for update
 PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
 PPO_INFERENCE_BATCH_SIZE = 256    # policy inference batch size during C++ rollout
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
+
+# PPO reward shaping (mirrored in park_sim.hpp)
+# Dense wait variance: every routing step gets
+#   -PPO_WAIT_VAR_STEP_COEF * current_wait_variance / 1e6
+# (metrics samples every 300s are KPIs only; they no longer gate the reward).
+# Preference (secondary): on RideComplete, pending += scale * preference[ride]
+#   (+ must-do bonus); flushed on that party's next routing step.
+# Terminal: -avg_wait_variance/1000 - unfulfilled_must_do_penalty * remaining.
+PPO_WAIT_VAR_STEP_COEF = 0.002
+PPO_PREF_REWARD_SCALE = 0.01
+PPO_MUST_DO_COMPLETION_BONUS = 0.005
+PPO_UNFULFILLED_MUST_DO_PENALTY = 0.002
 
 
 def ride_node_id(ride_id: int) -> int:

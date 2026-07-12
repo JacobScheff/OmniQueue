@@ -33,6 +33,7 @@ Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`
 
 - Count per party: uniform **0–4** rides.
 - Unfinished must-dos sort first in `preference_order`.
+- Completing a must-do ride clears that flag, refreshes `preference_order` / `balk_sec`, and (in `ParkEnv` / PPO only) adds `PPO_MUST_DO_COMPLETION_BONUS` to the party’s pending preference reward (see `docs/training.md`).
 
 ## Balk Thresholds
 
@@ -40,4 +41,4 @@ Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`
 balk_sec[r] = BASE_BALK_SEC + BALK_SCALE × preference[r] ** BALK_PREF_EXP
 ```
 
-Precomputed at spawn and refreshed when a must-do ride is completed.
+Defaults (`config.py` / `park_sim.hpp`): **40 min** base + up to **5 min** from preference (`BALK_SCALE`), so thresholds sit around **40–45 minutes**. Precomputed at spawn and refreshed when a must-do ride is completed.
