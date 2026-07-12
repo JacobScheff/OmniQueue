@@ -121,11 +121,17 @@ def active_walks_at(state: ReplayState, sec: float) -> list:
 
 
 def walk_position(state: ReplayState, walk, sec: float) -> tuple[float, float]:
-    sx, sy = _node_xy(state, int(walk.from_idx))
-    ex, ey = _node_xy(state, int(walk.to_idx))
+    from pathways import interpolate_polyline
+
     planned = int(getattr(walk, "planned_end_sec", walk.end_sec))
     duration = max(1, planned - int(walk.start_sec))
     progress = max(0.0, min(1.0, (sec - float(walk.start_sec)) / duration))
+    park = get_park_graph()
+    poly = park.path_polyline_for_idx(int(walk.from_idx), int(walk.to_idx))
+    if len(poly) >= 2:
+        return interpolate_polyline(poly, progress)
+    sx, sy = _node_xy(state, int(walk.from_idx))
+    ex, ey = _node_xy(state, int(walk.to_idx))
     return sx + (ex - sx) * progress, sy + (ey - sy) * progress
 
 
@@ -278,16 +284,31 @@ def run_visualizer(
     def draw() -> None:
         screen.fill(BG)
 
-        # Pathways
+        # Pathways (OSM walkway polylines when available)
         park = get_park_graph()
-        for a, b in config.MACRO_EDGES:
-            ax, ay = park._graph.node_coords[a]
-            bx, by = park._graph.node_coords[b]
-            pygame.draw.line(screen, PATH, (int(ax), int(ay)), (int(bx), int(by)), 2)
-        for ride_id, hub in enumerate(config.RIDE_HUB):
-            rx, ry = config.RIDES[ride_id]["coords"]
-            hx, hy = config.HUB_COORDS[hub]
-            pygame.draw.line(screen, PATH, (int(hx), int(hy)), (int(rx), int(ry)), 1)
+        from pathways import load_pathways
+
+        pathways = load_pathways()
+        if pathways is not None:
+            for poly in pathways.all_edge_polylines():
+                if len(poly) < 2:
+                    continue
+                pygame.draw.lines(
+                    screen,
+                    PATH,
+                    False,
+                    [(int(x), int(y)) for x, y in poly],
+                    2,
+                )
+        else:
+            for a, b in config.MACRO_EDGES:
+                ax, ay = park._graph.node_coords[a]
+                bx, by = park._graph.node_coords[b]
+                pygame.draw.line(screen, PATH, (int(ax), int(ay)), (int(bx), int(by)), 2)
+            for ride_id, hub in enumerate(config.RIDE_HUB):
+                rx, ry = config.RIDES[ride_id]["coords"]
+                hx, hy = config.HUB_COORDS[hub]
+                pygame.draw.line(screen, PATH, (int(hx), int(hy)), (int(rx), int(ry)), 1)
 
         # Hubs
         for nid, (hx, hy) in config.HUB_COORDS.items():

@@ -4,7 +4,7 @@
 
 ## Overview
 
-35 rides with state managed in C++. Normal operation uses **implicit FIFO boarding** via scheduled `RideStart` / `RideComplete` events — no per-party physical queue simulation.
+34 rides with state managed in C++. Normal operation uses **implicit FIFO boarding** via scheduled `RideStart` / `RideComplete` events — no per-party physical queue simulation.
 
 ## Key Fields
 

@@ -21,7 +21,9 @@ DWELL_STD_SEC = 2 * 3600
 MIN_DWELL_SEC = 2 * 3600
 
 # --- Walking ---
-BASE_WALKING_SPEED = 1.4  # graph units per second (~typical walking pace scale)
+# Physical walking pace in meters/second. Pathway edge lengths from OSM are in
+# meters; legacy Euclidean fallback uses the same numeric speed on display units.
+BASE_WALKING_SPEED = 1.4
 MEMBER_SPEED_LOG_MU = math.log(1.4)
 MEMBER_SPEED_LOG_SIGMA = 0.25
 
@@ -57,7 +59,7 @@ NODE_TOMORROW_HUB = 9
 # Ride nodes start at 100 + ride_id
 RIDE_NODE_OFFSET = 100
 
-NUM_RIDES = 35
+NUM_RIDES = 34
 
 # coords in abstract park units (1000x1000-ish layout)
 RIDES: list[dict] = [
@@ -89,13 +91,12 @@ RIDES: list[dict] = [
     {"name": "Mickey and Minnie's Runaway Railway", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.002, "coords": (500, 150)},
     {"name": "Roger Rabbit's Car Toon Spin", "capacity_per_hour": 1200, "duration_sec": 4 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (430, 180)},
     {"name": "Chip 'n' Dale's GADGETcoaster", "capacity_per_hour": 800, "duration_sec": 60, "breakdown_prob_per_hour": 0.0005, "coords": (570, 180)},
-    {"name": "Hyperspace Mountain", "capacity_per_hour": 1800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0015, "coords": (850, 550)},
+    {"name": "Space Mountain", "capacity_per_hour": 1800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0015, "coords": (850, 550)},
     {"name": "Star Tours", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.001, "coords": (750, 580)},
     {"name": "Buzz Lightyear Astro Blasters", "capacity_per_hour": 2000, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (700, 630)},
     {"name": "Astro Orbitor", "capacity_per_hour": 600, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (750, 650)},
     {"name": "Autopia", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (850, 450)},
     {"name": "Finding Nemo Submarine Voyage", "capacity_per_hour": 1000, "duration_sec": 13 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (780, 480)},
-    {"name": "Disneyland Monorail", "capacity_per_hour": 1000, "duration_sec": 15 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (800, 500)},
 ]
 
 ENTRANCE_COORDS = (500, 900)
@@ -126,10 +127,12 @@ RIDE_HUB: list[int] = [
     NODE_FANTASY_HUB, NODE_FANTASY_HUB, NODE_FANTASY_HUB, NODE_FANTASY_HUB,
     NODE_TOONTOWN_HUB, NODE_TOONTOWN_HUB, NODE_TOONTOWN_HUB,
     NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
-    NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
+    NODE_TOMORROW_HUB, NODE_TOMORROW_HUB, NODE_TOMORROW_HUB,
 ]
 
-# Macro edges: (node_a, node_b) bidirectional; weight = Euclidean distance
+# Macro edges: (node_a, node_b) bidirectional idle-wander topology.
+# Walk times use OSM pathway meters when data/pathways.json is present;
+# otherwise Euclidean distance on display coords.
 MACRO_EDGES: list[tuple[int, int]] = [
     (NODE_ENTRANCE, NODE_MAIN_HUB),
     (NODE_MAIN_HUB, NODE_GALAXY_HUB),
@@ -167,6 +170,9 @@ MACRO_EDGES.extend([
     (NODE_CENTRAL_PLAZA, NODE_TOMORROW_HUB),
     (NODE_CENTRAL_PLAZA, NODE_NEW_ORLEANS_HUB),
 ])
+
+# Display coords are overlaid from data/pathways.json in park_graph.get_park_graph().
+# Fallback abstract coords above remain for environments without the pathways file.
 
 # ---------------------------------------------------------------------------
 # Behavioral Cloning (Phase 2) training defaults

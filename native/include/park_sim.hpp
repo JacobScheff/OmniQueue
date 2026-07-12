@@ -6,7 +6,7 @@
 
 namespace park {
 
-constexpr int kNumRides = 35;
+constexpr int kNumRides = 34;
 constexpr int kDaySeconds = 54000;
 
 constexpr int kExitRideId = -1;
@@ -22,7 +22,7 @@ constexpr int kMinDwellSec = 2 * 3600;
 constexpr int kGuestFeatDim = 45;
 constexpr int kRideDynamicFeatDim = 5;
 constexpr int kEnvDynamicFeatDim = 4;
-constexpr int kNumActions = 37;  // 35 rides + exit + idle
+constexpr int kNumActions = 36;  // 34 rides + exit + idle
 constexpr int kFlatObsDim = kGuestFeatDim + kNumRides * kRideDynamicFeatDim + kEnvDynamicFeatDim;
 
 constexpr double kTotalGuestsMean = 50000.0;

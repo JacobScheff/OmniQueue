@@ -28,6 +28,8 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
   AGENTS.md           ← you are here
   config.py           ← rides, graph, spawn, router constants
   park_graph.py       ← A* pathfinding + precomputed walk matrix (export input)
+  pathways.py         ← OSM walkway loader (meters + polylines)
+  data/pathways.json  ← committed Disneyland pedestrian network from OSM
   simulator.py        ← run_day() / record_day() Python wrappers → _park_sim
   visualize.py        ← Pygame park-day replay (Phase 4)
   metrics.py          ← DayMetrics dataclass
@@ -35,7 +37,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
   training/           ← bc_train.py, ppo_train.py, eval_policy.py
   benchmark.py        ← performance harness
   native/             ← C++ DES core + heuristic router + pybind11 `_park_sim`
-  tools/              ← export_native_data.py (graph → C++ header)
+  tools/              ← export_native_data.py, extract_osm_pathways.py
   router/
     base.py           ← Router protocol, get_router() (PPO Phase 3)
     ppo.py            ← Phase 3 stub
@@ -48,7 +50,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | Doc | Module | Description |
 |-----|--------|-------------|
 | [timing-wheel.md](docs/timing-wheel.md) | `native/src/park_sim.cpp` | Bucket-array scheduler, event batching |
-| [park-graph.md](docs/park-graph.md) | `park_graph.py` | Macro graph, A*, walk matrix |
+| [park-graph.md](docs/park-graph.md) | `park_graph.py`, `pathways.py` | Macro graph, OSM walkways, A*, walk matrix |
 | [parties.md](docs/parties.md) | `native/src/park_sim.cpp` | Spawn, size, speed, preferences, must-do |
 | [rides-and-queues.md](docs/rides-and-queues.md) | `native/src/park_sim.cpp` | Capacity, implicit FIFO boarding, wait calc |
 | [breakdowns.md](docs/breakdowns.md) | `native/src/park_sim.cpp` | Breakdown, evacuation deque, re-route rules |
