@@ -27,6 +27,14 @@ BASE_WALKING_SPEED = 1.4
 MEMBER_SPEED_LOG_MU = math.log(1.4)
 MEMBER_SPEED_LOG_SIGMA = 0.25
 
+# Near-shortest path randomization (spreads corridor load without density maps).
+# When enabled, each walk samples among OSM paths within LENGTH_SLACK of shortest;
+# pick probability ∝ exp(-(walk_sec - shortest_sec) / SOFTMAX_TAU_SEC).
+WALK_PATH_RANDOM = True
+WALK_PATH_MAX_VARIANTS = 6
+WALK_PATH_LENGTH_SLACK = 0.15  # allow paths up to 15% longer than shortest
+WALK_PATH_SOFTMAX_TAU_SEC = 45.0  # larger → more uniform among near-ties
+
 # --- Breakdown / evacuation ---
 BREAKDOWN_REPAIR_MIN_SEC = 15 * 60
 BREAKDOWN_REPAIR_MAX_SEC = 60 * 60

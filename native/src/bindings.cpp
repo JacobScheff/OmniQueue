@@ -117,6 +117,7 @@ PYBIND11_MODULE(_park_sim, m) {
         .def_readonly("from_idx", &park::WalkRecord::from_idx)
         .def_readonly("to_idx", &park::WalkRecord::to_idx)
         .def_readonly("target_ride", &park::WalkRecord::target_ride)
+        .def_readonly("path_variant", &park::WalkRecord::path_variant)
         .def_readonly("cancelled", &park::WalkRecord::cancelled);
 
     py::class_<park::RideSample>(m, "RideSample")

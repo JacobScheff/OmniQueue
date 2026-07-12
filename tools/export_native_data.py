@@ -27,16 +27,20 @@ def _fmt_float_row(values: list[float]) -> str:
 
 
 def main() -> None:
+    print("Building park graph + near-shortest walk variants...")
     park = get_park_graph()
     graph = park._graph
     node_ids = park._node_ids
     num_nodes = len(node_ids)
     idx_of = park._index_of
+    k_max = max(1, int(config.WALK_PATH_MAX_VARIANTS))
 
     walk_rows = [list(graph.walk_time_sec[i]) for i in range(num_nodes)]
     walk_to_rides = park.base_walk_to_rides.tolist()
     node_idx_to_ride = park.node_idx_to_ride.tolist()
     ride_node_idx = park.ride_node_idx.tolist()
+    variant_count = park.walk_variant_count.tolist()
+    variant_base = park.walk_variant_base_sec.tolist()
 
     idle_neighbors: list[list[int]] = []
     for node_id in node_ids:
@@ -68,6 +72,9 @@ def main() -> None:
         f"inline constexpr int kNumRides = {config.NUM_RIDES};",
         f"inline constexpr int kNumNodes = {num_nodes};",
         f"inline constexpr int kEntranceNodeIdx = {int(park.entrance_node_idx)};",
+        f"inline constexpr int kWalkPathMaxVariants = {k_max};",
+        f"inline constexpr bool kWalkPathRandom = {'true' if config.WALK_PATH_RANDOM else 'false'};",
+        f"inline constexpr double kWalkPathSoftmaxTauSec = {repr(float(config.WALK_PATH_SOFTMAX_TAU_SEC))};",
         "",
         f"inline constexpr std::array<double, kNumRides> kRideCapacityPerSec = {_fmt_float_row(ride_capacity)};",
         f"inline constexpr std::array<int, kNumRides> kRideDurationSec = {_fmt_int_row(ride_duration)};",
@@ -87,6 +94,25 @@ def main() -> None:
     )
     for row in walk_to_rides:
         lines.append(f"    {_fmt_nested_int_row(row)},")
+    lines.append("}};")
+    lines.append("")
+    lines.append(
+        "inline constexpr std::array<std::array<uint8_t, kNumNodes>, kNumNodes> kWalkVariantCount = {{"
+    )
+    for row in variant_count:
+        lines.append(f"    {_fmt_nested_int_row([int(v) for v in row])},")
+    lines.append("}};")
+    lines.append("")
+    lines.append(
+        "inline constexpr std::array<std::array<std::array<int, kWalkPathMaxVariants>, kNumNodes>, "
+        "kNumNodes> kWalkVariantBaseSec = {{"
+    )
+    for i in range(num_nodes):
+        lines.append("    {{")
+        for j in range(num_nodes):
+            secs = [int(variant_base[i][j][k]) for k in range(k_max)]
+            lines.append(f"        {_fmt_nested_int_row(secs)},")
+        lines.append("    }},")
     lines.append("}};")
     lines.append("")
     lines.append("inline const std::vector<std::vector<int>> kIdleNeighborNodeIdx = {")
@@ -109,7 +135,9 @@ def main() -> None:
     )
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
+    multi = sum(1 for i in range(num_nodes) for j in range(num_nodes) if i != j and variant_count[i][j] > 1)
     print(f"Wrote {out_path}")
+    print(f"  pairs with >1 near-shortest variant: {multi}/{num_nodes * (num_nodes - 1)}")
 
 
 if __name__ == "__main__":

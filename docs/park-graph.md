@@ -4,7 +4,7 @@
 
 ## Overview
 
-Walking times come from **A\*** / shortest-path distances on the **OSM pedestrian walkway network** (`data/pathways.json`), not straight-line ride-to-ride edges. Routing still uses a compact set of **macro nodes** (hubs + ride leaves) for the DES; each snaps to the nearest walkway node. Idle wandering still uses the hub topology in `MACRO_EDGES`.
+Walking times come from **near-shortest paths** on the **OSM pedestrian walkway network** (`data/pathways.json`), not straight-line ride-to-ride edges. Routing still uses a compact set of **macro nodes** (hubs + ride leaves) for the DES; each snaps to the nearest walkway node. Idle wandering still uses the hub topology in `MACRO_EDGES`.
 
 Without `data/pathways.json`, the graph falls back to Euclidean distances on the macro hub-and-spoke layout.
 
@@ -23,7 +23,7 @@ Waypoint nodes (`NODE_RIVER_CROSSING`, `NODE_CENTRAL_PLAZA`) still participate i
 |----------|------|
 | `tools/extract_osm_pathways.py` | Downloads Disneyland walkways via **osmnx**, matches ride POIs, projects to display coords, writes JSON |
 | `data/pathways.json` | Committed walkway nodes/edges (length in meters + simplified polylines) + snapped ride/hub positions |
-| `pathways.py` | Loads JSON, shortest paths in meters, polylines for visualization |
+| `pathways.py` | Loads JSON, near-shortest paths in meters, polylines for visualization |
 
 Regenerate after OSM refreshes (requires network + `pip install osmnx`):
 
@@ -42,9 +42,28 @@ and Buzz’s vertical spur.
 
 Display coordinates in `config.RIDES` / `HUB_COORDS` are overwritten at import time from the pathways file when present.
 
+## Near-shortest path randomization
+
+Guests do **not** follow a live crowd-density map. Instead, when walking between two macro nodes, the DES samples among OSM paths whose length is within `WALK_PATH_LENGTH_SLACK` of the shortest (up to `WALK_PATH_MAX_VARIANTS` options):
+
+```
+P(path_i) ∝ exp(-(walk_sec_i − walk_sec_shortest) / WALK_PATH_SOFTMAX_TAU_SEC)
+```
+
+Similar lengths get similar probabilities; longer detours are rare. Heuristic routing / balking still uses the **shortest** walk time (`kBaseWalkToRides`); only the executed walk samples a variant. Set `WALK_PATH_RANDOM = False` for deterministic shortest-only walks.
+
+| Config | Default | Meaning |
+|--------|---------|---------|
+| `WALK_PATH_RANDOM` | `True` | Enable length-weighted path sampling |
+| `WALK_PATH_MAX_VARIANTS` | `6` | Cap alternatives per OD pair |
+| `WALK_PATH_LENGTH_SLACK` | `0.15` | Allow paths ≤ 15% longer than shortest |
+| `WALK_PATH_SOFTMAX_TAU_SEC` | `45` | Softmax temperature in walk-seconds |
+
+Native export embeds `kWalkVariantCount` / `kWalkVariantBaseSec`. Each `WalkRecord` stores `path_variant` so visualization replays the same polyline.
+
 ## Precomputed Matrix
 
-At startup, all-pairs walk times between macro nodes are precomputed at nominal speed (`BASE_WALKING_SPEED` = 1.4 m/s) and stored in a NumPy array. Runtime party walks scale by:
+At startup / export, all-pairs shortest walk times between macro nodes are precomputed at nominal speed (`BASE_WALKING_SPEED` = 1.4 m/s), plus near-shortest variants. Runtime party walks scale by:
 
 ```
 actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
@@ -61,10 +80,9 @@ actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 
 | Method | Description |
 |--------|-------------|
-| `walk_time(from_node, to_node)` | Base walk seconds at nominal speed |
-| `party_walk_sec(from_idx, to_idx, speed)` | Walk seconds between node indices |
-| `party_walk_to_ride_sec(from_idx, ride_id, speed)` | Walk seconds to a ride leaf |
-| `base_walk_to_rides` | `(num_nodes, NUM_RIDES)` int32 matrix exported to `graph_data.hpp` |
+| `walk_time(from_node, to_node)` | Shortest base walk seconds at nominal speed |
+| `pathways.near_shortest_variants(...)` | Enumerate near-shortest OSM path options |
+| `base_walk_to_rides` | `(num_nodes, NUM_RIDES)` shortest-time matrix exported to `graph_data.hpp` |
 | `node_idx_to_ride` | Maps node index → ride id (-1 if not a ride) |
 | `neighbors_within_hops(node, max_hops)` | Idle-wander candidates on macro adjacency |
-| `path_polyline_for_idx(from_idx, to_idx)` | Walkway polyline in display coords (for viz) |
+| `path_polyline_for_idx(from_idx, to_idx, variant=0)` | Walkway polyline for a path variant (for viz) |

@@ -50,7 +50,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | Doc | Module | Description |
 |-----|--------|-------------|
 | [timing-wheel.md](docs/timing-wheel.md) | `native/src/park_sim.cpp` | Bucket-array scheduler, event batching |
-| [park-graph.md](docs/park-graph.md) | `park_graph.py`, `pathways.py` | Macro graph, OSM walkways, A*, walk matrix |
+| [park-graph.md](docs/park-graph.md) | `park_graph.py`, `pathways.py` | Macro graph, OSM walkways, near-shortest path sampling |
 | [parties.md](docs/parties.md) | `native/src/park_sim.cpp` | Spawn, size, speed, preferences, must-do |
 | [rides-and-queues.md](docs/rides-and-queues.md) | `native/src/park_sim.cpp` | Capacity, implicit FIFO boarding, wait calc |
 | [breakdowns.md](docs/breakdowns.md) | `native/src/park_sim.cpp` | Breakdown, evacuation deque, re-route rules |

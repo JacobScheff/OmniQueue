@@ -25,6 +25,16 @@ def test_record_day_walk_fields():
     assert w.planned_end_sec >= w.start_sec
     assert 0 <= int(w.from_idx) < 47
     assert 0 <= int(w.to_idx) < 47
+    assert 0 <= int(getattr(w, "path_variant", 0)) < 8
+
+
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_record_day_uses_multiple_path_variants():
+    rec = record_day(seed=42, sample_interval_sec=600)
+    variants = {int(w.path_variant) for w in rec.walks}
+    # With randomization enabled, some walks should use non-zero variants.
+    assert max(variants) >= 0
+    assert any(int(w.path_variant) > 0 for w in rec.walks)
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")

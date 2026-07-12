@@ -38,6 +38,9 @@ constexpr double kBaseWalkingSpeed = 1.4;
 constexpr double kMemberSpeedLogMu = 0.3364722366212129;  // log(1.4)
 constexpr double kMemberSpeedLogSigma = 0.25;
 
+// Near-shortest walk randomization (mirrored from config.py). Tables live in graph_data.hpp.
+// Softmax P_i ∝ exp(-(sec_i - sec_min) / tau); routing feasibility still uses shortest.
+
 constexpr double kBaseBalkSec = 40.0 * 60.0;  // 40 min floor (mirrored from config.py)
 constexpr double kBalkScale = 5.0 * 60.0;     // +0–5 min by preference^exp (max ~45 min)
 constexpr double kBalkPrefExp = 1.5;
@@ -142,6 +145,7 @@ struct WalkRecord {
     int16_t from_idx = 0;
     int16_t to_idx = 0;
     int16_t target_ride = -1;  // ride id, kExitRideId, or kRouteIdleCode
+    int16_t path_variant = 0;  // near-shortest OSM path index (0 = shortest)
     uint8_t cancelled = 0;
 };
 

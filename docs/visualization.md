@@ -45,11 +45,12 @@ Native entry point: `_park_sim.record_day(seed, sample_interval_sec)`.
 | `planned_end_sec` | Scheduled arrival used for position interpolation |
 | `from_idx` / `to_idx` | Graph node indices (same order as `ParkGraph`) |
 | `target_ride` | Ride id, `-1` exit, or `-2` idle |
+| `path_variant` | Near-shortest OSM path index (`0` = shortest); must match walk duration |
 | `cancelled` | `1` if re-routed / interrupted before arrival |
 
 ### RideSample
 
-Periodic snapshot: `wait[35]`, `broken[35]`, `queue_len[35]` at `sec`.
+Periodic snapshot: `wait[NUM_RIDES]`, `broken[NUM_RIDES]`, `queue_len[NUM_RIDES]` at `sec`.
 
 ### PartyRideEvent
 
@@ -58,7 +59,7 @@ Periodic snapshot: `wait[35]`, `broken[35]`, `queue_len[35]` at `sec`.
 ## Display Notes
 
 - Park pathways are **OSM pedestrian polylines** from `data/pathways.json` (see `docs/park-graph.md`), not straight hub-to-hub spokes.
-- Party walk dots follow the **shortest walkway polyline** between the walk's `from_idx` / `to_idx` nodes (arc-length interpolation).
+- Party walk dots follow the **recorded `path_variant` polyline** between `from_idx` / `to_idx` (arc-length interpolation), not always the global shortest path.
 - Wait labels on rides show **minutes** (`wait_sec / 60`); broken rides show `X`.
 - Crowd dots are subsampled when more than ~2500 parties are walking at once.
 - PPO / trained-model routing is not wired into recording yet; visualization uses the built-in heuristic day.
