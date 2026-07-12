@@ -142,6 +142,47 @@ int party_walk_to_ride_sec(int from_idx, int ride_id, float speed) {
     return std::max(1, static_cast<int>(std::ceil(base * scale)));
 }
 
+int sample_walk_variant(Rng& rng, int from_idx, int to_idx) {
+    if (!gd::kWalkPathRandom || from_idx == to_idx) {
+        return 0;
+    }
+    const int n = static_cast<int>(gd::kWalkVariantCount[from_idx][to_idx]);
+    if (n <= 1) {
+        return 0;
+    }
+    const double tau = gd::kWalkPathSoftmaxTauSec;
+    const int shortest = gd::kWalkVariantBaseSec[from_idx][to_idx][0];
+    double weights[gd::kWalkPathMaxVariants];
+    double total = 0.0;
+    for (int k = 0; k < n; ++k) {
+        const int sec = gd::kWalkVariantBaseSec[from_idx][to_idx][k];
+        const double w = (tau <= 1e-9) ? (k == 0 ? 1.0 : 0.0)
+                                      : std::exp(-(static_cast<double>(sec - shortest)) / tau);
+        weights[k] = w;
+        total += w;
+    }
+    if (total <= 0.0) {
+        return 0;
+    }
+    double r = rng.uniform01() * total;
+    for (int k = 0; k < n; ++k) {
+        r -= weights[k];
+        if (r <= 0.0) {
+            return k;
+        }
+    }
+    return n - 1;
+}
+
+int party_walk_sec_variant(int from_idx, int to_idx, float speed, int variant) {
+    const int n = static_cast<int>(gd::kWalkVariantCount[from_idx][to_idx]);
+    const int k = std::max(0, std::min(variant, std::max(0, n - 1)));
+    const int base = (n > 0) ? gd::kWalkVariantBaseSec[from_idx][to_idx][k]
+                             : gd::kBaseWalkMatrix[from_idx][to_idx];
+    const double scale = kBaseWalkingSpeed / std::max(0.1f, speed);
+    return std::max(1, static_cast<int>(std::ceil(base * scale)));
+}
+
 void compute_preference_order(
     const std::array<float, kNumRides>& prefs,
     const std::array<uint8_t, kNumRides>& must_do,
@@ -952,35 +993,38 @@ private:
 
         if (target == kExitRideId) {
             const int dest_idx = gd::kEntranceNodeIdx;
-            const int walk = party_walk_sec(from_idx, dest_idx, speed);
+            const int variant = sample_walk_variant(rng_, from_idx, dest_idx);
+            const int walk = party_walk_sec_variant(from_idx, dest_idx, speed, variant);
             parties_.target_ride_id[party_id] = kExitRideId;
             parties_.target_node_idx[party_id] = dest_idx;
             parties_.state[party_id] = static_cast<int8_t>(PartyState::Walking);
-            record_walk(party_id, now_sec, walk, from_idx, dest_idx, kExitRideId);
+            record_walk(party_id, now_sec, walk, from_idx, dest_idx, kExitRideId, variant);
             wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
             return;
         }
 
         if (target == kRouteIdleCode) {
             const int dest_idx = random_idle_node_idx(rng_, from_idx);
-            const int walk = party_walk_sec(from_idx, dest_idx, speed);
+            const int variant = sample_walk_variant(rng_, from_idx, dest_idx);
+            const int walk = party_walk_sec_variant(from_idx, dest_idx, speed, variant);
             parties_.target_ride_id[party_id] = kRouteIdleCode;
             parties_.target_node_idx[party_id] = dest_idx;
             parties_.state[party_id] = static_cast<int8_t>(PartyState::Walking);
-            record_walk(party_id, now_sec, walk, from_idx, dest_idx, kRouteIdleCode);
+            record_walk(party_id, now_sec, walk, from_idx, dest_idx, kRouteIdleCode, variant);
             wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
             return;
         }
 
         const int ride_id = target;
         const int dest_idx = gd::kRideNodeIdx[ride_id];
-        const int walk = party_walk_to_ride_sec(from_idx, ride_id, speed);
+        const int variant = sample_walk_variant(rng_, from_idx, dest_idx);
+        const int walk = party_walk_sec_variant(from_idx, dest_idx, speed, variant);
         parties_.target_ride_id[party_id] = ride_id;
         parties_.target_node_idx[party_id] = dest_idx;
         parties_.state[party_id] = static_cast<int8_t>(PartyState::Walking);
         parties_.walk_target_ride[party_id] = ride_id;
         rides_[ride_id].incoming += 1;
-        record_walk(party_id, now_sec, walk, from_idx, dest_idx, ride_id);
+        record_walk(party_id, now_sec, walk, from_idx, dest_idx, ride_id, variant);
         wheel_.schedule(now_sec + walk, Event{EventType::ArriveAtDestination, party_id, -1, 0});
     }
 
@@ -1103,7 +1147,14 @@ private:
         return obs;
     }
 
-    void record_walk(int party_id, int now_sec, int walk_sec, int from_idx, int to_idx, int target) {
+    void record_walk(
+        int party_id,
+        int now_sec,
+        int walk_sec,
+        int from_idx,
+        int to_idx,
+        int target,
+        int path_variant) {
         if (recording_ == nullptr) {
             return;
         }
@@ -1115,6 +1166,7 @@ private:
         rec.from_idx = static_cast<int16_t>(from_idx);
         rec.to_idx = static_cast<int16_t>(to_idx);
         rec.target_ride = static_cast<int16_t>(target);
+        rec.path_variant = static_cast<int16_t>(path_variant);
         rec.cancelled = 0;
         active_walk_idx_[party_id] = static_cast<int>(recording_->walks.size());
         recording_->walks.push_back(rec);

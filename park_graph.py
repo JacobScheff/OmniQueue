@@ -18,6 +18,10 @@ class Graph:
     adjacency: dict[int, list[tuple[int, float]]]
     num_nodes: int
     walk_time_sec: list[list[int]]
+    # walk_variant_count[i][j] in 1..WALK_PATH_MAX_VARIANTS
+    walk_variant_count: list[list[int]]
+    # walk_variant_base_sec[i][j][k]; unused slots are 0
+    walk_variant_base_sec: list[list[list[int]]]
 
 
 def _euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -58,31 +62,50 @@ def build_graph() -> Graph:
 
     node_ids = sorted(node_coords.keys())
     n = len(node_ids)
+    k_max = max(1, int(config.WALK_PATH_MAX_VARIANTS))
+    speed = config.BASE_WALKING_SPEED
 
     walk_time = [[0] * n for _ in range(n)]
-    speed = config.BASE_WALKING_SPEED
+    variant_count = [[1] * n for _ in range(n)]
+    variant_base = [[[0] * k_max for _ in range(n)] for _ in range(n)]
 
     if pathways is not None:
         # All-pairs along the real walkway network (not limited to MACRO_EDGES).
+        total = n * (n - 1)
+        done = 0
         for i, src in enumerate(node_ids):
             for j, dst in enumerate(node_ids):
                 if i == j:
                     continue
-                dist_m = pathways.path_length_m(src, dst)
-                walk_time[i][j] = max(1, int(math.ceil(dist_m / speed)))
+                variants = pathways.near_shortest_variants(src, dst)
+                secs = [
+                    max(1, int(math.ceil(v.length_m / speed))) for v in variants
+                ]
+                variant_count[i][j] = len(secs)
+                for k, sec in enumerate(secs):
+                    variant_base[i][j][k] = sec
+                walk_time[i][j] = secs[0]
+                done += 1
+                if done % 200 == 0:
+                    print(f"  walk variants: {done}/{total}", flush=True)
     else:
         for i, src in enumerate(node_ids):
             for j, dst in enumerate(node_ids):
                 if i == j:
                     continue
                 dist = astar_distance(adjacency, node_coords, src, dst)
-                walk_time[i][j] = max(1, int(math.ceil(dist / speed)))
+                sec = max(1, int(math.ceil(dist / speed)))
+                walk_time[i][j] = sec
+                variant_count[i][j] = 1
+                variant_base[i][j][0] = sec
 
     return Graph(
         node_coords=node_coords,
         adjacency=adjacency,
         num_nodes=n,
         walk_time_sec=walk_time,
+        walk_variant_count=variant_count,
+        walk_variant_base_sec=variant_base,
     )
 
 
@@ -125,6 +148,10 @@ class ParkGraph:
         self.num_nodes = len(self._node_ids)
 
         self.base_walk_matrix = np.array(self._graph.walk_time_sec, dtype=np.int32)
+        self.walk_variant_count = np.array(self._graph.walk_variant_count, dtype=np.uint8)
+        self.walk_variant_base_sec = np.array(
+            self._graph.walk_variant_base_sec, dtype=np.int32
+        )
         self._ride_col_indices = np.array(
             [self._index_of[config.ride_node_id(r)] for r in range(config.NUM_RIDES)],
             dtype=np.int32,
@@ -143,7 +170,7 @@ class ParkGraph:
         )
 
         # Lazy cache of walkway polylines between routing node indices (visualization).
-        self._path_polylines: dict[tuple[int, int], list[tuple[float, float]]] = {}
+        self._path_polylines: dict[tuple[int, int, int], list[tuple[float, float]]] = {}
 
     @property
     def entrance_node(self) -> int:
@@ -185,12 +212,12 @@ class ParkGraph:
         return results
 
     def path_polyline_for_idx(
-        self, from_idx: int, to_idx: int
+        self, from_idx: int, to_idx: int, variant: int = 0
     ) -> list[tuple[float, float]]:
         if from_idx == to_idx:
             nid = self.idx_to_node(from_idx)
             return [self._graph.node_coords[nid]]
-        key = (from_idx, to_idx)
+        key = (from_idx, to_idx, int(variant))
         cached = self._path_polylines.get(key)
         if cached is not None:
             return cached
@@ -198,7 +225,7 @@ class ParkGraph:
         if pathways is not None:
             src = self.idx_to_node(from_idx)
             dst = self.idx_to_node(to_idx)
-            poly = pathways.path_polyline(src, dst)
+            poly = pathways.path_polyline(src, dst, variant=int(variant))
         else:
             a = self._graph.node_coords[self.idx_to_node(from_idx)]
             b = self._graph.node_coords[self.idx_to_node(to_idx)]

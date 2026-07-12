@@ -127,7 +127,8 @@ def walk_position(state: ReplayState, walk, sec: float) -> tuple[float, float]:
     duration = max(1, planned - int(walk.start_sec))
     progress = max(0.0, min(1.0, (sec - float(walk.start_sec)) / duration))
     park = get_park_graph()
-    poly = park.path_polyline_for_idx(int(walk.from_idx), int(walk.to_idx))
+    variant = int(getattr(walk, "path_variant", 0) or 0)
+    poly = park.path_polyline_for_idx(int(walk.from_idx), int(walk.to_idx), variant=variant)
     if len(poly) >= 2:
         return interpolate_polyline(poly, progress)
     sx, sy = _node_xy(state, int(walk.from_idx))

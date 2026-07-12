@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,15 @@ import networkx as nx
 
 PATHWAYS_PATH = Path(__file__).resolve().parent / "data" / "pathways.json"
 RIDE_NODE_OFFSET = 100  # must match config.RIDE_NODE_OFFSET
+
+
+@dataclass(frozen=True)
+class PathVariant:
+    """One walkway option between two routing nodes."""
+
+    length_m: float
+    polyline: list[tuple[float, float]]
+    node_path: tuple[str, ...]
 
 
 class PathwayNetwork:
@@ -71,6 +81,8 @@ class PathwayNetwork:
                 self.meta,
             )
 
+        self._variant_cache: dict[tuple[int, int, int, float], list[PathVariant]] = {}
+
     def snap_for_routing_node(self, node_id: int) -> str:
         if node_id >= RIDE_NODE_OFFSET:
             return self.ride_snap[node_id - RIDE_NODE_OFFSET]
@@ -79,31 +91,109 @@ class PathwayNetwork:
     def path_length_m(self, from_node: int, to_node: int) -> float:
         if from_node == to_node:
             return 0.0
-        u = self.snap_for_routing_node(from_node)
-        v = self.snap_for_routing_node(to_node)
-        try:
-            network_m = float(nx.shortest_path_length(self.graph, u, v, weight="length_m"))
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            ca = self.coords_for_routing_node(from_node)
-            cb = self.coords_for_routing_node(to_node)
-            network_m = _display_dist_m(ca, cb, self.meta)
-        return network_m + self._spur_m.get(from_node, 0.0) + self._spur_m.get(to_node, 0.0)
+        variants = self.near_shortest_variants(from_node, to_node, max_variants=1, slack=0.0)
+        return variants[0].length_m
 
-    def path_polyline(self, from_node: int, to_node: int) -> list[tuple[float, float]]:
-        """Display-coordinate polyline along walkways from routing node to routing node."""
+    def path_polyline(
+        self, from_node: int, to_node: int, variant: int = 0
+    ) -> list[tuple[float, float]]:
+        """Display-coordinate polyline for a path variant (0 = shortest)."""
+        variants = self.near_shortest_variants(from_node, to_node)
+        idx = max(0, min(int(variant), len(variants) - 1))
+        return list(variants[idx].polyline)
+
+    def near_shortest_variants(
+        self,
+        from_node: int,
+        to_node: int,
+        max_variants: int | None = None,
+        slack: float | None = None,
+    ) -> list[PathVariant]:
+        """Enumerate near-shortest OSM paths between routing nodes (deterministic order)."""
+        import config
+
+        if max_variants is None:
+            max_variants = int(config.WALK_PATH_MAX_VARIANTS)
+        if slack is None:
+            slack = float(config.WALK_PATH_LENGTH_SLACK)
+        max_variants = max(1, int(max_variants))
+        slack = max(0.0, float(slack))
+
+        cache_key = (from_node, to_node, max_variants, round(slack, 6))
+        cached = self._variant_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         start = self.coords_for_routing_node(from_node)
         end = self.coords_for_routing_node(to_node)
+        spur = self._spur_m.get(from_node, 0.0) + self._spur_m.get(to_node, 0.0)
+
         if from_node == to_node:
-            return [start]
+            out = [PathVariant(length_m=0.0, polyline=[start], node_path=())]
+            self._variant_cache[cache_key] = out
+            return out
 
         u = self.snap_for_routing_node(from_node)
         v = self.snap_for_routing_node(to_node)
         try:
-            node_path = nx.shortest_path(self.graph, u, v, weight="length_m")
+            variants = self._enumerate_snap_variants(u, v, start, end, spur, max_variants, slack)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
+            dist = _display_dist_m(start, end, self.meta)
+            variants = [PathVariant(length_m=dist, polyline=[start, end], node_path=())]
+
+        if not variants:
+            dist = _display_dist_m(start, end, self.meta)
+            variants = [PathVariant(length_m=dist, polyline=[start, end], node_path=())]
+
+        self._variant_cache[cache_key] = variants
+        return variants
+
+    def _enumerate_snap_variants(
+        self,
+        u: str,
+        v: str,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        spur_m: float,
+        max_variants: int,
+        slack: float,
+    ) -> list[PathVariant]:
+        if u == v:
+            poly = self._polyline_from_node_path([u], start, end)
+            return [PathVariant(length_m=spur_m, polyline=poly, node_path=(u,))]
+
+        shortest_m: float | None = None
+        out: list[PathVariant] = []
+        # Deterministic: NetworkX yields simple paths in nondecreasing length order.
+        for node_path in nx.shortest_simple_paths(self.graph, u, v, weight="length_m"):
+            network_m = _path_length_m(self.graph, node_path)
+            if shortest_m is None:
+                shortest_m = network_m
+            if network_m > shortest_m * (1.0 + slack) + 1e-6:
+                break
+            poly = self._polyline_from_node_path(node_path, start, end)
+            out.append(
+                PathVariant(
+                    length_m=network_m + spur_m,
+                    polyline=poly,
+                    node_path=tuple(node_path),
+                )
+            )
+            if len(out) >= max_variants:
+                break
+        return out
+
+    def _polyline_from_node_path(
+        self,
+        node_path: list[str],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> list[tuple[float, float]]:
+        if not node_path:
             return [start, end]
 
         poly: list[tuple[float, float]] = [start]
+        u = node_path[0]
         snap_u = (self.nodes[u]["x"], self.nodes[u]["y"])
         if _hypot(start, snap_u) > 0.5:
             poly.append(snap_u)
@@ -122,6 +212,7 @@ class PathwayNetwork:
                 nb = (self.nodes[b]["x"], self.nodes[b]["y"])
                 poly.append(nb)
 
+        v = node_path[-1]
         snap_v = (self.nodes[v]["x"], self.nodes[v]["y"])
         if _hypot(end, snap_v) > 0.5:
             poly.append(end)
@@ -147,6 +238,13 @@ class PathwayNetwork:
         return out
 
 
+def _path_length_m(graph: nx.Graph, node_path: list[str]) -> float:
+    total = 0.0
+    for a, b in zip(node_path, node_path[1:]):
+        total += float(graph[a][b]["length_m"])
+    return total
+
+
 def _hypot(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
@@ -156,6 +254,20 @@ def _display_dist_m(
 ) -> float:
     scale = float(meta.get("meters_to_display_scale") or 1.0)
     return _hypot(a, b) / max(scale, 1e-9)
+
+
+def softmax_path_weights(base_sec: list[int], tau_sec: float) -> list[float]:
+    """Length-weighted probabilities: P_i ∝ exp(-(sec_i - sec_min) / tau)."""
+    if not base_sec:
+        return []
+    if len(base_sec) == 1 or tau_sec <= 1e-9:
+        return [1.0] + [0.0] * (len(base_sec) - 1)
+    shortest = min(base_sec)
+    raw = [math.exp(-(float(s) - float(shortest)) / tau_sec) for s in base_sec]
+    total = sum(raw)
+    if total <= 0:
+        return [1.0 / len(base_sec)] * len(base_sec)
+    return [w / total for w in raw]
 
 
 @lru_cache(maxsize=1)
