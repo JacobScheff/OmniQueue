@@ -78,7 +78,7 @@ RIDE_ALIASES: dict[str, list[str]] = {
         "Chip ‘n’ Dale’s GADGETcoaster",
         "Chip 'n' Dale's GADGETcoaster",
     ],
-    "Hyperspace Mountain": ["Space Mountain"],
+    "Space Mountain": ["Space Mountain", "Hyperspace Mountain"],
     "Star Tours": ["Star Tours: The Adventures Continue", "Star Tours"],
     "Buzz Lightyear Astro Blasters": ["Buzz Lightyear Astro Blasters"],
     "Astro Orbitor": ["Astro Orbitor"],

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Minimal post-process for data/pathways.json.
+"""Post-process data/pathways.json: ride placements + light path cleanup.
 
-Preserves nearly all OSM walkway detail. Only:
-  - nudges Indiana next to Jungle Cruise
-  - places Rise in northwest Galaxy's Edge
-  - replaces Buzz's plaza loop approach with a vertical spur
-  - lightly strips the eastern Buzz-only plaza bubble (not Matterhorn corridors)
-  - prunes true dangling leaves that are not ride/hub snaps
+- Rename/placement overrides for Space Mountain, Indiana, Small World, Autopia, Rise
+- Buzz vertical spur to Tomorrowland spine
+- Strip Main Street left/right parallels (keep center)
+- Drop dead-end paths west of Rise
+- Lightly thin the Small World plaza cluster
 
 Usage (after a fresh extract):
     python tools/extract_osm_pathways.py   # calls this automatically
@@ -29,7 +28,10 @@ PATH = ROOT / "data" / "pathways.json"
 RISE = 0
 INDIANA = 7
 JUNGLE = 8
+SMALL_WORLD = 24
+SPACE = 28
 BUZZ = 30
+AUTOPIA = 32
 MATTERHORN = 13
 
 TL_CORRIDOR_Y_MIN = 560.0
@@ -37,11 +39,16 @@ TL_CORRIDOR_Y_MAX = 585.0
 TL_CORRIDOR_X_MIN = 640.0
 TL_CORRIDOR_X_MAX = 820.0
 
-# Eastern Autopia bubble only — do NOT include Matterhorn approaches (~x=650–720).
 BUZZ_ONLY_LOOP_X_MIN = 750.0
 BUZZ_ONLY_LOOP_X_MAX = 805.0
 BUZZ_ONLY_LOOP_Y_MIN = 495.0
 BUZZ_ONLY_LOOP_Y_MAX = 550.0
+
+# Main Street band (entrance south → hub).
+MS_Y_MIN = 600.0
+MS_Y_MAX = 900.0
+MS_MID_X_MIN = 562.0
+MS_MID_X_MAX = 578.0
 
 
 def _hypot(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -68,36 +75,114 @@ def _build_graph(data: dict) -> nx.Graph:
     return g
 
 
-def prune_dangling(g: nx.Graph, keep: set[str]) -> int:
-    removed = 0
-    changed = True
-    while changed:
-        changed = False
-        for n in list(g.nodes()):
-            if n in keep:
-                continue
-            if g.degree(n) <= 1:
-                g.remove_node(n)
-                removed += 1
-                changed = True
-    return removed
+def _leaf_nodes(g: nx.Graph) -> list[str]:
+    return [n for n in g.nodes() if g.degree(n) == 1]
 
 
-def nudge_rides(data: dict) -> None:
+def nudge_rides(g: nx.Graph, data: dict) -> None:
     rides = {int(r["ride_id"]): r for r in data["rides"]}
 
-    # Indiana right next to Jungle Cruise (slightly SW).
-    jx, jy = float(rides[JUNGLE]["x"]), float(rides[JUNGLE]["y"])
-    rides[INDIANA]["x"] = round(jx - 12.0, 3)
-    rides[INDIANA]["y"] = round(jy + 6.0, 3)
-    rides[INDIANA]["source"] = "simplified:near-jungle-cruise"
+    # --- Space Mountain: tip of the stub almost directly above the old OSM spot ---
+    sx = float(rides[SPACE]["x"])
+    sy = float(rides[SPACE]["y"])
+    above = []
+    for n in _leaf_nodes(g):
+        d = g.nodes[n]
+        # Prefer tips close in x and not too far north of old Space.
+        if sy - 120 <= d["y"] <= sy - 20 and abs(d["x"] - sx) < 25:
+            above.append((abs(d["x"] - sx), -d["y"], n, d["x"], d["y"]))
+    above.sort()  # closest x, then southernmost tip (largest y)
+    if above:
+        # Among tips within 12 display-units of Space's x, take southernmost.
+        near = [t for t in above if t[0] < 12.0] or above
+        near.sort(key=lambda t: t[1])  # most southern = smallest -y = largest y
+        _, _, node, x, y = near[0]
+        rides[SPACE]["x"] = round(x, 3)
+        rides[SPACE]["y"] = round(y, 3)
+        rides[SPACE]["snap_node"] = node
+        rides[SPACE]["source"] = "simplified:above-stub"
+        old = "1365116948"
+        if old in g and old != node:
+            cur = old
+            seen = []
+            while cur in g and g.degree(cur) <= 2 and cur not in {node}:
+                nbrs = [n for n in g.neighbors(cur) if n not in seen]
+                seen.append(cur)
+                if len(nbrs) != 1:
+                    break
+                cur = nbrs[0]
+            for n in seen:
+                if n in g and n != node:
+                    g.remove_node(n)
 
-    # Rise: northwest on the GE walk network (OSM has little coverage north of ~y=245).
-    # Sit on the NW corridor so Critter↔GE paths meet the ride marker.
+    # --- Indiana: southern tip of the Adventureland stub below Jungle Cruise ---
+    jx = float(rides[JUNGLE]["x"])
+    jy = float(rides[JUNGLE]["y"])
+    south = []
+    for n in _leaf_nodes(g):
+        d = g.nodes[n]
+        # South of Jungle, roughly in the Indy/Adventureland pocket.
+        if d["y"] > jy + 15 and jx - 120 <= d["x"] <= jx + 20:
+            south.append((d["y"], abs(d["x"] - (jx - 40)), n, d["x"], d["y"]))
+    south.sort(reverse=True)
+    if south:
+        # Prefer the southernmost tip near x≈380–420.
+        pool = [t for t in south if 360 <= t[3] <= 430] or south
+        _, _, node, x, y = pool[0]
+        rides[INDIANA]["x"] = round(x, 3)
+        rides[INDIANA]["y"] = round(y, 3)
+        rides[INDIANA]["snap_node"] = node
+        rides[INDIANA]["source"] = "simplified:south-stub"
+
+    # --- Rise: keep NW on GE network ---
     rides[RISE]["x"] = 130.0
     rides[RISE]["y"] = 250.0
     rides[RISE]["source"] = "simplified:northwest-ge"
 
+    # --- Small World: deeper into the dense plaza cluster below the OSM marker ---
+    swx, swy = float(rides[SMALL_WORLD]["x"]), float(rides[SMALL_WORLD]["y"])
+    cluster = [
+        (n, d["x"], d["y"])
+        for n, d in g.nodes(data=True)
+        if 690 <= d["x"] <= 800 and 230 <= d["y"] <= 290
+    ]
+    if cluster:
+        best, best_c = None, -1
+        for n, x, y in cluster:
+            c = sum(1 for _, x2, y2 in cluster if _hypot((x, y), (x2, y2)) < 40)
+            # Prefer slightly denser + more central-south points.
+            score = c - 0.02 * abs(x - 720) - 0.01 * abs(y - 260)
+            if score > best_c:
+                best_c = score
+                best = (n, x, y)
+        if best:
+            n, x, y = best
+            rides[SMALL_WORLD]["x"] = round(x, 3)
+            rides[SMALL_WORLD]["y"] = round(y, 3)
+            rides[SMALL_WORLD]["snap_node"] = n
+            rides[SMALL_WORLD]["source"] = "simplified:plaza-cluster"
+
+    # --- Autopia: far-eastern Autopia track collection ---
+    east = [
+        (n, d["x"], d["y"])
+        for n, d in g.nodes(data=True)
+        if d["x"] > 920 and 470 <= d["y"] <= 550
+    ]
+    if east:
+        best, best_c = None, -1
+        for n, x, y in east:
+            c = sum(1 for _, x2, y2 in east if _hypot((x, y), (x2, y2)) < 45)
+            if c > best_c:
+                best_c = c
+                best = (n, x, y)
+        if best:
+            n, x, y = best
+            rides[AUTOPIA]["x"] = round(x, 3)
+            rides[AUTOPIA]["y"] = round(y, 3)
+            rides[AUTOPIA]["snap_node"] = n
+            rides[AUTOPIA]["source"] = "simplified:east-cluster"
+
+    # --- Buzz: north of TL spine ---
     buzz = rides[BUZZ]
     corridor_y = 0.5 * (TL_CORRIDOR_Y_MIN + TL_CORRIDOR_Y_MAX)
     buzz["x"] = round(float(buzz["x"]), 3)
@@ -150,11 +235,9 @@ def fix_buzz_vertical_spur(g: nx.Graph, data: dict) -> None:
     )
     buzz["snap_node"] = buzz_id
 
-    # Protect Matterhorn ↔ Tomorrowland paths; only remove eastern Buzz plaza nodes
-    # that are not on those corridors.
     protect: set[str] = {buzz_id, foot_id, best}
     protect_snaps = []
-    for rid in (MATTERHORN, 29, 31, 32, 33, 34):
+    for rid in (MATTERHORN, 29, 31, AUTOPIA, 33, 34, SPACE):
         for r in data["rides"]:
             if int(r["ride_id"]) == rid and r["snap_node"] in g:
                 protect_snaps.append(r["snap_node"])
@@ -167,9 +250,7 @@ def fix_buzz_vertical_spur(g: nx.Graph, data: dict) -> None:
                 pass
 
     for n, d in list(g.nodes(data=True)):
-        if str(n).startswith("synthetic:"):
-            continue
-        if n in protect:
+        if str(n).startswith("synthetic:") or n in protect:
             continue
         if (
             BUZZ_ONLY_LOOP_X_MIN <= d["x"] <= BUZZ_ONLY_LOOP_X_MAX
@@ -178,10 +259,131 @@ def fix_buzz_vertical_spur(g: nx.Graph, data: dict) -> None:
             g.remove_node(n)
 
 
+def strip_main_street_side_lanes(g: nx.Graph, data: dict) -> int:
+    """Remove left/right Main Street parallels; keep the center vertical."""
+    keep = {str(r["snap_node"]) for r in data["rides"]}
+    keep |= {str(h["snap_node"]) for h in data["hubs"].values()}
+    keep |= {n for n in g.nodes() if str(n).startswith("synthetic:")}
+    # Always protect entrance + main hub.
+    for key in ("entrance", "main_hub", "central_plaza"):
+        if key in data["hubs"]:
+            keep.add(str(data["hubs"][key]["snap_node"]))
+
+    removed = 0
+    for n, d in list(g.nodes(data=True)):
+        if n in keep or str(n).startswith("synthetic:"):
+            continue
+        x, y = d["x"], d["y"]
+        if not (MS_Y_MIN <= y <= MS_Y_MAX):
+            continue
+        if 480 <= x < MS_MID_X_MIN or MS_MID_X_MAX < x <= 640:
+            g.remove_node(n)
+            removed += 1
+    return removed
+
+
+def prune_dead_ends_west_of_rise(g: nx.Graph, data: dict) -> int:
+    """Delete nowhere paths to the left of Rise."""
+    rides = {int(r["ride_id"]): r for r in data["rides"]}
+    rx = float(rides[RISE]["x"])
+    ry = float(rides[RISE]["y"])
+    keep = {str(r["snap_node"]) for r in data["rides"]}
+    keep |= {str(h["snap_node"]) for h in data["hubs"].values()}
+    keep |= {n for n in g.nodes() if str(n).startswith("synthetic:")}
+
+    removed = 0
+    # Hard-delete nodes in a box immediately west of Rise (the nowhere scribble).
+    for n, d in list(g.nodes(data=True)):
+        if n in keep:
+            continue
+        if d["x"] < rx - 2 and ry - 40 <= d["y"] <= ry + 90:
+            g.remove_node(n)
+            removed += 1
+
+    candidates = [
+        n
+        for n, d in g.nodes(data=True)
+        if d["x"] < rx - 8 and 200 <= d["y"] <= 480 and n not in keep
+    ]
+    sub = g.subgraph(candidates).copy()
+    for comp in list(nx.connected_components(sub)):
+        g.remove_nodes_from(comp)
+        removed += len(comp)
+
+    changed = True
+    while changed:
+        changed = False
+        for n in list(g.nodes()):
+            if n in keep:
+                continue
+            d = g.nodes[n]
+            if d["x"] >= rx - 5:
+                continue
+            if g.degree(n) <= 1:
+                g.remove_node(n)
+                removed += 1
+                changed = True
+    return removed
+
+
+def lightly_simplify_small_world_cluster(g: nx.Graph, data: dict) -> int:
+    """Slightly thin the dense plaza where Small World now sits."""
+    rides = {int(r["ride_id"]): r for r in data["rides"]}
+    sw = rides[SMALL_WORLD]
+    cx, cy = float(sw["x"]), float(sw["y"])
+    keep = {str(r["snap_node"]) for r in data["rides"]}
+    keep |= {str(h["snap_node"]) for h in data["hubs"].values()}
+    keep |= {n for n in g.nodes() if str(n).startswith("synthetic:")}
+
+    cluster = [
+        n
+        for n, d in g.nodes(data=True)
+        if _hypot((d["x"], d["y"]), (cx, cy)) < 70
+    ]
+    removed = 0
+    # Remove degree-2 nodes that are nearly colinear shortcuts (every other one).
+    deg2 = [n for n in cluster if n not in keep and g.degree(n) == 2]
+    # Sort by angle around centroid and drop every 3rd.
+    def ang(n: str) -> float:
+        d = g.nodes[n]
+        return math.atan2(d["y"] - cy, d["x"] - cx)
+
+    deg2.sort(key=ang)
+    for i, n in enumerate(deg2):
+        if i % 2 != 0:
+            continue
+        if n not in g or g.degree(n) != 2:
+            continue
+        a, b = list(g.neighbors(n))
+        # Bridge a-b if missing, then drop n.
+        if not g.has_edge(a, b):
+            length = g[n][a].get("length_m", 1.0) + g[n][b].get("length_m", 1.0)
+            g.add_edge(
+                a,
+                b,
+                length_m=length,
+                geometry=[
+                    [round(g.nodes[a]["x"], 2), round(g.nodes[a]["y"], 2)],
+                    [round(g.nodes[b]["x"], 2), round(g.nodes[b]["y"], 2)],
+                ],
+            )
+        g.remove_node(n)
+        removed += 1
+    return removed
+
+
 def resnap_rides_and_hubs(g: nx.Graph, data: dict) -> None:
     coords = {n: g.nodes[n] for n in g.nodes()}
     for ride in data["rides"]:
-        if str(ride.get("snap_node", "")).startswith("synthetic:") and ride["snap_node"] in g:
+        snap = ride.get("snap_node")
+        if str(snap).startswith("synthetic:") and snap in g:
+            continue
+        # Keep explicit stub snaps when the node still exists.
+        if (
+            ride.get("source", "").startswith("simplified:")
+            and snap in g
+            and not str(snap).startswith("simplified")
+        ):
             continue
         ride["snap_node"] = _nearest_node(coords, float(ride["x"]), float(ride["y"]))
     for hub in data["hubs"].values():
@@ -220,7 +422,7 @@ def graph_to_payload(g: nx.Graph, data: dict) -> dict:
     out["meta"]["num_nodes"] = len(nodes)
     out["meta"]["num_edges"] = len(edges)
     out["meta"]["simplified"] = True
-    out["meta"]["simplify_level"] = "minimal"
+    out["meta"]["simplify_level"] = "layout-v3"
     return out
 
 
@@ -231,33 +433,35 @@ def main() -> None:
             f"{PATH} is already simplified. Re-run tools/extract_osm_pathways.py first."
         )
 
+    # Keep ride names in pathways.json in sync with config rename.
+    for r in data["rides"]:
+        if r.get("name") == "Hyperspace Mountain":
+            r["name"] = "Space Mountain"
+
     before_n, before_e = len(data["nodes"]), len(data["edges"])
-    nudge_rides(data)
     g = _build_graph(data)
+    nudge_rides(g, data)
     fix_buzz_vertical_spur(g, data)
 
-    keep = {str(r["snap_node"]) for r in data["rides"]}
-    keep |= {str(h["snap_node"]) for h in data["hubs"].values()}
-    keep |= {n for n in g.nodes() if str(n).startswith("synthetic:")}
-
-    # Do not mass-prune dangling leaves — that erased Critter↔GE spurs and
-    # secondary walkways the map needs. Only drop degree-0 isolates.
-    removed = 0
-    for n in list(g.nodes()):
-        if n not in keep and g.degree(n) == 0:
-            g.remove_node(n)
-            removed += 1
+    ms_removed = strip_main_street_side_lanes(g, data)
+    west_removed = prune_dead_ends_west_of_rise(g, data)
+    sw_removed = lightly_simplify_small_world_cluster(g, data)
 
     resnap_rides_and_hubs(g, data)
-    keep = {str(r["snap_node"]) for r in data["rides"]}
-    keep |= {str(h["snap_node"]) for h in data["hubs"].values()}
-    keep |= {n for n in g.nodes() if str(n).startswith("synthetic:")}
+
+    # Ensure explicit snaps still exist; otherwise nearest.
+    coords = {n: g.nodes[n] for n in g.nodes()}
+    for ride in data["rides"]:
+        if ride["snap_node"] not in g:
+            ride["snap_node"] = _nearest_node(coords, float(ride["x"]), float(ride["y"]))
 
     if nx.number_connected_components(g) != 1:
-        # Bridge orphans that still hold ride snaps.
         entrance = data["hubs"]["entrance"]["snap_node"]
+        keep = {str(r["snap_node"]) for r in data["rides"]}
+        keep |= {str(h["snap_node"]) for h in data["hubs"].values()}
+        keep |= {n for n in g.nodes() if str(n).startswith("synthetic:")}
         comps = [set(c) for c in nx.connected_components(g)]
-        main = next(c for c in comps if entrance in c)
+        main = next((c for c in comps if entrance in c), max(comps, key=len))
         scale = float(data["meta"].get("meters_to_display_scale") or 1.3155)
         for c in comps:
             if c == main:
@@ -288,9 +492,10 @@ def main() -> None:
     PATH.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(
         f"Simplified {PATH}: nodes {before_n}->{out['meta']['num_nodes']}, "
-        f"edges {before_e}->{out['meta']['num_edges']} (dangling={removed})"
+        f"edges {before_e}->{out['meta']['num_edges']} "
+        f"(ms={ms_removed}, west={west_removed}, sw={sw_removed})"
     )
-    for rid in (RISE, INDIANA, JUNGLE, BUZZ, 2, 3, MATTERHORN):
+    for rid in (RISE, INDIANA, SMALL_WORLD, SPACE, BUZZ, AUTOPIA):
         r = next(x for x in out["rides"] if int(x["ride_id"]) == rid)
         print(f"  ride {rid} {r['name']}: ({r['x']}, {r['y']}) snap={r['snap_node']}")
 

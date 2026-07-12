@@ -33,10 +33,10 @@ python tools/export_native_data.py
 pip install -e .
 ```
 
-`simplify_pathways.py` applies a **minimal** pass: ride nudges (Indiana beside Jungle
-Cruise; Rise northwest on Galaxy's Edge), Buzz vertical spur, a tiny eastern plaza
-trim, and dangling-leaf cleanup. Critter↔Galaxy's Edge and Matterhorn↔Tomorrowland
-corridors are preserved with most OSM walkway detail intact.
+`simplify_pathways.py` applies layout polish: Space Mountain on the stub above its
+old spot, Indiana on the southern Adventureland stub, Small World into its plaza
+cluster (lightly thinned), Autopia on the eastern Autopia paths, Main Street
+center-only, dead-ends west of Rise removed, and Buzz’s vertical spur.
 
 Display coordinates in `config.RIDES` / `HUB_COORDS` are overwritten at import time from the pathways file when present.
 
