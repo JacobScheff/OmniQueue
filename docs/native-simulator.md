@@ -28,11 +28,14 @@ pip install -e .
 ## Python Usage
 
 ```python
-from simulator import run_day, native_backend_name
+from simulator import run_day, record_day, native_backend_name
 
 print(native_backend_name())  # "native" or "unavailable"
 metrics = run_day(seed=42)
 metrics = run_day(seed=42, backend="native")
+
+# Full-day event log for the Pygame visualizer (see docs/visualization.md)
+recording = record_day(seed=42, sample_interval_sec=60)
 ```
 
 Environment variable: `OMNIQUEUE_BACKEND=auto|native`

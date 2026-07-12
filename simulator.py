@@ -72,3 +72,15 @@ def run_day(
     import _park_sim  # type: ignore[import-not-found]
 
     return _metrics_from_native(_park_sim.run_day(seed))
+
+
+def record_day(seed: int = 0, sample_interval_sec: int = 60):
+    """Simulate one park day and return a ``_park_sim.DayRecording`` for visualization."""
+    if not _native_available():
+        raise ImportError(
+            "C++ extension _park_sim is not built. Run: pip install -e ."
+        )
+
+    import _park_sim  # type: ignore[import-not-found]
+
+    return _park_sim.record_day(seed, sample_interval_sec)

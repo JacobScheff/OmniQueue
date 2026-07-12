@@ -109,6 +109,59 @@ PYBIND11_MODULE(_park_sim, m) {
             return vector_to_rewards(self.rewards);
         });
 
+    py::class_<park::WalkRecord>(m, "WalkRecord")
+        .def_readonly("party_id", &park::WalkRecord::party_id)
+        .def_readonly("start_sec", &park::WalkRecord::start_sec)
+        .def_readonly("end_sec", &park::WalkRecord::end_sec)
+        .def_readonly("planned_end_sec", &park::WalkRecord::planned_end_sec)
+        .def_readonly("from_idx", &park::WalkRecord::from_idx)
+        .def_readonly("to_idx", &park::WalkRecord::to_idx)
+        .def_readonly("target_ride", &park::WalkRecord::target_ride)
+        .def_readonly("cancelled", &park::WalkRecord::cancelled);
+
+    py::class_<park::RideSample>(m, "RideSample")
+        .def_readonly("sec", &park::RideSample::sec)
+        .def_property_readonly(
+            "wait",
+            [](const park::RideSample& s) {
+                py::array_t<float> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), s.wait.data(), park::kNumRides * sizeof(float));
+                return arr;
+            })
+        .def_property_readonly(
+            "broken",
+            [](const park::RideSample& s) {
+                py::array_t<uint8_t> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), s.broken.data(), park::kNumRides * sizeof(uint8_t));
+                return arr;
+            })
+        .def_property_readonly(
+            "queue_len",
+            [](const park::RideSample& s) {
+                py::array_t<int32_t> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), s.queue_len.data(), park::kNumRides * sizeof(int32_t));
+                return arr;
+            });
+
+    py::class_<park::PartyInfo>(m, "PartyInfo")
+        .def_readonly("party_id", &park::PartyInfo::party_id)
+        .def_readonly("size", &park::PartyInfo::size)
+        .def_readonly("spawn_sec", &park::PartyInfo::spawn_sec)
+        .def_readonly("leave_sec", &park::PartyInfo::leave_sec)
+        .def_readonly("rides_completed", &park::PartyInfo::rides_completed);
+
+    py::class_<park::PartyRideEvent>(m, "PartyRideEvent")
+        .def_readonly("party_id", &park::PartyRideEvent::party_id)
+        .def_readonly("sec", &park::PartyRideEvent::sec)
+        .def_readonly("ride_id", &park::PartyRideEvent::ride_id);
+
+    py::class_<park::DayRecording>(m, "DayRecording")
+        .def_readonly("metrics", &park::DayRecording::metrics)
+        .def_readonly("parties", &park::DayRecording::parties)
+        .def_readonly("walks", &park::DayRecording::walks)
+        .def_readonly("ride_samples", &park::DayRecording::ride_samples)
+        .def_readonly("ride_completions", &park::DayRecording::ride_completions);
+
     py::class_<park::ParkEnv>(m, "ParkEnv")
         .def(py::init<uint64_t>(), py::arg("seed") = 0)
         .def("reset", &park::ParkEnv::reset, py::arg("seed"))
@@ -126,8 +179,17 @@ PYBIND11_MODULE(_park_sim, m) {
     m.attr("RIDE_DYNAMIC_FEAT_DIM") = park::kRideDynamicFeatDim;
     m.attr("ENV_DYNAMIC_FEAT_DIM") = park::kEnvDynamicFeatDim;
     m.attr("FLAT_OBS_DIM") = park::kFlatObsDim;
+    m.attr("DAY_SECONDS") = park::kDaySeconds;
+    m.attr("EXIT_RIDE_ID") = park::kExitRideId;
+    m.attr("ROUTE_IDLE_CODE") = park::kRouteIdleCode;
 
     m.def("run_day", &park::run_day, py::arg("seed") = 0, "Simulate one park day and return metrics.");
+    m.def(
+        "record_day",
+        &park::record_day,
+        py::arg("seed") = 0,
+        py::arg("sample_interval_sec") = 60,
+        "Simulate one park day and return a visualization recording.");
     m.def(
         "collect_bc_dataset",
         &park::collect_bc_dataset,
