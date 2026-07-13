@@ -32,7 +32,7 @@ MAX_WALK_DOTS = 1200
 # Cap frame dt so a slow frame cannot jump sim time into cold polyline territory
 # (path-variant lookups are expensive on miss and used to death-spiral the UI).
 MAX_FRAME_DT = 1.0 / 30.0
-# Prefetch unique walk polylines that start in the opening window.
+# Synchronously prefetch unique walk polylines that start in the opening window.
 PREFETCH_UNTIL_SEC = 15 * 60
 
 
@@ -154,12 +154,18 @@ def walk_position(state: ReplayState, walk, sec: float) -> tuple[float, float]:
     return sx + (ex - sx) * progress, sy + (ey - sy) * progress
 
 
-def prefetch_walk_polylines(state: ReplayState, until_sec: float = PREFETCH_UNTIL_SEC) -> int:
-    """Warm the path-polyline cache for walks that start in the opening window."""
+def prefetch_walk_polylines(
+    state: ReplayState,
+    until_sec: float | None = PREFETCH_UNTIL_SEC,
+    *,
+    persist: bool = True,
+) -> int:
+    """Warm the path-polyline cache for walks (opening window, or all if until_sec is None)."""
     park = get_park_graph()
+    park.load_polyline_cache()
     keys: set[tuple[int, int, int]] = set()
     for w in state.walks:
-        if float(w.start_sec) > until_sec:
+        if until_sec is not None and float(w.start_sec) > until_sec:
             continue
         keys.add(
             (
@@ -168,8 +174,19 @@ def prefetch_walk_polylines(state: ReplayState, until_sec: float = PREFETCH_UNTI
                 int(getattr(w, "path_variant", 0) or 0),
             )
         )
+    # Prefer unique OD first so near-shortest runs once per pair.
+    od_pairs = {(a, b) for a, b, _ in keys}
+    missing = sum(1 for a, b in od_pairs if (a, b, 0) not in park._path_polylines)
+    if missing:
+        print(f"  computing {missing} walk polyline OD pairs...", flush=True)
+    for i, (from_idx, to_idx) in enumerate(od_pairs):
+        park.path_arc_for_idx(from_idx, to_idx, variant=0)
+        if missing and (i + 1) % 200 == 0:
+            print(f"  walk polylines: {i + 1}/{len(od_pairs)} OD pairs", flush=True)
     for from_idx, to_idx, variant in keys:
         park.path_arc_for_idx(from_idx, to_idx, variant=variant)
+    if persist:
+        park.save_polyline_cache()
     return len(keys)
 
 
@@ -274,8 +291,8 @@ def run_visualizer(
         f"{len(state.ride_samples)} ride samples, "
         f"{state.metrics.rides_completed} rides completed"
     )
-    n_prefetch = prefetch_walk_polylines(state)
-    print(f"Prefetched {n_prefetch} walk polylines (first {PREFETCH_UNTIL_SEC // 60} min)")
+    n_prefetch = prefetch_walk_polylines(state, until_sec=None)
+    print(f"Walk polylines ready ({n_prefetch} routes)")
 
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))

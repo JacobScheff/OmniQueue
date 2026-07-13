@@ -74,6 +74,8 @@ Python caches that matrix in **`cache/walk_matrix.npz`** (gitignored). A SHA-256
 - Cache hit → `walk variants: loaded from cache` (fast).
 - Miss / stale → recompute all OD pairs, then write the cache.
 
+Visualization also persists walk **polylines** under **`cache/walk_polylines.npz`** (same fingerprint) so pygame replay does not re-run near-shortest path enumeration every launch.
+
 Force a rebuild with either:
 
 ```bash

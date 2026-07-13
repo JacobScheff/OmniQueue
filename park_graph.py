@@ -16,6 +16,7 @@ from pathways import PATHWAYS_PATH, load_pathways
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 WALK_MATRIX_CACHE_PATH = CACHE_DIR / "walk_matrix.npz"
+WALK_POLYLINES_CACHE_PATH = CACHE_DIR / "walk_polylines.npz"
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,68 @@ def _save_walk_matrix_cache(
         walk_time_sec=np.asarray(walk_time, dtype=np.int32),
         walk_variant_count=np.asarray(variant_count, dtype=np.uint8),
         walk_variant_base_sec=np.asarray(variant_base, dtype=np.int32),
+    )
+
+
+def _load_polyline_cache(
+    fingerprint: str,
+) -> dict[tuple[int, int, int], tuple[list[tuple[float, float]], list[float], float]] | None:
+    if not WALK_POLYLINES_CACHE_PATH.is_file():
+        return None
+    try:
+        data = np.load(WALK_POLYLINES_CACHE_PATH, allow_pickle=False)
+        if str(data["fingerprint"]) != fingerprint:
+            return None
+        keys = np.asarray(data["keys"], dtype=np.int32)
+        offsets = np.asarray(data["offsets"], dtype=np.int32)
+        coords = np.asarray(data["coords"], dtype=np.float32)
+        if keys.ndim != 2 or keys.shape[1] != 3:
+            return None
+        if len(offsets) != len(keys) + 1:
+            return None
+        from pathways import polyline_arc_lengths
+
+        out: dict[
+            tuple[int, int, int], tuple[list[tuple[float, float]], list[float], float]
+        ] = {}
+        for i, (a, b, v) in enumerate(keys):
+            start = int(offsets[i])
+            end = int(offsets[i + 1])
+            poly = [(float(x), float(y)) for x, y in coords[start:end]]
+            cum, total = polyline_arc_lengths(poly)
+            out[(int(a), int(b), int(v))] = (poly, cum, total)
+        return out
+    except (OSError, KeyError, ValueError, TypeError):
+        return None
+
+
+def _save_polyline_cache(
+    fingerprint: str,
+    polylines: dict[
+        tuple[int, int, int], tuple[list[tuple[float, float]], list[float], float]
+    ],
+) -> None:
+    if not polylines:
+        return
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    keys = np.zeros((len(polylines), 3), dtype=np.int32)
+    offsets = np.zeros(len(polylines) + 1, dtype=np.int32)
+    chunks: list[np.ndarray] = []
+    cursor = 0
+    for i, ((a, b, v), (poly, _cum, _total)) in enumerate(sorted(polylines.items())):
+        keys[i] = (a, b, v)
+        offsets[i] = cursor
+        arr = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        chunks.append(arr)
+        cursor += len(arr)
+    offsets[-1] = cursor
+    coords = np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 2), dtype=np.float32)
+    np.savez_compressed(
+        WALK_POLYLINES_CACHE_PATH,
+        fingerprint=np.asarray(fingerprint),
+        keys=keys,
+        offsets=offsets,
+        coords=coords,
     )
 
 
@@ -224,6 +287,7 @@ class ParkGraph:
         self._index_of = {nid: i for i, nid in enumerate(self._node_ids)}
         self.idx_to_node_id = np.array(self._node_ids, dtype=np.int32)
         self.num_nodes = len(self._node_ids)
+        self._walk_fingerprint = _walk_matrix_fingerprint(self._node_ids)
 
         self.base_walk_matrix = np.array(self._graph.walk_time_sec, dtype=np.int32)
         self.walk_variant_count = np.array(self._graph.walk_variant_count, dtype=np.uint8)
@@ -252,6 +316,8 @@ class ParkGraph:
         self._path_polylines: dict[
             tuple[int, int, int], tuple[list[tuple[float, float]], list[float], float]
         ] = {}
+        self._polyline_cache_loaded = False
+        self.load_polyline_cache()
 
     @property
     def entrance_node(self) -> int:
@@ -292,6 +358,21 @@ class ParkGraph:
             frontier = next_frontier
         return results
 
+    def load_polyline_cache(self) -> int:
+        """Load packed walk polylines from disk. Returns number of entries loaded."""
+        if self._polyline_cache_loaded:
+            return len(self._path_polylines)
+        cached = _load_polyline_cache(self._walk_fingerprint)
+        self._polyline_cache_loaded = True
+        if not cached:
+            return 0
+        self._path_polylines.update(cached)
+        return len(cached)
+
+    def save_polyline_cache(self) -> None:
+        """Persist the in-memory walk polyline cache to disk."""
+        _save_polyline_cache(self._walk_fingerprint, self._path_polylines)
+
     def path_polyline_for_idx(
         self, from_idx: int, to_idx: int, variant: int = 0
     ) -> list[tuple[float, float]]:
@@ -315,11 +396,17 @@ class ParkGraph:
         if pathways is not None:
             src = self.idx_to_node(from_idx)
             dst = self.idx_to_node(to_idx)
-            poly = pathways.path_polyline(src, dst, variant=int(variant))
-        else:
-            a = self._graph.node_coords[self.idx_to_node(from_idx)]
-            b = self._graph.node_coords[self.idx_to_node(to_idx)]
-            poly = [a, b]
+            # Populate every near-shortest variant for this OD while we pay for enumeration.
+            variants = pathways.near_shortest_variants(src, dst)
+            for k, path in enumerate(variants):
+                poly_k = list(path.polyline)
+                cum_k, total_k = polyline_arc_lengths(poly_k)
+                self._path_polylines[(from_idx, to_idx, k)] = (poly_k, cum_k, total_k)
+            idx = max(0, min(int(variant), len(variants) - 1))
+            return self._path_polylines[(from_idx, to_idx, idx)]
+        a = self._graph.node_coords[self.idx_to_node(from_idx)]
+        b = self._graph.node_coords[self.idx_to_node(to_idx)]
+        poly = [a, b]
         cum, total = polyline_arc_lengths(poly)
         packed = (poly, cum, total)
         self._path_polylines[key] = packed

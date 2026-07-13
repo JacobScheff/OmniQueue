@@ -64,7 +64,7 @@ Periodic snapshot: `wait[NUM_RIDES]`, `broken[NUM_RIDES]`, `queue_len[NUM_RIDES]
 - Wait labels on rides show **minutes** (`wait_sec / 60`); broken rides show `X`.
 - Crowd dots are subsampled when more than ~1200 parties are walking at once.
 - Static park backdrop (pathways / hubs / entrance) is rendered once to a surface and blit each frame.
-- Opening-window walk polylines are **prefetched** at startup; frame `dt` is capped so a slow frame cannot jump simulation time into uncached path lookups (that used to freeze the UI after ~10s of play).
+- Walk polylines for the recorded day are **prefetched** at startup and persisted under `cache/walk_polylines.npz` (same fingerprint as the walk-matrix cache). Frame `dt` is capped so a slow frame cannot jump simulation time into uncached path lookups (that used to freeze the UI after ~10s of play).
 - PPO / trained-model routing is not wired into recording yet; visualization uses the built-in heuristic day.
 
 ## Dependencies
