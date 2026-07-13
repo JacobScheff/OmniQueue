@@ -221,6 +221,7 @@ def _collect_episode(
             _record_rewards(rewards_arr, result.episode_done)
 
         if result.episode_done:
+            episode_done = True
             terminal_info = {
                 "avg_wait_variance": result.metrics.avg_wait_variance(),
                 "rides_completed": result.metrics.rides_completed,
@@ -252,11 +253,26 @@ def _collect_episode(
 
     rollout_sec = time.perf_counter() - rollout_t0
 
+    # If we hit the routing-step cap mid-day, bootstrap GAE from V(s') of the
+    # next unconsumed observation instead of treating the trajectory as terminal.
+    bootstrap_value = 0.0
+    if (
+        not episode_done
+        and staged_values is not None
+        and len(staged_values) > 0
+    ):
+        bootstrap_value = float(staged_values[0])
+
     rewards_t = torch.tensor(reward_buf, dtype=torch.float32, device=device)
     values_t = torch.tensor(value_buf, dtype=torch.float32, device=device)
     dones_t = torch.tensor(done_buf, dtype=torch.float32, device=device)
     advantages_t, returns_t = _compute_gae(
-        rewards_t, values_t, dones_t, gamma=cfg.gamma, gae_lambda=cfg.gae_lambda
+        rewards_t,
+        values_t,
+        dones_t,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        bootstrap_value=bootstrap_value,
     )
 
     obs_t = torch.tensor(np.stack(obs_buf), dtype=torch.float32, device=device)
@@ -294,13 +310,16 @@ def _compute_gae(
     *,
     gamma: float,
     gae_lambda: float,
+    bootstrap_value: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     advantages = torch.zeros_like(rewards)
     last_gae = 0.0
     for t in reversed(range(rewards.shape[0])):
         if t == rewards.shape[0] - 1:
-            next_nonterminal = 0.0
-            next_value = 0.0
+            # Terminal steps have dones[t]=1 → value bootstrap 0.
+            # Truncated rollouts keep dones[t]=0 and use bootstrap_value = V(s').
+            next_nonterminal = 1.0 - float(dones[t].item())
+            next_value = 0.0 if next_nonterminal == 0.0 else bootstrap_value
         else:
             next_nonterminal = 1.0 - dones[t + 1]
             next_value = values[t + 1]
@@ -389,7 +408,11 @@ def train(cfg: PPOConfig) -> None:
     global_step = 0
     init_extra: dict = {}
     if cfg.init_checkpoint:
-        agent.model, global_step, init_extra = load_checkpoint(cfg.init_checkpoint, device, optimizer)
+        # Load weights into the existing Agent submodule so the Adam optimizer
+        # (created on agent.parameters()) keeps tracking the live tensors.
+        # Do not restore the BC optimizer state — PPO uses a fresh Adam.
+        loaded_model, global_step, init_extra = load_checkpoint(cfg.init_checkpoint, device)
+        agent.model.load_state_dict(loaded_model.state_dict())
         _log(f"Loaded init checkpoint: {cfg.init_checkpoint} (prior step={global_step})")
 
     save_dir = Path(cfg.save_dir)
