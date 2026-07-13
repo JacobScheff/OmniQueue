@@ -292,28 +292,49 @@ def apply_pathway_coords(cfg: Any) -> bool:
     return True
 
 
+def polyline_arc_lengths(
+    points: list[tuple[float, float]],
+) -> tuple[list[float], float]:
+    """Return cumulative arc lengths and total length for a polyline."""
+    if len(points) < 2:
+        return [0.0], 0.0
+    cum = [0.0]
+    for i in range(len(points) - 1):
+        cum.append(cum[-1] + _hypot(points[i], points[i + 1]))
+    return cum, cum[-1]
+
+
 def interpolate_polyline(
     points: list[tuple[float, float]], progress: float
 ) -> tuple[float, float]:
     """Interpolate ``progress`` in [0, 1] along a polyline by arc length."""
+    cum, total = polyline_arc_lengths(points)
+    return interpolate_polyline_cached(points, cum, total, progress)
+
+
+def interpolate_polyline_cached(
+    points: list[tuple[float, float]],
+    cum: list[float],
+    total: float,
+    progress: float,
+) -> tuple[float, float]:
+    """Arc-length interpolate using precomputed cumulative lengths."""
     if not points:
         return (0.0, 0.0)
     if len(points) == 1 or progress <= 0:
         return points[0]
     if progress >= 1:
         return points[-1]
-
-    segs = [_hypot(points[i], points[i + 1]) for i in range(len(points) - 1)]
-    total = sum(segs)
     if total <= 1e-9:
         return points[0]
     target = progress * total
-    acc = 0.0
-    for i, length in enumerate(segs):
-        if acc + length >= target:
-            t = 0.0 if length <= 1e-9 else (target - acc) / length
+    # cum[i] = distance from start to points[i]; find segment i -> i+1
+    for i in range(len(points) - 1):
+        end = cum[i + 1]
+        if end >= target:
+            length = end - cum[i]
+            t = 0.0 if length <= 1e-9 else (target - cum[i]) / length
             ax, ay = points[i]
             bx, by = points[i + 1]
             return ax + (bx - ax) * t, ay + (by - ay) * t
-        acc += length
     return points[-1]

@@ -49,12 +49,29 @@ def test_path_polyline_curves():
 
 
 def test_interpolate_polyline_endpoints():
+    from pathways import interpolate_polyline_cached, polyline_arc_lengths
+
     pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
     assert interpolate_polyline(pts, 0.0) == (0.0, 0.0)
     assert interpolate_polyline(pts, 1.0) == (10.0, 10.0)
     mid = interpolate_polyline(pts, 0.5)
     assert abs(mid[0] - 10.0) < 1e-6
     assert abs(mid[1] - 0.0) < 1e-6
+    cum, total = polyline_arc_lengths(pts)
+    assert abs(total - 20.0) < 1e-6
+    mid2 = interpolate_polyline_cached(pts, cum, total, 0.5)
+    assert mid2 == mid
+
+
+def test_path_arc_for_idx_matches_polyline():
+    graph = get_park_graph()
+    i = graph.node_to_idx(graph.entrance_node)
+    j = graph.node_to_idx(graph.ride_node(0))
+    poly = graph.path_polyline_for_idx(i, j)
+    poly2, cum, total = graph.path_arc_for_idx(i, j)
+    assert poly == poly2
+    assert len(cum) == len(poly)
+    assert total >= 0.0
 
 
 def test_softmax_equal_lengths_share_mass():

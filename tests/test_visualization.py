@@ -74,6 +74,51 @@ def test_replay_helpers():
     assert "status" in g
 
 
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_prefetch_and_arc_cache():
+    from park_graph import get_park_graph, reset_park_graph
+    from visualize import (
+        MAX_FRAME_DT,
+        MAX_WALK_DOTS,
+        PREFETCH_UNTIL_SEC,
+        ReplayState,
+        build_node_coords,
+        prefetch_walk_polylines,
+        walk_position,
+    )
+
+    assert MAX_WALK_DOTS <= 1500
+    assert MAX_FRAME_DT <= 1.0 / 20.0
+    assert PREFETCH_UNTIL_SEC >= 10 * 60
+
+    reset_park_graph()
+    rec = record_day(seed=7, sample_interval_sec=300)
+    state = ReplayState.from_recording(rec, build_node_coords())
+    n = prefetch_walk_polylines(state, until_sec=5 * 60, persist=True)
+    assert n > 0
+    park = get_park_graph()
+    assert len(park._path_polylines) >= n
+
+    # Cached entries are (polyline, cum_lengths, total)
+    sample = next(iter(park._path_polylines.values()))
+    poly, cum, total = sample
+    assert len(poly) >= 1
+    assert len(cum) == len(poly)
+    assert total >= 0.0
+
+    early = next(w for w in state.walks if float(w.start_sec) <= 5 * 60)
+    x, y = walk_position(state, early, float(early.start_sec) + 1.0)
+    assert 0 <= x <= 1100
+    assert 0 <= y <= 1100
+
+    # Disk cache round-trip
+    n_disk = len(park._path_polylines)
+    reset_park_graph()
+    park2 = get_park_graph()
+    assert park2.load_polyline_cache() >= n_disk
+    assert len(park2._path_polylines) >= n_disk
+
+
 def test_visualize_window_is_scaled_down():
     from visualize import (
         CONTROL_HEIGHT,
