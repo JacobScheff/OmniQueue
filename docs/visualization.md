@@ -62,7 +62,9 @@ Periodic snapshot: `wait[NUM_RIDES]`, `broken[NUM_RIDES]`, `queue_len[NUM_RIDES]
 - Park pathways are **OSM pedestrian polylines** from `data/pathways.json` (see `docs/park-graph.md`), not straight hub-to-hub spokes.
 - Party walk dots follow the **recorded `path_variant` polyline** between `from_idx` / `to_idx` (arc-length interpolation), not always the global shortest path.
 - Wait labels on rides show **minutes** (`wait_sec / 60`); broken rides show `X`.
-- Crowd dots are subsampled when more than ~2500 parties are walking at once.
+- Crowd dots are subsampled when more than ~1200 parties are walking at once.
+- Static park backdrop (pathways / hubs / entrance) is rendered once to a surface and blit each frame.
+- Opening-window walk polylines are **prefetched** at startup; frame `dt` is capped so a slow frame cannot jump simulation time into uncached path lookups (that used to freeze the UI after ~10s of play).
 - PPO / trained-model routing is not wired into recording yet; visualization uses the built-in heuristic day.
 
 ## Dependencies

@@ -248,7 +248,10 @@ class ParkGraph:
         )
 
         # Lazy cache of walkway polylines between routing node indices (visualization).
-        self._path_polylines: dict[tuple[int, int, int], list[tuple[float, float]]] = {}
+        # Value: (points, cumulative arc lengths, total length)
+        self._path_polylines: dict[
+            tuple[int, int, int], tuple[list[tuple[float, float]], list[float], float]
+        ] = {}
 
     @property
     def entrance_node(self) -> int:
@@ -292,9 +295,18 @@ class ParkGraph:
     def path_polyline_for_idx(
         self, from_idx: int, to_idx: int, variant: int = 0
     ) -> list[tuple[float, float]]:
+        return self.path_arc_for_idx(from_idx, to_idx, variant=variant)[0]
+
+    def path_arc_for_idx(
+        self, from_idx: int, to_idx: int, variant: int = 0
+    ) -> tuple[list[tuple[float, float]], list[float], float]:
+        """Return (polyline, cumulative arc lengths, total length) for a walk."""
+        from pathways import polyline_arc_lengths
+
         if from_idx == to_idx:
             nid = self.idx_to_node(from_idx)
-            return [self._graph.node_coords[nid]]
+            poly = [self._graph.node_coords[nid]]
+            return poly, [0.0], 0.0
         key = (from_idx, to_idx, int(variant))
         cached = self._path_polylines.get(key)
         if cached is not None:
@@ -308,8 +320,10 @@ class ParkGraph:
             a = self._graph.node_coords[self.idx_to_node(from_idx)]
             b = self._graph.node_coords[self.idx_to_node(to_idx)]
             poly = [a, b]
-        self._path_polylines[key] = poly
-        return poly
+        cum, total = polyline_arc_lengths(poly)
+        packed = (poly, cum, total)
+        self._path_polylines[key] = packed
+        return packed
 
 
 _GRAPH: ParkGraph | None = None

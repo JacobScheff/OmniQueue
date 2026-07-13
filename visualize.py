@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import config
 from park_graph import get_park_graph
+from pathways import interpolate_polyline_cached, load_pathways
 from simulator import native_backend_name, record_day
 
 # Layout (park coords are ~0–1000; display scaled ~15% down)
@@ -27,7 +28,12 @@ CONTROL_HEIGHT = int(70 * UI_SCALE)
 SCREEN_WIDTH = PARK_WIDTH + SIDEBAR_WIDTH
 SCREEN_HEIGHT = PARK_HEIGHT + CONTROL_HEIGHT
 FPS = 60
-MAX_WALK_DOTS = 2500
+MAX_WALK_DOTS = 1200
+# Cap frame dt so a slow frame cannot jump sim time into cold polyline territory
+# (path-variant lookups are expensive on miss and used to death-spiral the UI).
+MAX_FRAME_DT = 1.0 / 30.0
+# Prefetch unique walk polylines that start in the opening window.
+PREFETCH_UNTIL_SEC = 15 * 60
 
 
 def _s(v: float) -> int:
@@ -133,23 +139,50 @@ def active_walks_at(state: ReplayState, sec: float) -> list:
 
 
 def walk_position(state: ReplayState, walk, sec: float) -> tuple[float, float]:
-    from pathways import interpolate_polyline
-
     planned = int(getattr(walk, "planned_end_sec", walk.end_sec))
     duration = max(1, planned - int(walk.start_sec))
     progress = max(0.0, min(1.0, (sec - float(walk.start_sec)) / duration))
     park = get_park_graph()
     variant = int(getattr(walk, "path_variant", 0) or 0)
-    poly = park.path_polyline_for_idx(int(walk.from_idx), int(walk.to_idx), variant=variant)
+    poly, cum, total = park.path_arc_for_idx(
+        int(walk.from_idx), int(walk.to_idx), variant=variant
+    )
     if len(poly) >= 2:
-        return interpolate_polyline(poly, progress)
+        return interpolate_polyline_cached(poly, cum, total, progress)
     sx, sy = _node_xy(state, int(walk.from_idx))
     ex, ey = _node_xy(state, int(walk.to_idx))
     return sx + (ex - sx) * progress, sy + (ey - sy) * progress
 
 
-def party_state_at(state: ReplayState, party_id: int, sec: float) -> dict | None:
-    party = next((p for p in state.parties if int(p.party_id) == party_id), None)
+def prefetch_walk_polylines(state: ReplayState, until_sec: float = PREFETCH_UNTIL_SEC) -> int:
+    """Warm the path-polyline cache for walks that start in the opening window."""
+    park = get_park_graph()
+    keys: set[tuple[int, int, int]] = set()
+    for w in state.walks:
+        if float(w.start_sec) > until_sec:
+            continue
+        keys.add(
+            (
+                int(w.from_idx),
+                int(w.to_idx),
+                int(getattr(w, "path_variant", 0) or 0),
+            )
+        )
+    for from_idx, to_idx, variant in keys:
+        park.path_arc_for_idx(from_idx, to_idx, variant=variant)
+    return len(keys)
+
+
+def party_state_at(
+    state: ReplayState,
+    party_id: int,
+    sec: float,
+    party_by_id: dict[int, object] | None = None,
+) -> dict | None:
+    if party_by_id is not None:
+        party = party_by_id.get(party_id)
+    else:
+        party = next((p for p in state.parties if int(p.party_id) == party_id), None)
     if party is None:
         return None
     if sec < float(party.spawn_sec):
@@ -241,6 +274,8 @@ def run_visualizer(
         f"{len(state.ride_samples)} ride samples, "
         f"{state.metrics.rides_completed} rides completed"
     )
+    n_prefetch = prefetch_walk_polylines(state)
+    print(f"Prefetched {n_prefetch} walk polylines (first {PREFETCH_UNTIL_SEC // 60} min)")
 
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -264,6 +299,45 @@ def run_visualizer(
     ACCENT = (240, 190, 60)
     TEXT = (230, 235, 240)
     MUTED = (140, 150, 160)
+
+    # Static park backdrop (pathways + hubs + entrance) — drawn once, blit each frame
+    park_surface = pygame.Surface((PARK_WIDTH, PARK_HEIGHT))
+    park_surface.fill(BG)
+    park = get_park_graph()
+    pathways = load_pathways()
+    if pathways is not None:
+        for poly in pathways.all_edge_polylines():
+            if len(poly) < 2:
+                continue
+            pygame.draw.lines(
+                park_surface,
+                PATH,
+                False,
+                [_xy(x, y) for x, y in poly],
+                max(1, _s(2)),
+            )
+    else:
+        for a, b in config.MACRO_EDGES:
+            ax, ay = park._graph.node_coords[a]
+            bx, by = park._graph.node_coords[b]
+            pygame.draw.line(park_surface, PATH, _xy(ax, ay), _xy(bx, by), max(1, _s(2)))
+        for ride_id, hub in enumerate(config.RIDE_HUB):
+            rx, ry = config.RIDES[ride_id]["coords"]
+            hx, hy = config.HUB_COORDS[hub]
+            pygame.draw.line(park_surface, PATH, _xy(hx, hy), _xy(rx, ry), 1)
+    for nid, (hx, hy) in config.HUB_COORDS.items():
+        if nid == config.NODE_ENTRANCE:
+            continue
+        pygame.draw.circle(park_surface, HUB, _xy(hx, hy), _s(6))
+    ex, ey = _xy(*config.ENTRANCE_COORDS)
+    pygame.draw.rect(
+        park_surface,
+        ENTRANCE,
+        (ex - _s(40), ey - _s(18), _s(80), _s(36)),
+        border_radius=_s(4),
+    )
+    ent = wait_font.render("ENTRANCE", True, TEXT)
+    park_surface.blit(ent, (ex - ent.get_width() // 2, ey - _s(8)))
 
     float_sec = 0.0
     playing = True
@@ -296,50 +370,7 @@ def run_visualizer(
         selected_party = state.sorted_party_ids[0]
 
     def draw() -> None:
-        screen.fill(BG)
-
-        # Pathways (OSM walkway polylines when available)
-        park = get_park_graph()
-        from pathways import load_pathways
-
-        pathways = load_pathways()
-        if pathways is not None:
-            for poly in pathways.all_edge_polylines():
-                if len(poly) < 2:
-                    continue
-                pygame.draw.lines(
-                    screen,
-                    PATH,
-                    False,
-                    [_xy(x, y) for x, y in poly],
-                    max(1, _s(2)),
-                )
-        else:
-            for a, b in config.MACRO_EDGES:
-                ax, ay = park._graph.node_coords[a]
-                bx, by = park._graph.node_coords[b]
-                pygame.draw.line(screen, PATH, _xy(ax, ay), _xy(bx, by), max(1, _s(2)))
-            for ride_id, hub in enumerate(config.RIDE_HUB):
-                rx, ry = config.RIDES[ride_id]["coords"]
-                hx, hy = config.HUB_COORDS[hub]
-                pygame.draw.line(screen, PATH, _xy(hx, hy), _xy(rx, ry), 1)
-
-        # Hubs
-        for nid, (hx, hy) in config.HUB_COORDS.items():
-            if nid == config.NODE_ENTRANCE:
-                continue
-            pygame.draw.circle(screen, HUB, _xy(hx, hy), _s(6))
-
-        # Entrance
-        ex, ey = _xy(*config.ENTRANCE_COORDS)
-        pygame.draw.rect(
-            screen,
-            ENTRANCE,
-            (ex - _s(40), ey - _s(18), _s(80), _s(36)),
-            border_radius=_s(4),
-        )
-        ent = wait_font.render("ENTRANCE", True, TEXT)
-        screen.blit(ent, (ex - ent.get_width() // 2, ey - _s(8)))
+        screen.blit(park_surface, (0, 0))
 
         # Clock + metrics
         clock_txt = large_font.render(format_clock(float_sec), True, TEXT)
@@ -379,7 +410,7 @@ def run_visualizer(
 
         # Tracked party
         if selected_party is not None:
-            g = party_state_at(state, selected_party, float_sec)
+            g = party_state_at(state, selected_party, float_sec, party_by_id)
             if g and g.get("pos"):
                 gx, gy = _xy(*g["pos"])
                 if "dest" in g:
@@ -466,7 +497,7 @@ def run_visualizer(
             1,
         )
         if selected_party is not None:
-            g = party_state_at(state, selected_party, float_sec)
+            g = party_state_at(state, selected_party, float_sec, party_by_id)
             t1 = large_font.render(f"Tracking #{selected_party}", True, ACCENT)
             screen.blit(t1, (PARK_WIDTH + _s(16), _s(420)))
             status = g["status"] if g else "Unknown"
@@ -499,7 +530,7 @@ def run_visualizer(
 
     running = True
     while running:
-        dt = clock.tick(FPS) / 1000.0
+        dt = min(clock.tick(FPS) / 1000.0, MAX_FRAME_DT)
         mx, my = pygame.mouse.get_pos()
 
         for event in pygame.event.get():
