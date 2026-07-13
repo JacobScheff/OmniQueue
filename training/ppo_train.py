@@ -26,6 +26,10 @@ from training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
 
 
+def _coordinator_chunk_size() -> int:
+    return int(getattr(config, "MAX_COORDINATOR_GUESTS", 32))
+
+
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -141,9 +145,39 @@ class Agent(nn.Module):
         """Policy forward with legal-action masking.
 
         joint_group=True treats ``obs`` as one co-timed wave (G, flat) so the
-        coordinator can attend across parties. Otherwise each row is G=1.
+        coordinator can attend across parties. Oversized waves are automatically
+        split into chunks of ``MAX_COORDINATOR_GUESTS``.
         """
         if joint_group:
+            if obs.dim() == 1:
+                obs = obs.unsqueeze(0)
+            max_g = _coordinator_chunk_size()
+            if obs.shape[0] > max_g:
+                actions_out: list[torch.Tensor] = []
+                logprobs_out: list[torch.Tensor] = []
+                entropy_out: list[torch.Tensor] = []
+                values_out: list[torch.Tensor] = []
+                offset = 0
+                while offset < obs.shape[0]:
+                    chunk = obs[offset : offset + max_g]
+                    chunk_action = None
+                    if action is not None:
+                        chunk_action = action[offset : offset + max_g]
+                    a, lp, ent, val = self.get_action_and_value(
+                        chunk, chunk_action, joint_group=True
+                    )
+                    actions_out.append(a)
+                    logprobs_out.append(lp)
+                    entropy_out.append(ent)
+                    values_out.append(val)
+                    offset += max_g
+                return (
+                    torch.cat(actions_out, dim=0),
+                    torch.cat(logprobs_out, dim=0),
+                    torch.cat(entropy_out, dim=0),
+                    torch.cat(values_out, dim=0),
+                )
+
             guest, ride, env = obs_group_to_tensors(obs)
             logits, value, _ = forward_with_mask(self.model, guest, ride, env)
             logits = logits[0]  # (G, A)
@@ -218,7 +252,7 @@ def _collect_episode(
     staged_actions: np.ndarray | None = None
     staged_logprobs: np.ndarray | None = None
     staged_values: np.ndarray | None = None
-    staged_wave_id: int | None = None
+    staged_wave_ids: np.ndarray | None = None
 
     def _record_rewards(rewards_arr: np.ndarray, terminal: bool) -> None:
         nonlocal routing_steps, episode_return, last_log_step
@@ -226,8 +260,8 @@ def _collect_episode(
             raise RuntimeError("Rollout batch state missing staged transitions.")
         if staged_logprobs is None or staged_values is None:
             raise RuntimeError("Rollout batch state missing staged policy outputs.")
-        if staged_wave_id is None:
-            raise RuntimeError("Rollout batch state missing staged wave id.")
+        if staged_wave_ids is None:
+            raise RuntimeError("Rollout batch state missing staged wave ids.")
 
         for i in range(len(rewards_arr)):
             obs_row = staged_obs[i]
@@ -236,7 +270,7 @@ def _collect_episode(
             logprob_buf.append(float(staged_logprobs[i]))
             value_buf.append(float(staged_values[i]))
             reward_buf.append(float(rewards_arr[i]))
-            wave_id_buf.append(int(staged_wave_id))
+            wave_id_buf.append(int(staged_wave_ids[i]))
             episode_return += float(rewards_arr[i])
             routing_steps += 1
             done_buf.append(1.0 if terminal and i == len(rewards_arr) - 1 else 0.0)
@@ -298,8 +332,13 @@ def _collect_episode(
         staged_actions = actions.detach().cpu().numpy()
         staged_logprobs = logprobs.detach().cpu().numpy()
         staged_values = values.detach().cpu().numpy()
-        staged_wave_id = wave_counter
-        wave_counter += 1
+        # One wave id per coordinator chunk so PPO updates never rebuild huge G.
+        max_g = _coordinator_chunk_size()
+        staged_wave_ids = np.empty(obs_np.shape[0], dtype=np.int64)
+        for start in range(0, obs_np.shape[0], max_g):
+            end = min(start + max_g, obs_np.shape[0])
+            staged_wave_ids[start:end] = wave_counter
+            wave_counter += 1
         pending_actions = [int(a) for a in staged_actions.tolist()]
 
     if not obs_buf:

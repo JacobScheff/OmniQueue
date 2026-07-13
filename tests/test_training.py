@@ -199,6 +199,39 @@ def test_compute_gae_bootstraps_when_truncated():
     assert abs(float(adv_t[-1]) - 1.0) < 1e-5
 
 
+def test_chunk_wave_respects_max_guests():
+    from training.bc_train import WaveSample, chunk_wave
+
+    g = 100
+    wave = WaveSample(
+        guest=np.zeros((g, GUEST_FEAT_DIM), dtype=np.float32),
+        ride=np.zeros((g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32),
+        env=np.zeros(ENV_DYNAMIC_FEAT_DIM, dtype=np.float32),
+        actions=np.zeros(g, dtype=np.int64),
+    )
+    chunks = chunk_wave(wave, max_guests=32)
+    assert len(chunks) == 4  # 32+32+32+4
+    assert all(c.guest.shape[0] <= 32 for c in chunks)
+    assert sum(c.guest.shape[0] for c in chunks) == g
+
+
+def test_joint_policy_auto_chunks_large_groups():
+    agent = Agent()
+    g = 70
+    flat = torch.zeros(g, FLAT_OBS_DIM)
+    flat[:, 37] = 0.5
+    g_end = GUEST_FEAT_DIM
+    r_end = g_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    ride_view = flat[:, g_end:r_end].view(g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+    ride_view[..., RIDE_FEAT_OPEN] = 1.0
+    ride_view[..., RIDE_FEAT_WALK] = 0.1
+    actions, logprobs, entropy, values = agent.get_action_and_value(flat, joint_group=True)
+    assert actions.shape == (g,)
+    assert logprobs.shape == (g,)
+    assert values.shape == (g,)
+    assert torch.isfinite(logprobs).all()
+
+
 def test_apply_action_mask_helper():
     logits = torch.zeros(1, 1, 4)
     mask = torch.tensor([[[True, False, True, False]]])

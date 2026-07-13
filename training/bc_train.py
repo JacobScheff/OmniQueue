@@ -75,7 +75,7 @@ class BCWaveDataset(Dataset):
 def _collate_waves(
     batch: list[WaveSample],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Pad waves in a minibatch to a common guest count G_max."""
+    """Pad waves in a minibatch to a common guest count G_max (≤ MAX_COORDINATOR_GUESTS)."""
     max_g = max(w.guest.shape[0] for w in batch)
     bsz = len(batch)
     guest = torch.zeros(bsz, max_g, GUEST_FEAT_DIM, dtype=torch.float32)
@@ -86,16 +86,38 @@ def _collate_waves(
 
     for i, wave in enumerate(batch):
         g = wave.guest.shape[0]
-        guest[i, :g] = torch.from_numpy(wave.guest)
-        ride[i, :g] = torch.from_numpy(wave.ride)
-        env[i] = torch.from_numpy(wave.env)
-        actions[i, :g] = torch.from_numpy(wave.actions)
+        guest[i, :g] = torch.from_numpy(np.ascontiguousarray(wave.guest))
+        ride[i, :g] = torch.from_numpy(np.ascontiguousarray(wave.ride))
+        env[i] = torch.from_numpy(np.ascontiguousarray(wave.env))
+        actions[i, :g] = torch.from_numpy(np.ascontiguousarray(wave.actions))
         padding[i, :g] = True
     return guest, ride, env, actions, padding
 
 
-def samples_to_waves(samples) -> list[WaveSample]:
-    """Group flat BC samples by wave_id into multi-party waves."""
+def chunk_wave(wave: WaveSample, max_guests: int) -> list[WaveSample]:
+    """Split an oversized co-timed wave into coordinator-sized chunks."""
+    g = int(wave.guest.shape[0])
+    if g <= max_guests:
+        return [wave]
+    chunks: list[WaveSample] = []
+    for start in range(0, g, max_guests):
+        end = min(start + max_guests, g)
+        chunks.append(
+            WaveSample(
+                guest=wave.guest[start:end],
+                ride=wave.ride[start:end],
+                env=wave.env,
+                actions=wave.actions[start:end],
+            )
+        )
+    return chunks
+
+
+def samples_to_waves(
+    samples,
+    max_guests: int = config.MAX_COORDINATOR_GUESTS,
+) -> list[WaveSample]:
+    """Group flat BC samples by wave_id, then chunk to ``max_guests``."""
     buckets: dict[int, list] = defaultdict(list)
     for sample in samples:
         buckets[int(sample.wave_id)].append(sample)
@@ -107,7 +129,8 @@ def samples_to_waves(samples) -> list[WaveSample]:
         rides = np.stack([np.asarray(s.obs.ride, dtype=np.float32) for s in group], axis=0)
         env = np.asarray(group[0].obs.env, dtype=np.float32)
         actions = np.asarray([s.action for s in group], dtype=np.int64)
-        waves.append(WaveSample(guest=guests, ride=rides, env=env, actions=actions))
+        wave = WaveSample(guest=guests, ride=rides, env=env, actions=actions)
+        waves.extend(chunk_wave(wave, max_guests))
     return waves
 
 
@@ -129,10 +152,12 @@ def train(cfg: BCConfig) -> None:
     if not samples:
         raise RuntimeError("No BC samples collected.")
 
-    waves = samples_to_waves(samples)
+    waves = samples_to_waves(samples, max_guests=config.MAX_COORDINATOR_GUESTS)
+    del samples  # free raw Observation objects before building the DataLoader
+    sizes = [w.guest.shape[0] for w in waves]
     print(
-        f"Grouped into {len(waves)} co-timed waves "
-        f"(mean G={np.mean([w.guest.shape[0] for w in waves]):.1f})",
+        f"Grouped into {len(waves)} coordinator chunks "
+        f"(G≤{config.MAX_COORDINATOR_GUESTS}, mean G={np.mean(sizes):.1f}, max G={max(sizes)})",
         flush=True,
     )
     dataset = BCWaveDataset(waves)
@@ -142,6 +167,7 @@ def train(cfg: BCConfig) -> None:
         shuffle=True,
         drop_last=False,
         collate_fn=_collate_waves,
+        num_workers=0,
     )
 
     model: ParkRouterModel = default_model(device)

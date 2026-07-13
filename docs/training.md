@@ -99,7 +99,15 @@ Flat observation size: **321** (`FLAT_OBS_DIM` = 45 + 34×8 + 4).
 - Per-party critic head.
 - **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal. BC uses **masked cross-entropy** over padded multi-party waves.
 
-BC groups heuristic labels by `wave_id` (parties routed in the same `decide_routes` call). PPO rollouts / updates keep the same joint-wave grouping so coordinator context matches.
+BC groups heuristic labels by `wave_id` (parties routed in the same `decide_routes` call), then **chunks** each wave to at most `MAX_COORDINATOR_GUESTS` (default **32**) so the coordinator never attends over opening-rush cohorts of thousands of parties. PPO uses the same chunk size. This cap is what prevents OOM — shrinking `d_model` alone does not, because BC collate previously padded every minibatch to the largest wave in the batch (G up to ~2800) and attention is O(G²).
+
+Related memory knobs in `config.py`:
+
+| Knob | Default | Notes |
+|------|---------|--------|
+| `MAX_COORDINATOR_GUESTS` | 32 | Hard cap on G per forward |
+| `BC_BATCH_SIZE` | 64 | Count of *waves*, not decisions |
+| `PPO_INFERENCE_BATCH_SIZE` | 256 | C++ pending parties; policy chunks to `MAX_COORDINATOR_GUESTS` |
 
 ## Checkpoint format
 
