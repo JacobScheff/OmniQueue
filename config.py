@@ -49,6 +49,14 @@ MUST_DO_PREF_BOOST = 10.0
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
 MAX_ROUTE_BATCH = 256
+# Ride-repeat dampening (mirrored in native/include/park_sim.hpp)
+REPEAT_TOP_K = 3                 # Pass 2: allow repeats for top-K preference ranks
+REPEAT_PREF_THRESHOLD = 0.04     # Pass 2: or if normalized pref >= this
+REPEAT_PREF_SCALE = 2.0          # max_repeats = 1 + floor(scale * pref * NUM_RIDES)
+REPEAT_MAX = 3                   # hard cap on preferred-repeat completions
+REPEAT_BALK_FACTOR = 1.0         # multiply balk threshold for Pass 2 (1.0 = same as fresh)
+SHORT_WAIT_SEC = 12 * 60         # Pass 3: absolute short-wait bar
+SHORT_WAIT_SLACK_SEC = 2 * 60    # Pass 3: accept within slack of best feasible wait
 
 # --- Metrics ---
 METRICS_SAMPLE_INTERVAL_SEC = 300

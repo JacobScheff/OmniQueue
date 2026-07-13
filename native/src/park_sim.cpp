@@ -223,6 +223,31 @@ int random_idle_node_idx(Rng& rng, int from_idx) {
     return candidates[rng.randint(0, static_cast<int>(candidates.size()))];
 }
 
+bool route_candidate_feasible(
+    int ride_id,
+    int current_ride,
+    int node_idx,
+    double scale,
+    int remaining,
+    const std::array<bool, kNumRides>& open_mask,
+    const std::array<float, kNumRides>& wait_times,
+    const std::array<int, kNumRides>& durations) {
+    if (current_ride >= 0 && ride_id == current_ride) {
+        return false;
+    }
+    if (!open_mask[ride_id]) {
+        return false;
+    }
+    const int walk = std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][ride_id] * scale)));
+    return walk + static_cast<int>(wait_times[ride_id]) + durations[ride_id] <= remaining;
+}
+
+int max_repeats_for_pref(float preference) {
+    const int scaled =
+        1 + static_cast<int>(std::floor(kRepeatPrefScale * static_cast<double>(preference) * kNumRides));
+    return std::max(1, std::min(scaled, kRepeatMax));
+}
+
 int route_one(
     int party_id,
     int now_sec,
@@ -243,41 +268,114 @@ int route_one(
     }
     const double scale = kBaseWalkingSpeed / speed;
     const int current_ride = gd::kNodeIdxToRide[node_idx];
+    const auto& order = parties.preference_order[party_id];
+    const auto& history = parties.ride_history[party_id];
+    const auto& prefs = parties.preferences[party_id];
+    const auto& balk = parties.balk_sec[party_id];
 
+    auto feasible = [&](int ride_id) {
+        return route_candidate_feasible(
+            ride_id, current_ride, node_idx, scale, remaining, open_mask, wait_times, durations);
+    };
+
+    // Pass 1 — fresh rides (never completed by this party).
     for (int k = 0; k < kNumRides; ++k) {
-        const int ride_id = parties.preference_order[party_id][k];
-        if (current_ride >= 0 && ride_id == current_ride) {
+        const int ride_id = order[k];
+        if (history[ride_id] != 0) {
             continue;
         }
-        if (!open_mask[ride_id]) {
+        if (!feasible(ride_id)) {
             continue;
         }
-        const int walk = std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][ride_id] * scale)));
-        if (walk + static_cast<int>(wait_times[ride_id]) + durations[ride_id] > remaining) {
-            continue;
-        }
-        if (wait_times[ride_id] <= parties.balk_sec[party_id][ride_id]) {
+        if (wait_times[ride_id] <= balk[ride_id]) {
             return ride_id;
         }
     }
 
+    // Pass 2 — preferred / limited repeats.
+    for (int k = 0; k < kNumRides; ++k) {
+        const int ride_id = order[k];
+        const int hist = history[ride_id];
+        if (hist < 1) {
+            continue;
+        }
+        const bool top_k = k < kRepeatTopK;
+        const bool high_pref = prefs[ride_id] >= static_cast<float>(kRepeatPrefThreshold);
+        if (!top_k && !high_pref) {
+            continue;
+        }
+        if (hist >= max_repeats_for_pref(prefs[ride_id])) {
+            continue;
+        }
+        if (!feasible(ride_id)) {
+            continue;
+        }
+        const float effective_balk = balk[ride_id] * static_cast<float>(kRepeatBalkFactor);
+        if (wait_times[ride_id] <= effective_balk) {
+            return ride_id;
+        }
+    }
+
+    // Pass 3 — opportunistic short wait (any history).
+    float min_feasible_wait = std::numeric_limits<float>::infinity();
+    for (int k = 0; k < kNumRides; ++k) {
+        const int ride_id = order[k];
+        if (!feasible(ride_id)) {
+            continue;
+        }
+        min_feasible_wait = std::min(min_feasible_wait, wait_times[ride_id]);
+    }
+    if (std::isfinite(min_feasible_wait)) {
+        int best_ride = -1;
+        int best_hist = std::numeric_limits<int>::max();
+        int best_rank = std::numeric_limits<int>::max();
+        for (int k = 0; k < kNumRides; ++k) {
+            const int ride_id = order[k];
+            if (!feasible(ride_id)) {
+                continue;
+            }
+            const float wait = wait_times[ride_id];
+            const bool absolute_short = wait <= static_cast<float>(kShortWaitSec);
+            const bool relative_short = min_feasible_wait <= static_cast<float>(kShortWaitSec) &&
+                                        wait <= min_feasible_wait + static_cast<float>(kShortWaitSlackSec);
+            if (!absolute_short && !relative_short) {
+                continue;
+            }
+            const int hist = history[ride_id];
+            if (hist < best_hist || (hist == best_hist && k < best_rank)) {
+                best_ride = ride_id;
+                best_hist = hist;
+                best_rank = k;
+            }
+        }
+        if (best_ride >= 0) {
+            return best_ride;
+        }
+    }
+
+    // Pass 4 — idle wander or novelty-aware force-pick.
     if (rand_u01 < kIdleWalkProb) {
         return kRouteIdleCode;
     }
 
+    int best_ride = -1;
+    int best_hist = std::numeric_limits<int>::max();
     for (int k = 0; k < kNumRides; ++k) {
-        const int ride_id = parties.preference_order[party_id][k];
-        if (current_ride >= 0 && ride_id == current_ride) {
+        const int ride_id = order[k];
+        if (!feasible(ride_id)) {
             continue;
         }
-        if (!open_mask[ride_id]) {
-            continue;
+        const int hist = history[ride_id];
+        if (hist < best_hist) {
+            best_ride = ride_id;
+            best_hist = hist;
+            if (best_hist == 0) {
+                break;  // preference order already; first fresh feasible wins
+            }
         }
-        const int walk = std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][ride_id] * scale)));
-        if (walk + static_cast<int>(wait_times[ride_id]) + durations[ride_id] > remaining) {
-            continue;
-        }
-        return ride_id;
+    }
+    if (best_ride >= 0) {
+        return best_ride;
     }
 
     return kExitRideId;
@@ -1251,7 +1349,31 @@ private:
     std::vector<int> active_walk_idx_;
 };
 
+int route_one_for_test_impl(const RouteOneTestInput& input) {
+    PartyArrays parties;
+    parties.count = 1;
+    parties.leave_sec = {input.leave_sec};
+    parties.location_node_idx = {input.node_idx};
+    parties.effective_speed = {input.speed};
+    parties.preference_order = {input.preference_order};
+    parties.preferences = {input.preferences};
+    parties.balk_sec = {input.balk_sec};
+    parties.ride_history = {input.ride_history};
+    return route_one(
+        0,
+        input.now_sec,
+        parties,
+        input.open_mask,
+        input.wait_times,
+        input.durations,
+        input.rand_u01);
+}
+
 }  // namespace detail
+
+int route_one_for_test(const RouteOneTestInput& input) {
+    return detail::route_one_for_test_impl(input);
+}
 
 std::array<float, kFlatObsDim> Observation::flat() const {
     std::array<float, kFlatObsDim> out{};

@@ -13,8 +13,12 @@ Guests are grouped into **parties** stored in a **struct-of-arrays** layout insi
 | `leave_sec` | int32 | Scheduled park departure second |
 | `location_node_idx` | int32 | Current graph node index |
 | `effective_speed` | float32 | Party walking speed (min-of-member draw) |
-| `preference_order` | int16 × 35 | Pre-sorted ride indices per party |
-| `balk_sec` | float32 × 35 | Precomputed balk thresholds |
+| `preference_order` | int16 × N | Pre-sorted ride indices per party (`N = NUM_RIDES`) |
+| `preferences` | float32 × N | Normalized per-ride preference masses |
+| `balk_sec` | float32 × N | Precomputed balk thresholds |
+| `must_do_remaining` | uint8 × N | Unfinished must-do flags |
+| `ride_history` | int16 × N | Completions per ride (drives heuristic repeat dampening) |
+| `rides_completed` | int32 | Total completions for this party |
 | `walk_target_ride` | int32 | Ride id while walking (-1 if none) |
 | `state` | int8 | `PartyState` bitmask value |
 

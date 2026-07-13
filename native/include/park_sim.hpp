@@ -47,6 +47,15 @@ constexpr double kBalkPrefExp = 1.5;
 constexpr double kMustDoPrefBoost = 10.0;
 constexpr double kIdleWalkProb = 0.5;
 
+// Heuristic ride-repeat dampening (mirrored from config.py)
+constexpr int kRepeatTopK = 3;                    // Pass 2: top-K preference ranks
+constexpr double kRepeatPrefThreshold = 0.04;     // Pass 2: high-pref mass floor
+constexpr double kRepeatPrefScale = 2.0;          // max_repeats = 1 + floor(scale * pref * N)
+constexpr int kRepeatMax = 3;                     // hard cap on Pass 2 completions
+constexpr double kRepeatBalkFactor = 1.0;         // optional tighter balk on repeats
+constexpr double kShortWaitSec = 12.0 * 60.0;     // Pass 3 absolute short-wait bar
+constexpr double kShortWaitSlackSec = 2.0 * 60.0; // Pass 3 relative-to-best slack
+
 // PPO reward shaping (mirrored from config.py PPO_* reward knobs)
 constexpr float kWaitVarStepCoef = 0.002f;  // dense: -coef * var/1e6 every routing step
 constexpr float kPrefRewardScale = 0.01f;
@@ -186,6 +195,24 @@ int target_from_action(int action);
 DayMetricsResult run_day(uint64_t seed);
 DayRecording record_day(uint64_t seed, int sample_interval_sec = 60);
 std::vector<BCSample> collect_bc_dataset(int num_days, uint64_t seed_start);
+
+/** Deterministic heuristic route helper for unit tests. */
+struct RouteOneTestInput {
+    int now_sec = 0;
+    int leave_sec = kDaySeconds;
+    int node_idx = 0;
+    float speed = static_cast<float>(kBaseWalkingSpeed);
+    std::array<int16_t, kNumRides> preference_order{};
+    std::array<float, kNumRides> preferences{};
+    std::array<float, kNumRides> balk_sec{};
+    std::array<int16_t, kNumRides> ride_history{};
+    std::array<bool, kNumRides> open_mask{};
+    std::array<float, kNumRides> wait_times{};
+    std::array<int, kNumRides> durations{};
+    double rand_u01 = 1.0;  // >= idle prob → skip idle in Pass 4
+};
+
+int route_one_for_test(const RouteOneTestInput& input);
 
 class ParkEnv {
 public:
