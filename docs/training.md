@@ -45,6 +45,7 @@ python training/ppo_train.py \
   --device cpu
 ```
 
+`--init-checkpoint` loads **model weights only** into the PPO agent (fresh Adam). Replacing `agent.model` with a newly constructed module would orphan the optimizer and silently freeze training.
 All PPO hyperparameters (`PPO_LEARNING_RATE`, `PPO_GAMMA`, `PPO_GAE_LAMBDA`, `PPO_CLIP_COEF`, etc.) are configured in `config.py`.
 
 Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `PPO_SUBSAMPLE_SIZE` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, batch size `PPO_INFERENCE_BATCH_SIZE`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
@@ -86,7 +87,7 @@ python training/eval_policy.py \
 | Guest features | `(B, 1, 45)` | Preferences + party state |
 | Ride features | `(B, 35, 5)` | Wait, incoming, open, duration, capacity |
 | Env features | `(B, 4)` | Time of day, mean wait, variance, broken fraction |
-| Actions | `0–34` ride, `35` exit, `36` idle wander |
+| Actions | `0–33` ride, `34` exit, `35` idle wander |
 
 Flat observation size: **224** (`FLAT_OBS_DIM`).
 

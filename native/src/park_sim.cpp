@@ -1407,6 +1407,10 @@ int target_from_action(int action) {
     if (action == kNumRides + 1) {
         return kRouteIdleCode;
     }
+    // Guard against out-of-range actions (valid: 0..kNumActions-1).
+    if (action < 0 || action >= kNumRides) {
+        return kRouteIdleCode;
+    }
     return action;
 }
 

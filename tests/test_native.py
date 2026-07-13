@@ -31,7 +31,7 @@ def test_exchange_batch_matches_step():
     import _park_sim
 
     seed = 7
-    action = 36  # idle wander
+    action = 35  # idle wander (NUM_ACTIONS-1; rides 0..33, exit 34, idle 35)
 
     env_step = _park_sim.ParkEnv(seed)
     env_step.reset(seed)
