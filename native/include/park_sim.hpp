@@ -51,6 +51,8 @@ constexpr double kBaseBalkSec = 40.0 * 60.0;  // 40 min floor (mirrored from con
 constexpr double kBalkScale = 5.0 * 60.0;     // +0–5 min by preference^exp (max ~45 min)
 constexpr double kBalkPrefExp = 1.5;
 constexpr double kMustDoPrefBoost = 10.0;
+// Spawn prefs: popularity * U(1-noise, 1+noise), then must-do boost, L1-normalize.
+constexpr double kPrefPopularityNoise = 0.25;  // mirrored from config.PREF_POPULARITY_NOISE
 constexpr double kIdleWalkProb = 0.5;
 
 // Heuristic ride-repeat dampening (mirrored from config.py)

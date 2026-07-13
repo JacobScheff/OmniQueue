@@ -59,10 +59,12 @@ def main() -> None:
     ride_capacity = []
     ride_duration = []
     ride_breakdown = []
+    ride_popularity = []
     for cfg in config.get_ride_configs():
         ride_capacity.append(cfg["capacity_per_sec"])
         ride_duration.append(cfg["duration_sec"])
         ride_breakdown.append(cfg["breakdown_prob_sec"])
+        ride_popularity.append(float(cfg["popularity"]))
 
     out_dir = ROOT / "native" / "generated"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +91,7 @@ def main() -> None:
         f"inline constexpr std::array<double, kNumRides> kRideCapacityPerSec = {_fmt_float_row(ride_capacity)};",
         f"inline constexpr std::array<int, kNumRides> kRideDurationSec = {_fmt_int_row(ride_duration)};",
         f"inline constexpr std::array<double, kNumRides> kRideBreakdownProbSec = {_fmt_float_row(ride_breakdown)};",
+        f"inline constexpr std::array<double, kNumRides> kRidePopularity = {_fmt_float_row(ride_popularity)};",
         f"inline constexpr std::array<int, kNumRides> kRideNodeIdx = {_fmt_int_row(ride_node_idx)};",
         "",
         f"inline constexpr std::array<int16_t, kNumNodes> kNodeIdxToRide = {_fmt_int_row(node_idx_to_ride)};",

@@ -18,7 +18,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 4. **Second resolution** — park day is 8:00 AM–11:00 PM (54,000 seconds).
 5. **Switchable router** — `config.ROUTER` selects `"heuristic"` (C++ built-in) or `"ppo"` (Phase 3 stub).
 6. **Documentation stays current** — any behavior change must update the matching file in `docs/` in the same change.
-7. **No land-themed preferences** — party preferences are random with must-do boosts only.
+7. **No land-themed preferences** — party preferences are popularity-weighted (from ride `popularity` in `config.py`) with slight per-party noise and must-do boosts; not land-based.
 8. **Breakdown realism** — queued parties decide immediately at the ride entrance but evacuate one party every 4 seconds; on-ride parties evacuate last without ride completion credit.
 
 ## Repository Structure

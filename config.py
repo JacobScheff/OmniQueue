@@ -53,6 +53,8 @@ BASE_BALK_SEC = 40 * 60   # 40 min floor; typical rides stay near this
 BALK_SCALE = 5 * 60       # +0–5 min by preference^BALK_PREF_EXP (max ~45 min)
 BALK_PREF_EXP = 1.5
 MUST_DO_PREF_BOOST = 10.0
+# Spawn prefs: raw[r] = popularity[r] * U(1-noise, 1+noise), then must-do boost, L1-normalize.
+PREF_POPULARITY_NOISE = 0.25  # multiplicative ±25% per ride (slight per-party randomization)
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
 MAX_ROUTE_BATCH = 256
@@ -85,41 +87,43 @@ RIDE_NODE_OFFSET = 100
 NUM_RIDES = 34
 
 # coords in abstract park units (1000x1000-ish layout)
+# Relative demand weights (not absolute guest counts). Sourced from the legacy
+# Disneyland popularity table; used at spawn to bias party preferences / must-dos.
 RIDES: list[dict] = [
-    {"name": "Star Wars: Rise of the Resistance", "capacity_per_hour": 1200, "duration_sec": 18 * 60, "breakdown_prob_per_hour": 0.003, "coords": (100, 250)},
-    {"name": "Millennium Falcon: Smugglers Run", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.001, "coords": (200, 200)},
-    {"name": "Tiana's Bayou Adventure", "capacity_per_hour": 1800, "duration_sec": 10 * 60, "breakdown_prob_per_hour": 0.0015, "coords": (100, 600)},
-    {"name": "The Many Adventures of Winnie the Pooh", "capacity_per_hour": 1000, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (60, 650)},
-    {"name": "Davy Crockett's Explorer Canoes", "capacity_per_hour": 600, "duration_sec": 10 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (120, 650)},
-    {"name": "Haunted Mansion", "capacity_per_hour": 2000, "duration_sec": 9 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (150, 500)},
-    {"name": "Pirates of the Caribbean", "capacity_per_hour": 2800, "duration_sec": 15 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (200, 550)},
-    {"name": "Indiana Jones Adventure", "capacity_per_hour": 1600, "duration_sec": 4 * 60, "breakdown_prob_per_hour": 0.002, "coords": (250, 650)},
-    {"name": "Jungle Cruise", "capacity_per_hour": 1800, "duration_sec": 8 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (320, 620)},
-    {"name": "Walt Disney's Enchanted Tiki Room", "capacity_per_hour": 1200, "duration_sec": 15 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (380, 650)},
-    {"name": "Big Thunder Mountain Railroad", "capacity_per_hour": 2000, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.001, "coords": (350, 450)},
-    {"name": "Mark Twain Riverboat", "capacity_per_hour": 1500, "duration_sec": 14 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (280, 500)},
-    {"name": "Sailing Ship Columbia", "capacity_per_hour": 1200, "duration_sec": 14 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (280, 450)},
-    {"name": "Matterhorn Bobsleds", "capacity_per_hour": 1500, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0015, "coords": (650, 400)},
-    {"name": "Peter Pan's Flight", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (480, 450)},
-    {"name": "Mr. Toad's Wild Ride", "capacity_per_hour": 800, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (520, 450)},
-    {"name": "Snow White's Enchanted Wish", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (460, 470)},
-    {"name": "Pinocchio's Daring Journey", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (440, 440)},
-    {"name": "King Arthur Carrousel", "capacity_per_hour": 1000, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (500, 400)},
-    {"name": "Dumbo the Flying Elephant", "capacity_per_hour": 700, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (550, 350)},
-    {"name": "Mad Tea Party", "capacity_per_hour": 900, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0001, "coords": (600, 430)},
-    {"name": "Alice in Wonderland", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (580, 380)},
-    {"name": "Casey Jr. Circus Train", "capacity_per_hour": 700, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (430, 350)},
-    {"name": "Storybook Land Canal Boats", "capacity_per_hour": 700, "duration_sec": 6 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (480, 330)},
-    {"name": "it's a small world", "capacity_per_hour": 2500, "duration_sec": 14 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (500, 250)},
-    {"name": "Mickey and Minnie's Runaway Railway", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.002, "coords": (500, 150)},
-    {"name": "Roger Rabbit's Car Toon Spin", "capacity_per_hour": 1200, "duration_sec": 4 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (430, 180)},
-    {"name": "Chip 'n' Dale's GADGETcoaster", "capacity_per_hour": 800, "duration_sec": 60, "breakdown_prob_per_hour": 0.0005, "coords": (570, 180)},
-    {"name": "Space Mountain", "capacity_per_hour": 1800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0015, "coords": (850, 550)},
-    {"name": "Star Tours", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.001, "coords": (750, 580)},
-    {"name": "Buzz Lightyear Astro Blasters", "capacity_per_hour": 2000, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (700, 630)},
-    {"name": "Astro Orbitor", "capacity_per_hour": 600, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0002, "coords": (750, 650)},
-    {"name": "Autopia", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (850, 450)},
-    {"name": "Finding Nemo Submarine Voyage", "capacity_per_hour": 1000, "duration_sec": 13 * 60, "breakdown_prob_per_hour": 0.0005, "coords": (780, 480)},
+    {"name": "Star Wars: Rise of the Resistance", "capacity_per_hour": 1200, "duration_sec": 18 * 60, "breakdown_prob_per_hour": 0.003, "popularity": 220, "coords": (100, 250)},
+    {"name": "Millennium Falcon: Smugglers Run", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.001, "popularity": 140, "coords": (200, 200)},
+    {"name": "Tiana's Bayou Adventure", "capacity_per_hour": 1800, "duration_sec": 10 * 60, "breakdown_prob_per_hour": 0.0015, "popularity": 150, "coords": (100, 600)},
+    {"name": "The Many Adventures of Winnie the Pooh", "capacity_per_hour": 1000, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 40, "coords": (60, 650)},
+    {"name": "Davy Crockett's Explorer Canoes", "capacity_per_hour": 600, "duration_sec": 10 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 15, "coords": (120, 650)},
+    {"name": "Haunted Mansion", "capacity_per_hour": 2000, "duration_sec": 9 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 180, "coords": (150, 500)},
+    {"name": "Pirates of the Caribbean", "capacity_per_hour": 2800, "duration_sec": 15 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 230, "coords": (200, 550)},
+    {"name": "Indiana Jones Adventure", "capacity_per_hour": 1600, "duration_sec": 4 * 60, "breakdown_prob_per_hour": 0.002, "popularity": 190, "coords": (250, 650)},
+    {"name": "Jungle Cruise", "capacity_per_hour": 1800, "duration_sec": 8 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 130, "coords": (320, 620)},
+    {"name": "Walt Disney's Enchanted Tiki Room", "capacity_per_hour": 1200, "duration_sec": 15 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 30, "coords": (380, 650)},
+    {"name": "Big Thunder Mountain Railroad", "capacity_per_hour": 2000, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.001, "popularity": 160, "coords": (350, 450)},
+    {"name": "Mark Twain Riverboat", "capacity_per_hour": 1500, "duration_sec": 14 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 40, "coords": (280, 500)},
+    {"name": "Sailing Ship Columbia", "capacity_per_hour": 1200, "duration_sec": 14 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 35, "coords": (280, 450)},
+    {"name": "Matterhorn Bobsleds", "capacity_per_hour": 1500, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0015, "popularity": 120, "coords": (650, 400)},
+    {"name": "Peter Pan's Flight", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 90, "coords": (480, 450)},
+    {"name": "Mr. Toad's Wild Ride", "capacity_per_hour": 800, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 45, "coords": (520, 450)},
+    {"name": "Snow White's Enchanted Wish", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 50, "coords": (460, 470)},
+    {"name": "Pinocchio's Daring Journey", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 40, "coords": (440, 440)},
+    {"name": "King Arthur Carrousel", "capacity_per_hour": 1000, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 30, "coords": (500, 400)},
+    {"name": "Dumbo the Flying Elephant", "capacity_per_hour": 700, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 55, "coords": (550, 350)},
+    {"name": "Mad Tea Party", "capacity_per_hour": 900, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0001, "popularity": 50, "coords": (600, 430)},
+    {"name": "Alice in Wonderland", "capacity_per_hour": 800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 60, "coords": (580, 380)},
+    {"name": "Casey Jr. Circus Train", "capacity_per_hour": 700, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 35, "coords": (430, 350)},
+    {"name": "Storybook Land Canal Boats", "capacity_per_hour": 700, "duration_sec": 6 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 30, "coords": (480, 330)},
+    {"name": "it's a small world", "capacity_per_hour": 2500, "duration_sec": 14 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 135, "coords": (500, 250)},
+    {"name": "Mickey and Minnie's Runaway Railway", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.002, "popularity": 150, "coords": (500, 150)},
+    {"name": "Roger Rabbit's Car Toon Spin", "capacity_per_hour": 1200, "duration_sec": 4 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 70, "coords": (430, 180)},
+    {"name": "Chip 'n' Dale's GADGETcoaster", "capacity_per_hour": 800, "duration_sec": 60, "breakdown_prob_per_hour": 0.0005, "popularity": 45, "coords": (570, 180)},
+    {"name": "Space Mountain", "capacity_per_hour": 1800, "duration_sec": 3 * 60, "breakdown_prob_per_hour": 0.0015, "popularity": 190, "coords": (850, 550)},
+    {"name": "Star Tours", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.001, "popularity": 110, "coords": (750, 580)},
+    {"name": "Buzz Lightyear Astro Blasters", "capacity_per_hour": 2000, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 130, "coords": (700, 630)},
+    {"name": "Astro Orbitor", "capacity_per_hour": 600, "duration_sec": 2 * 60, "breakdown_prob_per_hour": 0.0002, "popularity": 35, "coords": (750, 650)},
+    {"name": "Autopia", "capacity_per_hour": 1800, "duration_sec": 5 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 90, "coords": (850, 450)},
+    {"name": "Finding Nemo Submarine Voyage", "capacity_per_hour": 1000, "duration_sec": 13 * 60, "breakdown_prob_per_hour": 0.0005, "popularity": 70, "coords": (780, 480)},
 ]
 
 ENTRANCE_COORDS = (500, 900)

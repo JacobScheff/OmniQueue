@@ -722,17 +722,36 @@ private:
             const int must_do_count = rng_.randint(0, 5);
             std::array<uint8_t, kNumRides> must_do{};
             if (must_do_count > 0) {
-                std::array<int, kNumRides> rides{};
-                std::iota(rides.begin(), rides.end(), 0);
-                std::shuffle(rides.begin(), rides.end(), rng_.engine());
-                for (int i = 0; i < must_do_count; ++i) {
-                    must_do[rides[i]] = 1;
+                // Sample without replacement, weighted by ride popularity.
+                std::array<double, kNumRides> weights{};
+                for (int i = 0; i < kNumRides; ++i) {
+                    weights[i] = std::max(1e-9, gd::kRidePopularity[i]);
+                }
+                for (int pick = 0; pick < must_do_count; ++pick) {
+                    double total = 0.0;
+                    for (double w : weights) {
+                        total += w;
+                    }
+                    double r = rng_.uniform01() * total;
+                    int chosen = 0;
+                    for (int i = 0; i < kNumRides; ++i) {
+                        r -= weights[i];
+                        if (r <= 0.0) {
+                            chosen = i;
+                            break;
+                        }
+                        chosen = i;
+                    }
+                    must_do[chosen] = 1;
+                    weights[chosen] = 0.0;
                 }
             }
 
             std::array<float, kNumRides> prefs{};
             for (int i = 0; i < kNumRides; ++i) {
-                prefs[i] = static_cast<float>(rng_.uniform01() * 0.9 + 0.1);
+                const double noise =
+                    1.0 + (rng_.uniform01() * 2.0 - 1.0) * kPrefPopularityNoise;
+                prefs[i] = static_cast<float>(gd::kRidePopularity[i] * noise);
                 if (must_do[i]) {
                     prefs[i] *= static_cast<float>(kMustDoPrefBoost);
                 }
