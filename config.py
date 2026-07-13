@@ -212,19 +212,19 @@ BC_LR = 3e-4
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
 PPO_SAVE_EVERY = 500_000          # save checkpoint every N routing steps
-PPO_LEARNING_RATE = 2.5e-4
+PPO_LEARNING_RATE = 1e-3
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
-PPO_GAMMA = 0.99                  # discount factor
+PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
-PPO_NUM_MINIBATCHES = 4           # PPO minibatch count per update
-PPO_UPDATE_EPOCHS = 4             # PPO epochs per day
+PPO_NUM_MINIBATCHES = 8           # PPO minibatch count per update
+PPO_UPDATE_EPOCHS = 10            # PPO epochs per day
 PPO_CLIP_COEF = 0.2               # PPO clipping epsilon
 PPO_ENT_COEF = 0.01               # entropy bonus coefficient
 PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
-PPO_SUBSAMPLE_SIZE = 8192         # random transitions per day used for update
+PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
 PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
-PPO_INFERENCE_BATCH_SIZE = 256    # policy inference batch size during C++ rollout
+PPO_INFERENCE_BATCH_SIZE = 1024   # policy inference batch size during C++ rollout
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 
 # PPO reward shaping (mirrored in park_sim.hpp)
