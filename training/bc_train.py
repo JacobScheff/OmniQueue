@@ -189,8 +189,12 @@ def train(cfg: BCConfig) -> None:
 
             logits, _ = model(guest, ride, env, guest_padding_mask=padding)
             action_mask = build_action_mask(guest, ride, env)
-            action_mask = action_mask & padding.unsqueeze(-1)
             loss = masked_cross_entropy(logits, action, action_mask, padding)
+
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"Non-finite BC loss at step {global_step}: {float(loss.detach().cpu())}"
+                )
 
             optimizer.zero_grad()
             loss.backward()

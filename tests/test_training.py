@@ -100,14 +100,33 @@ def test_masked_cross_entropy_ignores_illegal_and_padding():
     logits[0, 0, 3] = 5.0
     actions = torch.tensor([[3, 0]])
     action_mask = torch.ones(1, 2, NUM_ACTIONS, dtype=torch.bool)
-    action_mask[0, 0, 3] = False  # label is illegal → CE still defined via -inf fill
-    # Make action 0 legal for padded guest so CE is finite on that slot, then zero its weight.
+    # Padded guest fully masked — must not poison the loss via 0*inf.
     padding = torch.tensor([[True, False]])
     action_mask[0, 1, :] = False
-    action_mask[0, 1, 0] = True
-    # For guest 0 pick a legal action
-    action_mask[0, 0, 3] = True
     loss = masked_cross_entropy(logits, actions, action_mask, padding)
+    assert torch.isfinite(loss)
+    assert float(loss) < 1.0
+
+
+def test_masked_cross_entropy_padding_all_illegal_is_finite():
+    """Regression: padding ∧ full action mask → old code produced inf/nan epoch loss."""
+    B, G = 4, 8
+    logits = torch.randn(B, G, NUM_ACTIONS)
+    actions = torch.zeros(B, G, dtype=torch.long)
+    padding = torch.zeros(B, G, dtype=torch.bool)
+    padding[:, :5] = True
+    action_mask = torch.ones(B, G, NUM_ACTIONS, dtype=torch.bool)
+    bad_mask = action_mask & padding.unsqueeze(-1)
+    loss = masked_cross_entropy(logits, actions, bad_mask, padding)
+    assert torch.isfinite(loss)
+
+
+def test_masked_cross_entropy_keeps_label_legal():
+    logits = torch.zeros(1, 1, NUM_ACTIONS)
+    logits[0, 0, 7] = 2.0
+    actions = torch.tensor([[7]])
+    action_mask = torch.zeros(1, 1, NUM_ACTIONS, dtype=torch.bool)
+    loss = masked_cross_entropy(logits, actions, action_mask, torch.tensor([[True]]))
     assert torch.isfinite(loss)
 
 
@@ -122,7 +141,7 @@ def test_forward_with_mask_sets_illegal_logits():
     env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM)
     logits, _, mask = forward_with_mask(model, guest, ride, env)
     assert not bool(mask[0, 0, 0])
-    assert logits[0, 0, 0] < -1e10
+    assert logits[0, 0, 0] <= -1.0e9
 
 
 def test_train_config_defaults():
@@ -237,4 +256,4 @@ def test_apply_action_mask_helper():
     mask = torch.tensor([[[True, False, True, False]]])
     out = apply_action_mask(logits, mask)
     assert out[0, 0, 0] == 0
-    assert out[0, 0, 1] < -1e10
+    assert out[0, 0, 1] == -1.0e9

@@ -101,6 +101,8 @@ Flat observation size: **321** (`FLAT_OBS_DIM` = 45 + 34×8 + 4).
 
 BC groups heuristic labels by `wave_id` (parties routed in the same `decide_routes` call), then **chunks** each wave to at most `MAX_COORDINATOR_GUESTS` (default **32**) so the coordinator never attends over opening-rush cohorts of thousands of parties. PPO uses the same chunk size. This cap is what prevents OOM — shrinking `d_model` alone does not, because BC collate previously padded every minibatch to the largest wave in the batch (G up to ~2800) and attention is O(G²).
 
+Masked BC loss ignores padded guests entirely (never `0 * inf`) and always keeps the expert label unmasked so a slightly strict feasibility mask cannot send CE to `+inf`.
+
 Related memory knobs in `config.py`:
 
 | Knob | Default | Notes |
