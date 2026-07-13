@@ -62,14 +62,14 @@ struct Ride {
 
 class TimingWheel {
 public:
-    TimingWheel() : buckets_(kDaySeconds + 1) {}
+    TimingWheel() : buckets_(kSimHorizonSec + 1) {}
 
     void schedule(int at_second, Event event) {
         if (at_second < current_sec_) {
             at_second = current_sec_;
         }
-        if (at_second > kDaySeconds) {
-            at_second = kDaySeconds;
+        if (at_second > kSimHorizonSec) {
+            at_second = kSimHorizonSec;
         }
         buckets_[at_second].push_back(event);
         if (at_second > max_scheduled_) {
@@ -256,11 +256,16 @@ int route_one(
     const std::array<float, kNumRides>& wait_times,
     const std::array<int, kNumRides>& durations,
     double rand_u01) {
-    if (now_sec >= parties.leave_sec[party_id]) {
+    // Soft park close: no new rides after official close; finish queue/ride then leave.
+    if (now_sec >= kDaySeconds || now_sec >= parties.leave_sec[party_id]) {
         return kExitRideId;
     }
 
-    const int remaining = parties.leave_sec[party_id] - now_sec;
+    // Parties staying until close may finish a queued/on-ride experience after close.
+    int remaining = parties.leave_sec[party_id] - now_sec;
+    if (parties.leave_sec[party_id] >= kDaySeconds) {
+        remaining = kDaySeconds + kCloseDrainSec - now_sec;
+    }
     const int node_idx = parties.location_node_idx[party_id];
     float speed = parties.effective_speed[party_id];
     if (speed < 0.1f) {
@@ -421,7 +426,7 @@ public:
 
         while (!wheel_.empty()) {
             auto [now_sec, events] = wheel_.pop_next();
-            if (now_sec > kDaySeconds) {
+            if (now_sec > kSimHorizonSec) {
                 break;
             }
 
@@ -429,11 +434,13 @@ public:
             maybe_sample(now_sec);
             maybe_record_ride_sample(now_sec);
 
-            for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
-                auto route_now = maybe_breakdown(ride_id, now_sec);
-                if (route_now.has_value()) {
-                    metrics_.breakdown_count += 1;
-                    on_breakdown(ride_id, *route_now, now_sec);
+            if (now_sec < kDaySeconds) {
+                for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
+                    auto route_now = maybe_breakdown(ride_id, now_sec);
+                    if (route_now.has_value()) {
+                        metrics_.breakdown_count += 1;
+                        on_breakdown(ride_id, *route_now, now_sec);
+                    }
                 }
             }
 
@@ -533,7 +540,12 @@ public:
     }
 
     void env_apply_action(int action) {
-        assign_route(env_current_party(), target_from_action(action), env_now_sec_);
+        const int party_id = env_current_party();
+        int target = target_from_action(action);
+        if (env_now_sec_ >= kDaySeconds || env_now_sec_ >= parties_.leave_sec[party_id]) {
+            target = kExitRideId;
+        }
+        assign_route(party_id, target, env_now_sec_);
         ++env_queue_pos_;
     }
 
@@ -694,8 +706,14 @@ private:
             const int size = std::max(1, static_cast<int>(std::round(rng_.normal(kPartySizeMean, kPartySizeStd))));
             guests_assigned += size;
 
-            int spawn_sec = static_cast<int>(std::round(rng_.normal(kSpawnMeanSec, kSpawnStdSec)));
-            spawn_sec = std::clamp(spawn_sec, 0, kDaySeconds - kMinDwellSec);
+            int spawn_sec;
+            if (rng_.uniform01() < kSpawnRushFraction) {
+                spawn_sec = static_cast<int>(std::round(rng_.normal(kSpawnRushMeanSec, kSpawnRushStdSec)));
+                spawn_sec = std::clamp(spawn_sec, 0, kSpawnRushClampSec);
+            } else {
+                spawn_sec = static_cast<int>(std::round(rng_.normal(kSpawnDayMeanSec, kSpawnDayStdSec)));
+                spawn_sec = std::clamp(spawn_sec, 0, kDaySeconds - kMinDwellSec);
+            }
 
             int dwell = static_cast<int>(std::round(rng_.normal(kDwellMeanSec, kDwellStdSec)));
             dwell = std::max(kMinDwellSec, dwell);
@@ -910,6 +928,10 @@ private:
             return {};
         }
         if (target_ride == kRouteIdleCode) {
+            return {party_id};
+        }
+        // Soft close: walkers who reach a ride after official close do not board.
+        if (now_sec >= kDaySeconds) {
             return {party_id};
         }
         if (rides_[target_ride].status == RideStatus::Broken) {
@@ -1128,7 +1150,7 @@ private:
 
     bool env_tick() {
         auto [now_sec, events] = wheel_.pop_next();
-        if (now_sec > kDaySeconds) {
+        if (now_sec > kSimHorizonSec) {
             return false;
         }
         env_now_sec_ = now_sec;
@@ -1136,13 +1158,15 @@ private:
         update_wait_estimates(now_sec);
         maybe_sample(now_sec);
 
-        for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
-            auto route_now = maybe_breakdown(ride_id, now_sec);
-            if (route_now.has_value()) {
-                metrics_.breakdown_count += 1;
-                on_breakdown(ride_id, *route_now, now_sec);
-                if (!env_queue_.empty()) {
-                    return true;
+        if (now_sec < kDaySeconds) {
+            for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
+                auto route_now = maybe_breakdown(ride_id, now_sec);
+                if (route_now.has_value()) {
+                    metrics_.breakdown_count += 1;
+                    on_breakdown(ride_id, *route_now, now_sec);
+                    if (!env_queue_.empty()) {
+                        return true;
+                    }
                 }
             }
         }
@@ -1274,6 +1298,9 @@ private:
         if (recording_ == nullptr) {
             return;
         }
+        if (now_sec > kDaySeconds) {
+            return;
+        }
         if (now_sec < next_viz_sample_sec_) {
             return;
         }
@@ -1305,12 +1332,12 @@ private:
             info.rides_completed = parties_.rides_completed[pid];
             recording_->parties.push_back(info);
         }
-        // Close any still-active walks at day end.
+        // Close any still-active walks at the end of the drain window.
         for (int pid = 0; pid < parties_.count; ++pid) {
             const int walk_idx = active_walk_idx_[pid];
             if (walk_idx >= 0) {
                 auto& walk = recording_->walks[static_cast<size_t>(walk_idx)];
-                walk.end_sec = kDaySeconds;
+                walk.end_sec = std::max(walk.start_sec, kSimHorizonSec);
                 walk.cancelled = 1;
                 active_walk_idx_[pid] = -1;
             }

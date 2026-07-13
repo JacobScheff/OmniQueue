@@ -12,6 +12,8 @@ Uses per-party `ride_history[ride]` (completions so far) so parties prefer untri
 
 Shared feasibility checks for every candidate: not the ride the party is already at, ride open, and walk + wait + duration fits remaining park time.
 
+Remaining time is `leave_sec - now`. Parties staying until official close (`leave_sec == DAY_SECONDS`) may finish a queued/on-ride experience after close, so feasibility uses the post-close drain window (`DAY_SECONDS + CLOSE_DRAIN_SEC - now`). After official close (`now >= DAY_SECONDS`), the router always returns exit (soft close).
+
 Then choose the first matching pass:
 
 ### Pass 1 — Fresh rides

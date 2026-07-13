@@ -60,4 +60,5 @@ Typical throughput is **~0.2s per full park day** (~50k guests) on modern hardwa
 ## Notes
 
 - C++ uses `std::mt19937_64` for party spawn and routing randomness.
+- Operating day is `DAY_SECONDS` (54,000). Soft close continues the timing wheel for up to `CLOSE_DRAIN_SEC` afterward so queued/on-ride parties can finish and exit.
 - Spawn/router/PPO reward constants in `native/include/park_sim.hpp` must stay in sync with `config.py` manually until a shared export step exists.

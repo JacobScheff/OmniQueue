@@ -8,6 +8,8 @@ namespace park {
 
 constexpr int kNumRides = 34;
 constexpr int kDaySeconds = 54000;
+constexpr int kCloseDrainSec = 3 * 3600;  // post-close queue/ride drain window
+constexpr int kSimHorizonSec = kDaySeconds + kCloseDrainSec;
 
 constexpr int kExitRideId = -1;
 constexpr int kRouteIdleCode = -2;
@@ -29,10 +31,14 @@ constexpr double kTotalGuestsMean = 50000.0;
 constexpr double kTotalGuestsStd = 2500.0;
 constexpr double kPartySizeMean = 3.2;
 constexpr double kPartySizeStd = 1.0;
-constexpr double kSpawnMeanSec = 3.0 * 3600.0;
-constexpr double kSpawnStdSec = 2.0 * 3600.0;
-constexpr double kDwellMeanSec = 10.0 * 3600.0;
-constexpr double kDwellStdSec = 2.0 * 3600.0;
+constexpr double kSpawnRushFraction = 0.65;
+constexpr double kSpawnRushMeanSec = 8.0 * 60.0;
+constexpr double kSpawnRushStdSec = 12.0 * 60.0;
+constexpr int kSpawnRushClampSec = 2 * 3600;
+constexpr double kSpawnDayMeanSec = 6.0 * 3600.0;
+constexpr double kSpawnDayStdSec = 3.5 * 3600.0;
+constexpr double kDwellMeanSec = 14.0 * 3600.0;
+constexpr double kDwellStdSec = 2.5 * 3600.0;
 
 constexpr double kBaseWalkingSpeed = 1.4;
 constexpr double kMemberSpeedLogMu = 0.3364722366212129;  // log(1.4)
