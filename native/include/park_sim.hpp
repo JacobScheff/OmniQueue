@@ -22,7 +22,9 @@ constexpr int kMetricsSampleIntervalSec = 300;
 constexpr int kMinDwellSec = 2 * 3600;
 
 constexpr int kGuestFeatDim = 45;
-constexpr int kRideDynamicFeatDim = 5;
+// Per-ride dynamic feats (party-relative walk/history/must-do included):
+// 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do
+constexpr int kRideDynamicFeatDim = 8;
 constexpr int kEnvDynamicFeatDim = 4;
 constexpr int kNumActions = 36;  // 34 rides + exit + idle
 constexpr int kFlatObsDim = kGuestFeatDim + kNumRides * kRideDynamicFeatDim + kEnvDynamicFeatDim;
@@ -134,6 +136,7 @@ struct Observation {
 struct BCSample {
     Observation obs;
     int action = 0;
+    int32_t wave_id = 0;  // co-timed routing cohort (same decide_routes call)
 };
 
 struct EnvStepResult {

@@ -10,9 +10,12 @@ import torch
 
 from model import ParkRouterModel
 from training.features import (
+    D_MODEL,
     ENV_DYNAMIC_FEAT_DIM,
     GUEST_FEAT_DIM,
+    NUM_ATTN_HEADS,
     NUM_RIDES,
+    NUM_TRANSFORMER_LAYERS,
     RIDE_DYNAMIC_FEAT_DIM,
 )
 
@@ -23,7 +26,9 @@ class TrainConfig:
     num_rides: int = NUM_RIDES
     ride_dynamic_feat_dim: int = RIDE_DYNAMIC_FEAT_DIM
     environment_dynamic_feat_dim: int = ENV_DYNAMIC_FEAT_DIM
-    d_model: int = 128
+    d_model: int = D_MODEL
+    num_layers: int = NUM_TRANSFORMER_LAYERS
+    num_heads: int = NUM_ATTN_HEADS
 
 
 def default_model(device: str | torch.device = "cpu") -> ParkRouterModel:
@@ -34,6 +39,8 @@ def default_model(device: str | torch.device = "cpu") -> ParkRouterModel:
         ride_dynamic_feat_dim=cfg.ride_dynamic_feat_dim,
         environment_dynamic_feat_dim=cfg.environment_dynamic_feat_dim,
         d_model=cfg.d_model,
+        num_layers=cfg.num_layers,
+        num_heads=cfg.num_heads,
     )
     return model.to(device)
 
@@ -75,7 +82,9 @@ def load_checkpoint(
         num_rides=cfg["num_rides"],
         ride_dynamic_feat_dim=cfg["ride_dynamic_feat_dim"],
         environment_dynamic_feat_dim=cfg["environment_dynamic_feat_dim"],
-        d_model=cfg.get("d_model", 128),
+        d_model=cfg.get("d_model", D_MODEL),
+        num_layers=cfg.get("num_layers", NUM_TRANSFORMER_LAYERS),
+        num_heads=cfg.get("num_heads", NUM_ATTN_HEADS),
     )
     model.load_state_dict(payload["model_state_dict"])
     model.to(device)

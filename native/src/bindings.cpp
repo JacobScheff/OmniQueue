@@ -89,7 +89,8 @@ PYBIND11_MODULE(_park_sim, m) {
 
     py::class_<park::BCSample>(m, "BCSample")
         .def_readonly("obs", &park::BCSample::obs)
-        .def_readonly("action", &park::BCSample::action);
+        .def_readonly("action", &park::BCSample::action)
+        .def_readonly("wave_id", &park::BCSample::wave_id);
 
     py::class_<park::EnvStepResult>(m, "EnvStepResult")
         .def_readonly("obs", &park::EnvStepResult::obs)

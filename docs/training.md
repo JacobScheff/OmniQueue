@@ -84,12 +84,22 @@ python training/eval_policy.py \
 
 | Tensor | Shape | Content |
 |--------|-------|---------|
-| Guest features | `(B, 1, 45)` | Preferences + party state |
-| Ride features | `(B, 35, 5)` | Wait, incoming, open, duration, capacity |
+| Guest features | `(B, G, 45)` | Preferences + party state (`G` = co-timed parties in a routing wave) |
+| Ride features | `(B, G, 34, 8)` | Wait, incoming, open, duration, capacity, walk, history, must-do |
 | Env features | `(B, 4)` | Time of day, mean wait, variance, broken fraction |
 | Actions | `0–33` ride, `34` exit, `35` idle wander |
 
-Flat observation size: **224** (`FLAT_OBS_DIM`).
+Flat observation size: **321** (`FLAT_OBS_DIM` = 45 + 34×8 + 4).
+
+### Architecture (`ParkRouterModel`)
+
+- **`d_model=256`**, **3** guest transformer layers (self-attention + FFN), **8** heads — the coordinator attends across parties in the same routing wave.
+- Symmetric ride encoder: ride-id embedding + MLP over the 8 dynamic feats (no raw env concat on rides).
+- Pointer scores = guest queries × per-party ride keys; exit/idle from a linear head.
+- Per-party critic head.
+- **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal. BC uses **masked cross-entropy** over padded multi-party waves.
+
+BC groups heuristic labels by `wave_id` (parties routed in the same `decide_routes` call). PPO rollouts / updates keep the same joint-wave grouping so coordinator context matches.
 
 ## Checkpoint format
 
