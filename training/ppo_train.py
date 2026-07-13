@@ -23,7 +23,13 @@ import _park_sim
 import config
 from model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
 from training.checkpoint import default_model, load_checkpoint, save_checkpoint
-from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+from training.features import (
+    ENV_DYNAMIC_FEAT_DIM,
+    FLAT_OBS_DIM,
+    GUEST_FEAT_DIM,
+    NUM_RIDES,
+    RIDE_DYNAMIC_FEAT_DIM,
+)
 
 
 def _coordinator_chunk_size() -> int:
@@ -94,6 +100,7 @@ class PPOConfig:
     subsample_size: int = config.PPO_SUBSAMPLE_SIZE
     max_routing_steps: int = config.PPO_MAX_ROUTING_STEPS
     inference_batch_size: int = config.PPO_INFERENCE_BATCH_SIZE
+    update_wave_batch: int = config.PPO_UPDATE_WAVE_BATCH
     save_dir: str = config.PPO_SAVE_DIR
     save_every: int = config.PPO_SAVE_EVERY
     log_every: int = config.PPO_LOG_EVERY
@@ -198,23 +205,75 @@ class Agent(nn.Module):
         obs: torch.Tensor,
         actions: torch.Tensor,
         wave_ids: torch.Tensor,
+        *,
+        wave_batch_size: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Recompute logprobs/values with the same joint waves used at rollout."""
-        n = obs.shape[0]
-        logprobs = torch.zeros(n, dtype=torch.float32, device=obs.device)
-        entropy = torch.zeros(n, dtype=torch.float32, device=obs.device)
-        values = torch.zeros(n, dtype=torch.float32, device=obs.device)
+        """Recompute logprobs/values with the same joint waves used at rollout.
 
-        for wid in torch.unique(wave_ids):
-            idx = (wave_ids == wid).nonzero(as_tuple=False).squeeze(-1)
-            group_obs = obs.index_select(0, idx)
-            group_actions = actions.index_select(0, idx)
-            _, lp, ent, val = self.get_action_and_value(
-                group_obs, group_actions, joint_group=True
+        Packs many waves into padded ``(B, G, …)`` forwards instead of one
+        tiny CUDA launch per wave (which made PPO updates look hung).
+        """
+        n = obs.shape[0]
+        device = obs.device
+        logprobs = torch.zeros(n, dtype=torch.float32, device=device)
+        entropy = torch.zeros(n, dtype=torch.float32, device=device)
+        values = torch.zeros(n, dtype=torch.float32, device=device)
+
+        if n == 0:
+            return logprobs, entropy, values
+
+        pack = int(wave_batch_size or getattr(config, "PPO_UPDATE_WAVE_BATCH", 128))
+        pack = max(1, pack)
+
+        # Stable grouping: waves stay contiguous after rollout chunking, but
+        # subsample / minibatch gather can interleave — build index lists.
+        unique_ids = torch.unique(wave_ids)
+        wave_index_lists: list[torch.Tensor] = []
+        for wid in unique_ids.tolist():
+            wave_index_lists.append((wave_ids == wid).nonzero(as_tuple=False).squeeze(-1))
+
+        for start in range(0, len(wave_index_lists), pack):
+            group = wave_index_lists[start : start + pack]
+            max_g = max(int(idx.numel()) for idx in group)
+            bsz = len(group)
+
+            guest = torch.zeros(bsz, max_g, GUEST_FEAT_DIM, dtype=torch.float32, device=device)
+            ride = torch.zeros(
+                bsz, max_g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32, device=device
             )
-            logprobs.index_copy_(0, idx, lp)
-            entropy.index_copy_(0, idx, ent)
-            values.index_copy_(0, idx, val)
+            env = torch.zeros(bsz, ENV_DYNAMIC_FEAT_DIM, dtype=torch.float32, device=device)
+            act = torch.zeros(bsz, max_g, dtype=torch.long, device=device)
+            padding = torch.zeros(bsz, max_g, dtype=torch.bool, device=device)
+
+            for row, idx in enumerate(group):
+                g = int(idx.numel())
+                g_t, r_t, e_t = obs_group_to_tensors(obs.index_select(0, idx))
+                guest[row, :g] = g_t[0]
+                ride[row, :g] = r_t[0]
+                env[row] = e_t[0]
+                act[row, :g] = actions.index_select(0, idx)
+                padding[row, :g] = True
+
+            logits, value, _ = forward_with_mask(
+                self.model, guest, ride, env, guest_padding_mask=padding
+            )
+            # Flatten valid guest slots for one Categorical.
+            flat_logits = logits[padding]
+            flat_actions = act[padding]
+            flat_values = value.squeeze(-1)[padding]
+            dist = torch.distributions.Categorical(logits=flat_logits)
+            flat_lp = dist.log_prob(flat_actions)
+            flat_ent = dist.entropy()
+
+            # Scatter back in the same order we filled padding rows.
+            cursor = 0
+            for idx in group:
+                g = int(idx.numel())
+                logprobs.index_copy_(0, idx, flat_lp[cursor : cursor + g])
+                entropy.index_copy_(0, idx, flat_ent[cursor : cursor + g])
+                values.index_copy_(0, idx, flat_values[cursor : cursor + g])
+                cursor += g
+
         return logprobs, entropy, values
 
 
@@ -448,8 +507,10 @@ def _ppo_update(
     cfg: PPOConfig,
 ) -> PPOStats:
     # Minibatch by waves so coordinator joint context matches rollout.
-    unique_waves = torch.unique(batch.wave_ids).cpu().tolist()
-    waves_per_mb = max(1, len(unique_waves) // cfg.num_minibatches)
+    unique_waves = torch.unique(batch.wave_ids)
+    n_waves = int(unique_waves.numel())
+    waves_per_mb = max(1, n_waves // cfg.num_minibatches)
+    wave_order = unique_waves.tolist()
 
     last_pg_loss = 0.0
     last_v_loss = 0.0
@@ -459,19 +520,24 @@ def _ppo_update(
     mb_adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
     update_t0 = time.perf_counter()
-    for _ in range(cfg.update_epochs):
-        random.shuffle(unique_waves)
-        for start in range(0, len(unique_waves), waves_per_mb):
-            wave_mb = unique_waves[start : start + waves_per_mb]
-            mask = torch.zeros(batch.obs.shape[0], dtype=torch.bool, device=batch.obs.device)
-            for wid in wave_mb:
-                mask |= batch.wave_ids == wid
-            mb = mask.nonzero(as_tuple=False).squeeze(-1)
+    total_mb = cfg.update_epochs * ((n_waves + waves_per_mb - 1) // waves_per_mb)
+    mb_done = 0
+    last_log_t = update_t0
+
+    for epoch in range(cfg.update_epochs):
+        random.shuffle(wave_order)
+        for start in range(0, n_waves, waves_per_mb):
+            wave_mb = wave_order[start : start + waves_per_mb]
+            wave_mb_t = torch.as_tensor(wave_mb, device=batch.wave_ids.device, dtype=batch.wave_ids.dtype)
+            mb = torch.isin(batch.wave_ids, wave_mb_t).nonzero(as_tuple=False).squeeze(-1)
             if mb.numel() == 0:
                 continue
 
             new_logprob, entropy, new_value = agent.get_action_and_value_by_waves(
-                batch.obs[mb], batch.actions[mb], batch.wave_ids[mb]
+                batch.obs[mb],
+                batch.actions[mb],
+                batch.wave_ids[mb],
+                wave_batch_size=cfg.update_wave_batch,
             )
             logratio = new_logprob - batch.logprobs[mb]
             ratio = logratio.exp()
@@ -499,6 +565,17 @@ def _ppo_update(
             last_entropy = float(entropy_loss.item())
             last_approx_kl = float(approx_kl.item())
             last_clipfrac = float(clipfrac.item())
+
+            mb_done += 1
+            now = time.perf_counter()
+            if now - last_log_t >= 15.0 or mb_done == total_mb:
+                _log(
+                    f"  PPO update progress: epoch={epoch + 1}/{cfg.update_epochs} "
+                    f"mb={mb_done}/{total_mb} "
+                    f"({100.0 * mb_done / max(total_mb, 1):.0f}%) "
+                    f"elapsed={now - update_t0:.1f}s"
+                )
+                last_log_t = now
 
     return PPOStats(
         pg_loss=last_pg_loss,
@@ -539,6 +616,7 @@ def train(cfg: PPOConfig) -> None:
     _log(
         f"PPO full-day mode: target_days={cfg.total_days}, num_envs={cfg.num_envs}, "
         f"subsample={cfg.subsample_size}, inference_batch={cfg.inference_batch_size}, "
+        f"update_wave_batch={cfg.update_wave_batch}, "
         f"save_every={cfg.save_every} routing steps, log_every={cfg.log_every} rollout steps"
     )
     _log(
