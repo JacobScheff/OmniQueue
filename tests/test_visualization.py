@@ -72,3 +72,30 @@ def test_replay_helpers():
     g = party_state_at(state, pid, mid)
     assert g is not None
     assert "status" in g
+
+
+def test_visualize_window_is_scaled_down():
+    from visualize import (
+        CONTROL_HEIGHT,
+        PARK_HEIGHT,
+        PARK_LOGICAL,
+        PARK_WIDTH,
+        SCREEN_HEIGHT,
+        SCREEN_WIDTH,
+        SIDEBAR_WIDTH,
+        UI_SCALE,
+        _s,
+        _xy,
+    )
+
+    assert UI_SCALE == pytest.approx(0.85)
+    assert PARK_WIDTH == int(PARK_LOGICAL * UI_SCALE)
+    assert PARK_HEIGHT == int(PARK_LOGICAL * UI_SCALE)
+    assert SIDEBAR_WIDTH == int(320 * UI_SCALE)
+    assert CONTROL_HEIGHT == int(70 * UI_SCALE)
+    assert SCREEN_WIDTH == PARK_WIDTH + SIDEBAR_WIDTH
+    assert SCREEN_HEIGHT == PARK_HEIGHT + CONTROL_HEIGHT
+    assert SCREEN_WIDTH < 1320
+    assert SCREEN_HEIGHT < 1070
+    assert _xy(1000, 1000) == (PARK_WIDTH, PARK_HEIGHT)
+    assert _s(100) == 85

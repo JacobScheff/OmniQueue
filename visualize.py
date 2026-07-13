@@ -17,15 +17,27 @@ import config
 from park_graph import get_park_graph
 from simulator import native_backend_name, record_day
 
-# Layout (park coords are ~0–1000)
-PARK_WIDTH = 1000
-PARK_HEIGHT = 1000
-SIDEBAR_WIDTH = 320
-CONTROL_HEIGHT = 70
+# Layout (park coords are ~0–1000; display scaled ~15% down)
+UI_SCALE = 0.85
+PARK_LOGICAL = 1000
+PARK_WIDTH = int(PARK_LOGICAL * UI_SCALE)
+PARK_HEIGHT = int(PARK_LOGICAL * UI_SCALE)
+SIDEBAR_WIDTH = int(320 * UI_SCALE)
+CONTROL_HEIGHT = int(70 * UI_SCALE)
 SCREEN_WIDTH = PARK_WIDTH + SIDEBAR_WIDTH
 SCREEN_HEIGHT = PARK_HEIGHT + CONTROL_HEIGHT
 FPS = 60
 MAX_WALK_DOTS = 2500
+
+
+def _s(v: float) -> int:
+    """Scale a layout length from unscaled pixels to the display size."""
+    return max(1, int(round(v * UI_SCALE)))
+
+
+def _xy(x: float, y: float) -> tuple[int, int]:
+    """Map park / layout coordinates onto the scaled display."""
+    return int(x * UI_SCALE), int(y * UI_SCALE)
 
 
 @dataclass
@@ -235,10 +247,10 @@ def run_visualizer(
     pygame.display.set_caption("OmniQueue — Park Day Visualizer")
     clock = pygame.time.Clock()
 
-    small_font = pygame.font.SysFont("DejaVu Sans", 11)
-    wait_font = pygame.font.SysFont("DejaVu Sans", 13, bold=True)
-    large_font = pygame.font.SysFont("DejaVu Sans", 22, bold=True)
-    ui_font = pygame.font.SysFont("DejaVu Sans", 15, bold=True)
+    small_font = pygame.font.SysFont("DejaVu Sans", _s(11))
+    wait_font = pygame.font.SysFont("DejaVu Sans", _s(13), bold=True)
+    large_font = pygame.font.SysFont("DejaVu Sans", _s(22), bold=True)
+    ui_font = pygame.font.SysFont("DejaVu Sans", _s(15), bold=True)
 
     # Colors
     BG = (28, 36, 44)
@@ -261,12 +273,13 @@ def run_visualizer(
     sort_descending = True
     sim_speed = speed
 
-    play_btn = pygame.Rect(24, PARK_HEIGHT + 20, 90, 32)
-    slider = pygame.Rect(140, PARK_HEIGHT + 28, PARK_WIDTH - 280, 14)
-    speed_minus = pygame.Rect(PARK_WIDTH - 120, PARK_HEIGHT + 20, 36, 32)
-    speed_plus = pygame.Rect(PARK_WIDTH - 50, PARK_HEIGHT + 20, 36, 32)
-    sidebar_list = pygame.Rect(PARK_WIDTH + 16, 78, SIDEBAR_WIDTH - 32, 300)
-    sort_btn = pygame.Rect(PARK_WIDTH + 16, 50, 180, 22)
+    play_btn = pygame.Rect(_s(24), PARK_HEIGHT + _s(20), _s(90), _s(32))
+    slider = pygame.Rect(_s(140), PARK_HEIGHT + _s(28), PARK_WIDTH - _s(280), _s(14))
+    speed_minus = pygame.Rect(PARK_WIDTH - _s(120), PARK_HEIGHT + _s(20), _s(36), _s(32))
+    speed_plus = pygame.Rect(PARK_WIDTH - _s(50), PARK_HEIGHT + _s(20), _s(36), _s(32))
+    sidebar_list = pygame.Rect(PARK_WIDTH + _s(16), _s(78), SIDEBAR_WIDTH - _s(32), _s(300))
+    sort_btn = pygame.Rect(PARK_WIDTH + _s(16), _s(50), _s(180), _s(22))
+    row_h = _s(28)
 
     party_by_id = {int(p.party_id): p for p in state.parties}
 
@@ -298,41 +311,46 @@ def run_visualizer(
                     screen,
                     PATH,
                     False,
-                    [(int(x), int(y)) for x, y in poly],
-                    2,
+                    [_xy(x, y) for x, y in poly],
+                    max(1, _s(2)),
                 )
         else:
             for a, b in config.MACRO_EDGES:
                 ax, ay = park._graph.node_coords[a]
                 bx, by = park._graph.node_coords[b]
-                pygame.draw.line(screen, PATH, (int(ax), int(ay)), (int(bx), int(by)), 2)
+                pygame.draw.line(screen, PATH, _xy(ax, ay), _xy(bx, by), max(1, _s(2)))
             for ride_id, hub in enumerate(config.RIDE_HUB):
                 rx, ry = config.RIDES[ride_id]["coords"]
                 hx, hy = config.HUB_COORDS[hub]
-                pygame.draw.line(screen, PATH, (int(hx), int(hy)), (int(rx), int(ry)), 1)
+                pygame.draw.line(screen, PATH, _xy(hx, hy), _xy(rx, ry), 1)
 
         # Hubs
         for nid, (hx, hy) in config.HUB_COORDS.items():
             if nid == config.NODE_ENTRANCE:
                 continue
-            pygame.draw.circle(screen, HUB, (int(hx), int(hy)), 6)
+            pygame.draw.circle(screen, HUB, _xy(hx, hy), _s(6))
 
         # Entrance
-        ex, ey = config.ENTRANCE_COORDS
-        pygame.draw.rect(screen, ENTRANCE, (ex - 40, ey - 18, 80, 36), border_radius=4)
+        ex, ey = _xy(*config.ENTRANCE_COORDS)
+        pygame.draw.rect(
+            screen,
+            ENTRANCE,
+            (ex - _s(40), ey - _s(18), _s(80), _s(36)),
+            border_radius=_s(4),
+        )
         ent = wait_font.render("ENTRANCE", True, TEXT)
-        screen.blit(ent, (ex - ent.get_width() // 2, ey - 8))
+        screen.blit(ent, (ex - ent.get_width() // 2, ey - _s(8)))
 
         # Clock + metrics
         clock_txt = large_font.render(format_clock(float_sec), True, TEXT)
-        screen.blit(clock_txt, (16, 12))
+        screen.blit(clock_txt, (_s(16), _s(12)))
         meta = ui_font.render(
             f"seed {seed}  |  rides {state.metrics.rides_completed}  |  "
             f"var {state.metrics.avg_wait_variance():.0f}",
             True,
             MUTED,
         )
-        screen.blit(meta, (16, 42))
+        screen.blit(meta, (_s(16), _s(42)))
 
         # Walking crowd (subsample if dense)
         walks_now = active_walks_at(state, float_sec)
@@ -340,43 +358,43 @@ def run_visualizer(
         for i in range(0, len(walks_now), step):
             w = walks_now[i]
             x, y = walk_position(state, w, float_sec)
-            pygame.draw.circle(screen, WALK_DOT, (int(x), int(y)), 2)
+            pygame.draw.circle(screen, WALK_DOT, _xy(x, y), max(1, _s(2)))
 
         # Rides
         sample = ride_state_at(state, float_sec)
         for ride_id, ride in enumerate(config.RIDES):
-            x, y = ride["coords"]
+            x, y = _xy(*ride["coords"])
             broken = bool(sample.broken[ride_id]) if sample is not None else False
             wait = float(sample.wait[ride_id]) if sample is not None else 0.0
             color = RIDE_BROKEN if broken else RIDE_OPEN
-            pygame.draw.circle(screen, color, (int(x), int(y)), 15)
-            pygame.draw.circle(screen, (10, 10, 10), (int(x), int(y)), 15, 1)
+            pygame.draw.circle(screen, color, (x, y), _s(15))
+            pygame.draw.circle(screen, (10, 10, 10), (x, y), _s(15), 1)
             label = "X" if broken or wait >= 9000 else str(int(wait / 60))
             wt = wait_font.render(label, True, TEXT)
-            screen.blit(wt, (int(x) - wt.get_width() // 2, int(y) - wt.get_height() // 2))
+            screen.blit(wt, (x - wt.get_width() // 2, y - wt.get_height() // 2))
             words = ride["name"].split()
             short = " ".join(words[:2]) + ("…" if len(words) > 2 else "")
             nt = small_font.render(short, True, MUTED)
-            screen.blit(nt, (int(x) - nt.get_width() // 2, int(y) + 17))
+            screen.blit(nt, (x - nt.get_width() // 2, y + _s(17)))
 
         # Tracked party
         if selected_party is not None:
             g = party_state_at(state, selected_party, float_sec)
             if g and g.get("pos"):
-                gx, gy = int(g["pos"][0]), int(g["pos"][1])
+                gx, gy = _xy(*g["pos"])
                 if "dest" in g:
-                    dx, dy = int(g["dest"][0]), int(g["dest"][1])
-                    pygame.draw.line(screen, ACCENT, (gx, gy), (dx, dy), 2)
+                    dx, dy = _xy(*g["dest"])
+                    pygame.draw.line(screen, ACCENT, (gx, gy), (dx, dy), max(1, _s(2)))
                 pulse = abs(math.sin(pygame.time.get_ticks() / 200.0)) * 5
-                pygame.draw.circle(screen, ACCENT, (gx, gy), int(10 + pulse))
-                pygame.draw.circle(screen, (0, 0, 0), (gx, gy), int(10 + pulse), 2)
+                pygame.draw.circle(screen, ACCENT, (gx, gy), _s(10 + pulse))
+                pygame.draw.circle(screen, (0, 0, 0), (gx, gy), _s(10 + pulse), max(1, _s(2)))
                 lbl = wait_font.render(f"#{selected_party}", True, (20, 20, 20), ACCENT)
-                screen.blit(lbl, (gx + 14, gy - 10))
+                screen.blit(lbl, (gx + _s(14), gy - _s(10)))
 
         # Control bar
         pygame.draw.rect(screen, PANEL, (0, PARK_HEIGHT, PARK_WIDTH, CONTROL_HEIGHT))
         btn_color = (70, 160, 90) if playing else (180, 80, 80)
-        pygame.draw.rect(screen, btn_color, play_btn, border_radius=5)
+        pygame.draw.rect(screen, btn_color, play_btn, border_radius=_s(5))
         btn_lbl = wait_font.render("PAUSE" if playing else "PLAY", True, TEXT)
         screen.blit(
             btn_lbl,
@@ -386,48 +404,47 @@ def run_visualizer(
             ),
         )
 
-        pygame.draw.rect(screen, (70, 80, 90), slider, border_radius=5)
+        pygame.draw.rect(screen, (70, 80, 90), slider, border_radius=_s(5))
         progress = float_sec / max(1.0, day_end - 1)
         pygame.draw.rect(
             screen,
             (90, 150, 230),
             (slider.x, slider.y, int(slider.w * progress), slider.h),
-            border_radius=5,
+            border_radius=_s(5),
         )
         pygame.draw.circle(
             screen,
             TEXT,
             (slider.x + int(slider.w * progress), slider.centery),
-            8,
+            _s(8),
         )
 
-        pygame.draw.rect(screen, (70, 80, 90), speed_minus, border_radius=4)
-        pygame.draw.rect(screen, (70, 80, 90), speed_plus, border_radius=4)
+        pygame.draw.rect(screen, (70, 80, 90), speed_minus, border_radius=_s(4))
+        pygame.draw.rect(screen, (70, 80, 90), speed_plus, border_radius=_s(4))
         screen.blit(
             wait_font.render("−", True, TEXT),
-            (speed_minus.centerx - 4, speed_minus.centery - 7),
+            (speed_minus.centerx - _s(4), speed_minus.centery - _s(7)),
         )
         screen.blit(
             wait_font.render("+", True, TEXT),
-            (speed_plus.centerx - 5, speed_plus.centery - 7),
+            (speed_plus.centerx - _s(5), speed_plus.centery - _s(7)),
         )
         spd = small_font.render(f"{sim_speed:.0f}x", True, MUTED)
-        screen.blit(spd, (PARK_WIDTH - 95, PARK_HEIGHT + 6))
+        screen.blit(spd, (PARK_WIDTH - _s(95), PARK_HEIGHT + _s(6)))
 
         # Sidebar
         pygame.draw.rect(screen, PANEL, (PARK_WIDTH, 0, SIDEBAR_WIDTH, SCREEN_HEIGHT))
-        pygame.draw.line(screen, (80, 90, 100), (PARK_WIDTH, 0), (PARK_WIDTH, SCREEN_HEIGHT), 2)
+        pygame.draw.line(screen, (80, 90, 100), (PARK_WIDTH, 0), (PARK_WIDTH, SCREEN_HEIGHT), max(1, _s(2)))
         title = large_font.render("PARTIES", True, TEXT)
-        screen.blit(title, (PARK_WIDTH + 16, 16))
+        screen.blit(title, (PARK_WIDTH + _s(16), _s(16)))
 
-        pygame.draw.rect(screen, (50, 60, 70), sort_btn, border_radius=4)
+        pygame.draw.rect(screen, (50, 60, 70), sort_btn, border_radius=_s(4))
         sort_lbl = small_font.render(
             "↓ Most rides" if sort_descending else "↑ Fewest rides", True, TEXT
         )
-        screen.blit(sort_lbl, (sort_btn.x + 10, sort_btn.y + 4))
+        screen.blit(sort_lbl, (sort_btn.x + _s(10), sort_btn.y + _s(4)))
 
-        pygame.draw.rect(screen, (18, 22, 28), sidebar_list, border_radius=5)
-        row_h = 28
+        pygame.draw.rect(screen, (18, 22, 28), sidebar_list, border_radius=_s(5))
         start_idx = int(list_scroll_y // row_h)
         end_idx = min(len(state.sorted_party_ids), start_idx + (sidebar_list.h // row_h) + 1)
         for i in range(start_idx, end_idx):
@@ -438,36 +455,36 @@ def run_visualizer(
                 continue
             color = (90, 170, 255) if pid == selected_party else (200, 205, 210)
             txt = wait_font.render(f"#{pid}   ({total} rides)", True, color)
-            screen.blit(txt, (sidebar_list.x + 10, y_pos + 6))
-        pygame.draw.rect(screen, (90, 100, 110), sidebar_list, 1, border_radius=5)
+            screen.blit(txt, (sidebar_list.x + _s(10), y_pos + _s(6)))
+        pygame.draw.rect(screen, (90, 100, 110), sidebar_list, 1, border_radius=_s(5))
 
         pygame.draw.line(
             screen,
             (80, 90, 100),
-            (PARK_WIDTH + 16, 400),
-            (SCREEN_WIDTH - 16, 400),
+            (PARK_WIDTH + _s(16), _s(400)),
+            (SCREEN_WIDTH - _s(16), _s(400)),
             1,
         )
         if selected_party is not None:
             g = party_state_at(state, selected_party, float_sec)
             t1 = large_font.render(f"Tracking #{selected_party}", True, ACCENT)
-            screen.blit(t1, (PARK_WIDTH + 16, 420))
+            screen.blit(t1, (PARK_WIDTH + _s(16), _s(420)))
             status = g["status"] if g else "Unknown"
             if len(status) > 34:
                 status = status[:31] + "…"
             t2 = ui_font.render(status, True, (120, 220, 140) if g and g.get("pos") else (220, 100, 100))
-            screen.blit(t2, (PARK_WIDTH + 16, 455))
+            screen.blit(t2, (PARK_WIDTH + _s(16), _s(455)))
             hist = rides_so_far(state, selected_party, float_sec)
             total = party_by_id[selected_party].rides_completed
             t3 = ui_font.render(f"Itinerary ({len(hist)}/{total})", True, MUTED)
-            screen.blit(t3, (PARK_WIDTH + 16, 490))
+            screen.blit(t3, (PARK_WIDTH + _s(16), _s(490)))
             for idx, name in enumerate(hist[-12:]):
                 short = name if len(name) <= 32 else name[:29] + "…"
                 rtxt = wait_font.render(f"✓ {short}", True, (200, 205, 210))
-                screen.blit(rtxt, (PARK_WIDTH + 24, 520 + idx * 22))
+                screen.blit(rtxt, (PARK_WIDTH + _s(24), _s(520) + idx * _s(22)))
         else:
             hint = ui_font.render("Click a party to track", True, MUTED)
-            screen.blit(hint, (PARK_WIDTH + 16, 420))
+            screen.blit(hint, (PARK_WIDTH + _s(16), _s(420)))
 
         pygame.display.flip()
 
@@ -502,7 +519,7 @@ def run_visualizer(
                     if play_btn.collidepoint(mx, my):
                         playing = not playing
                     elif slider.collidepoint(mx, my) or (
-                        abs(my - slider.centery) < 20 and slider.x <= mx <= slider.right
+                        abs(my - slider.centery) < _s(20) and slider.x <= mx <= slider.right
                     ):
                         dragging = True
                         playing = False
@@ -518,19 +535,19 @@ def run_visualizer(
                         resort()
                     elif sidebar_list.collidepoint(mx, my):
                         click_y = my - sidebar_list.y + list_scroll_y
-                        idx = int(click_y // 28)
+                        idx = int(click_y // row_h)
                         if 0 <= idx < len(state.sorted_party_ids):
                             selected_party = state.sorted_party_ids[idx]
                 elif event.button == 4 and mx > PARK_WIDTH:
-                    list_scroll_y = max(0, list_scroll_y - 28)
+                    list_scroll_y = max(0, list_scroll_y - row_h)
                 elif event.button == 5 and mx > PARK_WIDTH:
-                    max_scroll = max(0, len(state.sorted_party_ids) * 28 - sidebar_list.h)
-                    list_scroll_y = min(max_scroll, list_scroll_y + 28)
+                    max_scroll = max(0, len(state.sorted_party_ids) * row_h - sidebar_list.h)
+                    list_scroll_y = min(max_scroll, list_scroll_y + row_h)
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 dragging = False
             elif event.type == pygame.MOUSEWHEEL and mx > PARK_WIDTH:
-                list_scroll_y = max(0, list_scroll_y - event.y * 28)
-                max_scroll = max(0, len(state.sorted_party_ids) * 28 - sidebar_list.h)
+                list_scroll_y = max(0, list_scroll_y - event.y * row_h)
+                max_scroll = max(0, len(state.sorted_party_ids) * row_h - sidebar_list.h)
                 list_scroll_y = min(max_scroll, list_scroll_y)
 
         if dragging:
