@@ -207,8 +207,13 @@ MACRO_EDGES.extend([
 BC_SAVE_DIR = "checkpoints/bc"
 BC_SAVE_EVERY = 500        # save checkpoint every N optimizer steps
 BC_EPOCHS = 3
-BC_BATCH_SIZE = 512
+# Batch size is in *waves* (co-timed party groups), not individual decisions.
+# Keep modest: each wave expands to (B, G, 34, 8) ride tensors.
+BC_BATCH_SIZE = 64
 BC_LR = 3e-4
+# Cap parties attending together. Opening-rush waves can be thousands of parties;
+# padding a BC batch to that G (and O(G²) attention) OOMs long before d_model matters.
+MAX_COORDINATOR_GUESTS = 32
 
 # ---------------------------------------------------------------------------
 # PPO (Phase 3) training defaults
@@ -228,7 +233,9 @@ PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
 PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
 PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
-PPO_INFERENCE_BATCH_SIZE = 1024   # policy inference batch size during C++ rollout
+# C++ may return up to this many pending parties; the policy chunks them into
+# groups of MAX_COORDINATOR_GUESTS for the neural forward.
+PPO_INFERENCE_BATCH_SIZE = 256
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 
 # PPO reward shaping (mirrored in park_sim.hpp)
