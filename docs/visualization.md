@@ -58,6 +58,7 @@ Periodic snapshot: `wait[NUM_RIDES]`, `broken[NUM_RIDES]`, `queue_len[NUM_RIDES]
 
 ## Display Notes
 
+- Window is **~15% smaller** than the logical 1000×1000 park map (`UI_SCALE = 0.85` → ~1122×910 including sidebar/controls). Park coordinates stay in logical space and are scaled for drawing.
 - Park pathways are **OSM pedestrian polylines** from `data/pathways.json` (see `docs/park-graph.md`), not straight hub-to-hub spokes.
 - Party walk dots follow the **recorded `path_variant` polyline** between `from_idx` / `to_idx` (arc-length interpolation), not always the global shortest path.
 - Wait labels on rides show **minutes** (`wait_sec / 60`); broken rides show `X`.
