@@ -30,8 +30,20 @@ Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`
 |-----------|---------|
 | Total guests/day | ~50,000 ± 2,500 |
 | Party size | `max(1, round(N(3.2, 1.0)))`, no cap |
-| Arrival peak | ~11:00 AM (bell curve) |
-| Dwell time | Mean **10 h**, σ = 2 h, min 2 h |
+| Arrival mixture | **50%** rope-drop rush (`N(10 min, 15 min)`, clamped to first 2 h); **50%** daytime (`N(5.5 h, 3.5 h)`) |
+| Dwell time | Mean **12 h**, σ = 2.5 h, min 2 h |
+| Leave time | `min(DAY_SECONDS, spawn + dwell)` — many early arrivals stay until official close |
+
+### Soft park close
+
+Official close is `DAY_SECONDS` (11:00 PM). After close:
+
+- Routing assigns **exit only** (no new rides or idle wander).
+- Parties already **in queue** keep boarding; parties **on ride** finish.
+- Walkers who arrive at a ride after close do **not** board — they re-route to exit.
+- The timing wheel continues for up to `CLOSE_DRAIN_SEC` (3 h) so queued/on-ride parties can finish and walk out.
+
+Parties whose `leave_sec` is the day end may still join long lines near close: feasibility uses the post-close drain window so a ride that finishes after official close remains allowed.
 
 ## Must-Do Lists
 

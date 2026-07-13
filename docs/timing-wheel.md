@@ -17,5 +17,6 @@ The discrete event simulator uses a **bucket-array timing wheel**: one list per 
 ## Design Notes
 
 - Same-second events preserve FIFO append order within the bucket.
-- Seconds beyond `DAY_SECONDS` are clamped to the end of the day.
-- 54,001 bucket vectors are preallocated per simulation day.
+- The wheel spans `DAY_SECONDS + CLOSE_DRAIN_SEC` so soft-close drain events (finish queue/ride, then exit) can schedule past official close.
+- Seconds beyond the sim horizon are clamped to the horizon end.
+- 64,801 bucket vectors are preallocated per simulation day (`15 h` operating day + `3 h` drain).
