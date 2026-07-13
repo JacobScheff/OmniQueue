@@ -30,8 +30,8 @@ Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`
 |-----------|---------|
 | Total guests/day | ~50,000 ± 2,500 |
 | Party size | `max(1, round(N(3.2, 1.0)))`, no cap |
-| Arrival mixture | **50%** rope-drop rush (`N(10 min, 15 min)`, clamped to first 2 h); **50%** daytime (`N(5.5 h, 3.5 h)`) |
-| Dwell time | Mean **12 h**, σ = 2.5 h, min 2 h |
+| Arrival mixture | **65%** rope-drop rush (`N(8 min, 12 min)`, clamped to first 2 h); **35%** daytime (`N(6 h, 3.5 h)`) |
+| Dwell time | Mean **14 h**, σ = 2.5 h, min 2 h |
 | Leave time | `min(DAY_SECONDS, spawn + dwell)` — many early arrivals stay until official close |
 
 ### Soft park close

@@ -15,13 +15,13 @@ TOTAL_GUESTS_STD = 2_500
 PARTY_SIZE_MEAN = 3.2
 PARTY_SIZE_STD = 1.0
 # Arrival mixture: rope-drop rush + remainder through the operating day.
-SPAWN_RUSH_FRACTION = 0.50          # share of guests in the opening rush
-SPAWN_RUSH_MEAN_SEC = 10 * 60       # rush peak ~10 min after open
-SPAWN_RUSH_STD_SEC = 15 * 60
+SPAWN_RUSH_FRACTION = 0.65          # share of guests in the opening rush
+SPAWN_RUSH_MEAN_SEC = 8 * 60        # rush peak ~8 min after open
+SPAWN_RUSH_STD_SEC = 12 * 60
 SPAWN_RUSH_CLAMP_SEC = 2 * 3600     # rush arrivals clamped to first 2 hours
-SPAWN_DAY_MEAN_SEC = int(5.5 * 3600)  # non-rush peak ~1:30 PM
+SPAWN_DAY_MEAN_SEC = 6 * 3600       # non-rush peak ~2:00 PM
 SPAWN_DAY_STD_SEC = int(3.5 * 3600)
-DWELL_MEAN_SEC = 12 * 3600
+DWELL_MEAN_SEC = 14 * 3600          # longer stays → busier near close
 DWELL_STD_SEC = int(2.5 * 3600)
 MIN_DWELL_SEC = 2 * 3600
 # After official close, parties already in queue/on-ride finish, then exit.
