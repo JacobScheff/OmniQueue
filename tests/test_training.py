@@ -251,6 +251,53 @@ def test_joint_policy_auto_chunks_large_groups():
     assert torch.isfinite(logprobs).all()
 
 
+def test_by_waves_batched_matches_per_wave():
+    """Packed wave forwards must match one-forward-per-wave logprobs."""
+    agent = Agent()
+    # Three waves of sizes 3, 5, 2
+    sizes = [3, 5, 2]
+    rows = []
+    wave_ids = []
+    for wid, g in enumerate(sizes):
+        flat = torch.zeros(g, FLAT_OBS_DIM)
+        flat[:, 37] = 0.5
+        g_end = GUEST_FEAT_DIM
+        r_end = g_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+        ride_view = flat[:, g_end:r_end].view(g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+        ride_view[..., RIDE_FEAT_OPEN] = 1.0
+        ride_view[..., RIDE_FEAT_WALK] = 0.1
+        rows.append(flat)
+        wave_ids.extend([wid] * g)
+    obs = torch.cat(rows, dim=0)
+    wave_ids_t = torch.tensor(wave_ids, dtype=torch.long)
+
+    with torch.no_grad():
+        actions, lp_ref, ent_ref, val_ref = agent.get_action_and_value(obs[:3], joint_group=True)
+        # Build reference by concatenating per-wave joint forwards with fixed actions
+        offset = 0
+        lp_parts = []
+        ent_parts = []
+        val_parts = []
+        act_parts = []
+        for g in sizes:
+            chunk = obs[offset : offset + g]
+            a, lp, ent, val = agent.get_action_and_value(chunk, joint_group=True)
+            act_parts.append(a)
+            lp_parts.append(lp)
+            ent_parts.append(ent)
+            val_parts.append(val)
+            offset += g
+        actions_all = torch.cat(act_parts)
+        lp_ref = torch.cat(lp_parts)
+        # Recompute with same actions via batched path
+        lp_b, ent_b, val_b = agent.get_action_and_value_by_waves(
+            obs, actions_all, wave_ids_t, wave_batch_size=2
+        )
+    assert torch.allclose(lp_b, lp_ref, atol=1e-5)
+    assert torch.allclose(val_b, torch.cat(val_parts), atol=1e-5)
+    assert torch.isfinite(ent_b).all()
+
+
 def test_apply_action_mask_helper():
     logits = torch.zeros(1, 1, 4)
     mask = torch.tensor([[[True, False, True, False]]])
