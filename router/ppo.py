@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from model import ParkRouterModel, obs_flat_to_tensors
+from model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
 from training.checkpoint import load_checkpoint
 
 
@@ -19,18 +19,21 @@ class PPOPolicy:
     @torch.no_grad()
     def act(self, obs_flat) -> int:
         import numpy as np
+
         obs = torch.tensor(np.asarray(obs_flat), dtype=torch.float32, device=self.device).unsqueeze(0)
         guest, ride, env = obs_flat_to_tensors(obs)
-        logits, _ = self.model(guest, ride, env)
+        logits, _, _ = forward_with_mask(self.model, guest, ride, env)
         return int(logits[0, 0, :].argmax().item())
 
     @torch.no_grad()
     def act_batch(self, obs_batch) -> "np.ndarray":
         import numpy as np
+
         obs = torch.tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
-        guest, ride, env = obs_flat_to_tensors(obs)
-        logits, _ = self.model(guest, ride, env)
-        return logits[:, 0, :].argmax(dim=-1).cpu().numpy()
+        # Co-timed batches use joint coordinator attention.
+        guest, ride, env = obs_group_to_tensors(obs)
+        logits, _, _ = forward_with_mask(self.model, guest, ride, env)
+        return logits[0].argmax(dim=-1).cpu().numpy()
 
 
 class PPORouter:

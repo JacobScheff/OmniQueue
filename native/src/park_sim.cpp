@@ -1094,10 +1094,12 @@ private:
         }
 
         if (bc_out_ != nullptr) {
+            const int32_t wave_id = bc_wave_counter_++;
             for (int pid : ids) {
                 const int target = route_one(
                     pid, now_sec, parties_, open_mask_, wait_arr_, duration_arr_, rng_.uniform01());
-                bc_out_->push_back({build_observation(pid, now_sec), action_from_target(target)});
+                bc_out_->push_back(
+                    {build_observation(pid, now_sec), action_from_target(target), wave_id});
                 assign_route(pid, target, now_sec);
             }
             return;
@@ -1249,6 +1251,13 @@ private:
         obs.guest[43] = balk_sum / static_cast<float>(kNumRides) / 3600.0f;
         obs.guest[44] = parties_.walk_target_ride[party_id] >= 0 ? 1.0f : 0.0f;
 
+        const int node_idx = parties_.location_node_idx[party_id];
+        const int current_ride = gd::kNodeIdxToRide[node_idx];
+        float speed = parties_.effective_speed[party_id];
+        if (speed < 0.1f) {
+            speed = 0.1f;
+        }
+        const double walk_scale = kBaseWalkingSpeed / static_cast<double>(speed);
         for (int r = 0; r < kNumRides; ++r) {
             const size_t base = static_cast<size_t>(r * kRideDynamicFeatDim);
             obs.ride[base + 0] = std::min(wait_arr_[r], 3600.0f) / 3600.0f;
@@ -1256,6 +1265,16 @@ private:
             obs.ride[base + 2] = open_mask_[r] ? 1.0f : 0.0f;
             obs.ride[base + 3] = static_cast<float>(duration_arr_[r]) / 900.0f;
             obs.ride[base + 4] = static_cast<float>(gd::kRideCapacityPerSec[r]);
+            if (current_ride == r) {
+                obs.ride[base + 5] = 0.0f;  // already at this ride entrance
+            } else {
+                const float walk_sec = static_cast<float>(
+                    std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][r] * walk_scale))));
+                obs.ride[base + 5] = std::min(walk_sec, 3600.0f) / 3600.0f;
+            }
+            obs.ride[base + 6] =
+                std::min(static_cast<float>(parties_.ride_history[party_id][r]), 10.0f) / 10.0f;
+            obs.ride[base + 7] = parties_.must_do_remaining[party_id][r] != 0 ? 1.0f : 0.0f;
         }
 
         double mean = 0.0;
@@ -1388,6 +1407,7 @@ private:
     size_t env_queue_pos_ = 0;
     std::vector<float> pending_pref_reward_;
     std::vector<BCSample>* bc_out_ = nullptr;
+    int32_t bc_wave_counter_ = 0;
 
     DayRecording* recording_ = nullptr;
     int viz_sample_interval_sec_ = 60;
