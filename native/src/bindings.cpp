@@ -3,6 +3,7 @@
 #include <pybind11/stl.h>
 
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 
 #include "park_sim.hpp"
@@ -197,6 +198,59 @@ PYBIND11_MODULE(_park_sim, m) {
         py::arg("num_days") = 1,
         py::arg("seed_start") = 0,
         "Collect heuristic routing samples for behavioral cloning.");
+    m.def(
+        "route_one_for_test",
+        [](int now_sec,
+           int leave_sec,
+           int node_idx,
+           float speed,
+           const std::vector<int16_t>& preference_order,
+           const std::vector<float>& preferences,
+           const std::vector<float>& balk_sec,
+           const std::vector<int16_t>& ride_history,
+           const std::vector<uint8_t>& open_mask,
+           const std::vector<float>& wait_times,
+           const std::vector<int>& durations,
+           double rand_u01) {
+            if (preference_order.size() != static_cast<size_t>(park::kNumRides) ||
+                preferences.size() != static_cast<size_t>(park::kNumRides) ||
+                balk_sec.size() != static_cast<size_t>(park::kNumRides) ||
+                ride_history.size() != static_cast<size_t>(park::kNumRides) ||
+                open_mask.size() != static_cast<size_t>(park::kNumRides) ||
+                wait_times.size() != static_cast<size_t>(park::kNumRides) ||
+                durations.size() != static_cast<size_t>(park::kNumRides)) {
+                throw std::invalid_argument("route_one_for_test: all ride arrays must have length NUM_RIDES");
+            }
+            park::RouteOneTestInput in;
+            in.now_sec = now_sec;
+            in.leave_sec = leave_sec;
+            in.node_idx = node_idx;
+            in.speed = speed;
+            in.rand_u01 = rand_u01;
+            for (int i = 0; i < park::kNumRides; ++i) {
+                in.preference_order[i] = preference_order[i];
+                in.preferences[i] = preferences[i];
+                in.balk_sec[i] = balk_sec[i];
+                in.ride_history[i] = ride_history[i];
+                in.open_mask[i] = open_mask[i] != 0;
+                in.wait_times[i] = wait_times[i];
+                in.durations[i] = durations[i];
+            }
+            return park::route_one_for_test(in);
+        },
+        py::arg("now_sec"),
+        py::arg("leave_sec"),
+        py::arg("node_idx"),
+        py::arg("speed"),
+        py::arg("preference_order"),
+        py::arg("preferences"),
+        py::arg("balk_sec"),
+        py::arg("ride_history"),
+        py::arg("open_mask"),
+        py::arg("wait_times"),
+        py::arg("durations"),
+        py::arg("rand_u01") = 1.0,
+        "Deterministic heuristic routing helper for unit tests.");
     m.def("is_available", []() { return true; });
     m.attr("HAS_EXCHANGE_BATCH") = true;
 }

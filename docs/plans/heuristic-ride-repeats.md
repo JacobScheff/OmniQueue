@@ -1,8 +1,8 @@
 # Plan: Heuristic Ride-Repeat Dampening
 
-**Status:** proposal (not implemented)  
+**Status:** implemented (see `docs/heuristic-router.md`)  
 **Target:** `native/src/park_sim.cpp` (`route_one`), `docs/heuristic-router.md`, mirrored knobs in `config.py` / `park_sim.hpp`  
-**Related:** `PartyArrays::ride_history` (already incremented on `RideComplete`, unused by routing today)
+**Related:** `PartyArrays::ride_history` (incremented on `RideComplete`; used by multi-pass routing)
 
 ## Problem
 
