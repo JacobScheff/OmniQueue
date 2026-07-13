@@ -27,8 +27,18 @@ def _fmt_float_row(values: list[float]) -> str:
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Export graph data for the C++ simulator")
+    parser.add_argument(
+        "--force-walk-cache",
+        action="store_true",
+        help="Recompute near-shortest walk variants instead of loading cache/walk_matrix.npz",
+    )
+    args = parser.parse_args()
+
     print("Building park graph + near-shortest walk variants...")
-    park = get_park_graph()
+    park = get_park_graph(force_recompute=args.force_walk_cache)
     graph = park._graph
     node_ids = park._node_ids
     num_nodes = len(node_ids)

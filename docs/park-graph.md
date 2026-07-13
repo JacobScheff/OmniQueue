@@ -69,12 +69,27 @@ At startup / export, all-pairs shortest walk times between macro nodes are preco
 actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 ```
 
+Python caches that matrix in **`cache/walk_matrix.npz`** (gitignored). A SHA-256 fingerprint of `data/pathways.json` plus walk-config knobs (`BASE_WALKING_SPEED`, `WALK_PATH_MAX_VARIANTS`, `WALK_PATH_LENGTH_SLACK`, node id set) decides whether the cache is still valid:
+
+- Cache hit → `walk variants: loaded from cache` (fast).
+- Miss / stale → recompute all OD pairs, then write the cache.
+
+Force a rebuild with either:
+
+```bash
+rm -f cache/walk_matrix.npz
+python -c "from park_graph import get_park_graph; get_park_graph(force_recompute=True)"
+```
+
+Native export still embeds the matrix into `graph_data.hpp` at compile time; the disk cache only speeds up Python (`visualize.py`, tests, `export_native_data.py`).
+
 ## Editing the Layout
 
 1. Prefer regenerating `data/pathways.json` from OSM rather than hand-editing coordinates.
 2. Adjust hub/ride fallback coordinates in `config.py` only when pathways data is absent.
 3. Idle topology: add or remove edges in `MACRO_EDGES`; assign rides via `RIDE_HUB`.
 4. Regenerate native data: `python tools/export_native_data.py` then `pip install -e .`
+5. After pathways / walk-config changes, force-rebuild the Python walk cache (see above) if you need fresh variants before the next automatic miss.
 
 ## API
 

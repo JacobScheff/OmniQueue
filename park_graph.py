@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import heapq
+import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 import config
-from pathways import load_pathways
+from pathways import PATHWAYS_PATH, load_pathways
+
+CACHE_DIR = Path(__file__).resolve().parent / "cache"
+WALK_MATRIX_CACHE_PATH = CACHE_DIR / "walk_matrix.npz"
 
 
 @dataclass(frozen=True)
@@ -28,12 +34,76 @@ def _euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def build_graph() -> Graph:
+def _walk_matrix_fingerprint(node_ids: list[int]) -> str:
+    """Hash pathways + config knobs that affect near-shortest walk times."""
+    h = hashlib.sha256()
+    if PATHWAYS_PATH.is_file():
+        h.update(PATHWAYS_PATH.read_bytes())
+    else:
+        h.update(b"no-pathways")
+    payload = {
+        "node_ids": list(node_ids),
+        "base_walking_speed": float(config.BASE_WALKING_SPEED),
+        "max_variants": int(config.WALK_PATH_MAX_VARIANTS),
+        "length_slack": float(config.WALK_PATH_LENGTH_SLACK),
+    }
+    h.update(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    return h.hexdigest()
+
+
+def _load_walk_matrix_cache(
+    fingerprint: str, num_nodes: int, k_max: int
+) -> tuple[list[list[int]], list[list[int]], list[list[list[int]]]] | None:
+    if not WALK_MATRIX_CACHE_PATH.is_file():
+        return None
+    try:
+        data = np.load(WALK_MATRIX_CACHE_PATH, allow_pickle=False)
+        if str(data["fingerprint"]) != fingerprint:
+            return None
+        walk_time = data["walk_time_sec"]
+        variant_count = data["walk_variant_count"]
+        variant_base = data["walk_variant_base_sec"]
+        if walk_time.shape != (num_nodes, num_nodes):
+            return None
+        if variant_count.shape != (num_nodes, num_nodes):
+            return None
+        if variant_base.shape != (num_nodes, num_nodes, k_max):
+            return None
+        return (
+            walk_time.astype(np.int32).tolist(),
+            variant_count.astype(np.int32).tolist(),
+            variant_base.astype(np.int32).tolist(),
+        )
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def _save_walk_matrix_cache(
+    fingerprint: str,
+    walk_time: list[list[int]],
+    variant_count: list[list[int]],
+    variant_base: list[list[list[int]]],
+) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        WALK_MATRIX_CACHE_PATH,
+        fingerprint=np.asarray(fingerprint),
+        walk_time_sec=np.asarray(walk_time, dtype=np.int32),
+        walk_variant_count=np.asarray(variant_count, dtype=np.uint8),
+        walk_variant_base_sec=np.asarray(variant_base, dtype=np.int32),
+    )
+
+
+def build_graph(*, force_recompute: bool = False) -> Graph:
     """Build hub-and-spoke macro graph with ride leaf nodes.
 
     When ``data/pathways.json`` is present, edge weights and all-pairs walk
     times use OSM pedestrian path lengths (meters). Otherwise Euclidean
     distances in display units are used (legacy fallback).
+
+    Near-shortest walk matrices are loaded from ``cache/walk_matrix.npz`` when
+    the fingerprint still matches; pass ``force_recompute=True`` (or delete the
+    cache file) to rebuild.
     """
     pathways = load_pathways()
     node_coords: dict[int, tuple[float, float]] = dict(config.HUB_COORDS)
@@ -70,24 +140,32 @@ def build_graph() -> Graph:
     variant_base = [[[0] * k_max for _ in range(n)] for _ in range(n)]
 
     if pathways is not None:
-        # All-pairs along the real walkway network (not limited to MACRO_EDGES).
-        total = n * (n - 1)
-        done = 0
-        for i, src in enumerate(node_ids):
-            for j, dst in enumerate(node_ids):
-                if i == j:
-                    continue
-                variants = pathways.near_shortest_variants(src, dst)
-                secs = [
-                    max(1, int(math.ceil(v.length_m / speed))) for v in variants
-                ]
-                variant_count[i][j] = len(secs)
-                for k, sec in enumerate(secs):
-                    variant_base[i][j][k] = sec
-                walk_time[i][j] = secs[0]
-                done += 1
-                if done % 200 == 0:
-                    print(f"  walk variants: {done}/{total}", flush=True)
+        fingerprint = _walk_matrix_fingerprint(node_ids)
+        cached = None if force_recompute else _load_walk_matrix_cache(fingerprint, n, k_max)
+        if cached is not None:
+            print("  walk variants: loaded from cache", flush=True)
+            walk_time, variant_count, variant_base = cached
+        else:
+            # All-pairs along the real walkway network (not limited to MACRO_EDGES).
+            total = n * (n - 1)
+            done = 0
+            for i, src in enumerate(node_ids):
+                for j, dst in enumerate(node_ids):
+                    if i == j:
+                        continue
+                    variants = pathways.near_shortest_variants(src, dst)
+                    secs = [
+                        max(1, int(math.ceil(v.length_m / speed))) for v in variants
+                    ]
+                    variant_count[i][j] = len(secs)
+                    for k, sec in enumerate(secs):
+                        variant_base[i][j][k] = sec
+                    walk_time[i][j] = secs[0]
+                    done += 1
+                    if done % 200 == 0:
+                        print(f"  walk variants: {done}/{total}", flush=True)
+            _save_walk_matrix_cache(fingerprint, walk_time, variant_count, variant_base)
+            print(f"  walk variants: cached → {WALK_MATRIX_CACHE_PATH}", flush=True)
     else:
         for i, src in enumerate(node_ids):
             for j, dst in enumerate(node_ids):
@@ -140,8 +218,8 @@ def astar_distance(
 class ParkGraph:
     """Runtime wrapper with node-id mapping and precomputed walk caches."""
 
-    def __init__(self) -> None:
-        self._graph = build_graph()
+    def __init__(self, *, force_recompute: bool = False) -> None:
+        self._graph = build_graph(force_recompute=force_recompute)
         self._node_ids = sorted(self._graph.node_coords.keys())
         self._index_of = {nid: i for i, nid in enumerate(self._node_ids)}
         self.idx_to_node_id = np.array(self._node_ids, dtype=np.int32)
@@ -238,13 +316,21 @@ _GRAPH: ParkGraph | None = None
 _COORDS_APPLIED = False
 
 
-def get_park_graph() -> ParkGraph:
+def reset_park_graph() -> None:
+    """Drop the process-local singleton (tests / forced rebuild)."""
+    global _GRAPH
+    _GRAPH = None
+
+
+def get_park_graph(*, force_recompute: bool = False) -> ParkGraph:
     global _GRAPH, _COORDS_APPLIED
     if not _COORDS_APPLIED:
         from pathways import apply_pathway_coords
 
         apply_pathway_coords(config)
         _COORDS_APPLIED = True
+    if force_recompute:
+        _GRAPH = None
     if _GRAPH is None:
-        _GRAPH = ParkGraph()
+        _GRAPH = ParkGraph(force_recompute=force_recompute)
     return _GRAPH
