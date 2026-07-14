@@ -80,10 +80,15 @@ def test_hybrid_heuristic_focal_completes():
 
 
 def test_focal_uses_exact_enter_time():
+    import _park_sim
+
+    from play.driver import make_focal_config
+
     profile = _profile()
     profile.spawn_sec = 12_345
     profile.leave_sec = 40_000
-    run = run_heuristic_focal_day(seed=2, profile=profile, record=False)
-    assert run.focal.spawn_sec == 12_345
-    assert run.focal.leave_sec == 40_000
-    assert run.profile.spawn_sec == 12_345
+    result = _park_sim.run_play_day(
+        2, make_focal_config(profile), sample_interval_sec=60, record=False
+    )
+    assert int(result.focal.spawn_sec) == 12_345
+    assert int(result.focal.leave_sec) == 40_000
