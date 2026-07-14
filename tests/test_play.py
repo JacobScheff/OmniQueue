@@ -77,3 +77,37 @@ def test_hybrid_heuristic_focal_completes():
     run = driver.run_headless()
     assert run.focal.rides_completed > 0
     assert run.park.rides_completed > 0
+
+
+def test_focal_uses_exact_enter_time():
+    import _park_sim
+
+    from play.driver import make_focal_config
+
+    profile = _profile()
+    profile.spawn_sec = 12_345
+    profile.leave_sec = 40_000
+    result = _park_sim.run_play_day(
+        2, make_focal_config(profile), sample_interval_sec=60, record=False
+    )
+    assert int(result.focal.spawn_sec) == 12_345
+    assert int(result.focal.leave_sec) == 40_000
+
+
+def test_run_ai_compare_cell_heuristic():
+    from play.benchmark import run_ai_compare_cell
+    from play.session import SessionStore
+
+    store = SessionStore()
+    run = run_ai_compare_cell(
+        seed=4,
+        profile=_profile(),
+        crowd_router="heuristic",
+        focal_router="heuristic",
+        label="H-crowd / H-guest",
+        checkpoint=None,
+        store=store,
+    )
+    assert run.settings.label == "H-crowd / H-guest"
+    assert run.focal.rides_completed > 0
+    assert len(store.runs) == 1

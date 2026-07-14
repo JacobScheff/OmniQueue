@@ -22,6 +22,36 @@ COMPARE_CELLS: list[tuple[str, str, str]] = [
 ]
 
 
+def run_ai_compare_cell(
+    seed: int,
+    profile: FocalProfile,
+    crowd_router: str,
+    focal_router: str,
+    label: str,
+    checkpoint: str | Path | None,
+    store: SessionStore,
+    device: str = "cpu",
+) -> SessionRun:
+    """Run one crowd×focal AI compare cell and store it in the session."""
+    if crowd_router == "ppo" or focal_router == "ppo":
+        if not checkpoint:
+            raise FileNotFoundError(
+                "PPO checkpoint is required for compare cells that use PPO."
+            )
+    run = run_shadow_day(
+        seed=seed,
+        profile=profile,
+        crowd_router=crowd_router,
+        focal_router=focal_router,
+        checkpoint=checkpoint if (crowd_router == "ppo" or focal_router == "ppo") else None,
+        device=device,
+        record=False,
+        label=label,
+    )
+    store.add(run)
+    return run
+
+
 def run_ai_compare(
     seed: int,
     profile: FocalProfile,
@@ -38,19 +68,18 @@ def run_ai_compare(
 
     results: list[SessionRun] = []
     for crowd, focal, label in COMPARE_CELLS:
-        ckpt = checkpoint if (crowd == "ppo" or focal == "ppo") else None
-        run = run_shadow_day(
-            seed=seed,
-            profile=profile,
-            crowd_router=crowd,
-            focal_router=focal,
-            checkpoint=ckpt,
-            device=device,
-            record=False,
-            label=label,
+        results.append(
+            run_ai_compare_cell(
+                seed=seed,
+                profile=profile,
+                crowd_router=crowd,
+                focal_router=focal,
+                label=label,
+                checkpoint=checkpoint,
+                store=store,
+                device=device,
+            )
         )
-        store.add(run)
-        results.append(run)
     return results
 
 
