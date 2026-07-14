@@ -424,6 +424,54 @@ public:
             wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
         }
 
+        run_event_loop();
+
+        finalize_recording();
+
+        const auto t1 = std::chrono::steady_clock::now();
+        metrics_.wall_time_sec =
+            std::chrono::duration<double>(t1 - t0).count();
+        if (recording_ != nullptr) {
+            recording_->metrics = metrics_;
+        }
+        return metrics_;
+    }
+
+    DayMetricsResult run_focal(const FocalPartyConfig& focal) {
+        const auto t0 = std::chrono::steady_clock::now();
+        hold_routing_ = false;
+        hybrid_crowd_heuristic_ = false;
+        soft_human_leave_ = false;
+        play_mode_ = true;
+        reset();
+        spawn_day();
+        override_focal_party(focal);
+        metrics_.total_parties = parties_.count;
+        metrics_.total_guests = total_guests_;
+
+        for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
+            wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
+        }
+
+        run_event_loop();
+
+        finalize_recording();
+        if (focal_party_id_ >= 0 && focal_party_id_ < parties_.count) {
+            focal_stats_.rides_completed = parties_.rides_completed[focal_party_id_];
+            focal_stats_.exited =
+                parties_.state[focal_party_id_] == static_cast<int8_t>(PartyState::Exited) ? 1 : 0;
+        }
+
+        const auto t1 = std::chrono::steady_clock::now();
+        metrics_.wall_time_sec =
+            std::chrono::duration<double>(t1 - t0).count();
+        if (recording_ != nullptr) {
+            recording_->metrics = metrics_;
+        }
+        return metrics_;
+    }
+
+    void run_event_loop() {
         while (!wheel_.empty()) {
             auto [now_sec, events] = wheel_.pop_next();
             if (now_sec > kSimHorizonSec) {
@@ -476,16 +524,98 @@ public:
                 route_parties(deciding, now_sec);
             }
         }
+    }
 
-        finalize_recording();
+    PlayStepResult play_advance_step() {
+        PlayStepResult result{};
+        result.focal_party_id = focal_party_id_;
+        constexpr int kMaxPpoBatch = 256;
 
-        const auto t1 = std::chrono::steady_clock::now();
-        metrics_.wall_time_sec =
-            std::chrono::duration<double>(t1 - t0).count();
-        if (recording_ != nullptr) {
-            recording_->metrics = metrics_;
+        while (true) {
+            if (!env_ensure_routing_ready()) {
+                finalize_recording();
+                result.done = true;
+                result.metrics = env_finalize();
+                result.focal = env_focal_stats();
+                result.now_sec = env_now_sec_;
+                if (recording_ != nullptr) {
+                    recording_->metrics = metrics_;
+                }
+                return result;
+            }
+
+            result.now_sec = env_now_sec_;
+            result.focal = env_focal_stats();
+            const auto pending = env_pending_party_ids();
+            if (pending.empty()) {
+                continue;
+            }
+
+            // Heuristic crowd: only focal is queued.
+            if (hybrid_crowd_heuristic_) {
+                if (focal_policy_ == 1) {
+                    env_apply_heuristic_for_current();
+                    continue;
+                }
+                if (focal_policy_ == 2) {
+                    result.needs_ppo_batch = true;
+                    result.n_ppo = 1;
+                    result.ppo_party_ids = {pending.front()};
+                    const auto flat = env_build_obs(pending.front()).flat();
+                    result.ppo_obs.assign(flat.begin(), flat.end());
+                    return result;
+                }
+                // human
+                result.needs_human = true;
+                result.human_obs = env_build_obs(env_current_party());
+                return result;
+            }
+
+            // PPO crowd (full hold): emit non-focal prefix as PPO batch; handle focal specially.
+            std::vector<int32_t> ppo_ids;
+            ppo_ids.reserve(std::min(static_cast<size_t>(kMaxPpoBatch), pending.size()));
+            for (int pid : pending) {
+                if (static_cast<int>(ppo_ids.size()) >= kMaxPpoBatch) {
+                    break;
+                }
+                if (pid == focal_party_id_) {
+                    if (focal_policy_ == 2) {
+                        ppo_ids.push_back(pid);
+                    }
+                    break;
+                }
+                ppo_ids.push_back(pid);
+            }
+
+            if (!ppo_ids.empty()) {
+                result.needs_ppo_batch = true;
+                result.n_ppo = static_cast<int>(ppo_ids.size());
+                result.ppo_party_ids = ppo_ids;
+                result.ppo_obs.reserve(static_cast<size_t>(result.n_ppo) * kFlatObsDim);
+                for (int pid : ppo_ids) {
+                    const auto flat = env_build_obs(pid).flat();
+                    result.ppo_obs.insert(result.ppo_obs.end(), flat.begin(), flat.end());
+                }
+                return result;
+            }
+
+            // Focal at front of queue, not included in PPO batch above.
+            if (focal_policy_ == 1) {
+                env_apply_heuristic_for_current();
+                continue;
+            }
+            if (focal_policy_ == 2) {
+                result.needs_ppo_batch = true;
+                result.n_ppo = 1;
+                result.ppo_party_ids = {pending.front()};
+                const auto flat = env_build_obs(pending.front()).flat();
+                result.ppo_obs.assign(flat.begin(), flat.end());
+                return result;
+            }
+            result.needs_human = true;
+            result.human_obs = env_build_obs(env_current_party());
+            return result;
         }
-        return metrics_;
     }
 
     void set_bc_recorder(std::vector<BCSample>* out) { bc_out_ = out; }
@@ -496,8 +626,84 @@ public:
         next_viz_sample_sec_ = 0;
     }
 
+    void override_focal_party(const FocalPartyConfig& cfg) {
+        if (parties_.count <= 0) {
+            return;
+        }
+        focal_party_id_ = 0;
+        const int old_size = parties_.party_size[0];
+        total_guests_ = total_guests_ - old_size + 1;
+        parties_.party_size[0] = 1;
+        parties_.spawn_sec[0] = std::clamp(cfg.spawn_sec, 0, kDaySeconds - kMinDwellSec);
+        parties_.leave_sec[0] =
+            std::clamp(cfg.leave_sec, parties_.spawn_sec[0] + kMinDwellSec, kDaySeconds);
+        // Deterministic size-1 speed (avoid consuming RNG after spawn_day).
+        parties_.effective_speed[0] = static_cast<float>(kBaseWalkingSpeed);
+        parties_.location_node_idx[0] = gd::kEntranceNodeIdx;
+        parties_.state[0] = static_cast<int8_t>(PartyState::Walking);
+        parties_.target_ride_id[0] = kRouteIdleCode;
+        parties_.target_node_idx[0] = gd::kEntranceNodeIdx;
+        parties_.walk_target_ride[0] = -1;
+        parties_.ride_history[0] = {};
+        parties_.rides_completed[0] = 0;
+
+        std::array<float, kNumRides> prefs{};
+        std::array<uint8_t, kNumRides> must_do{};
+        float sum = 0.0f;
+        int must_assigned = 0;
+        for (int i = 0; i < kNumRides; ++i) {
+            must_do[i] = cfg.must_dos[i] ? 1 : 0;
+            if (must_do[i]) {
+                ++must_assigned;
+            }
+            float w = std::max(0.0f, cfg.preference_weights[i]);
+            if (must_do[i]) {
+                w *= static_cast<float>(kMustDoPrefBoost);
+            }
+            prefs[i] = w;
+            sum += w;
+        }
+        if (sum <= 0.0f) {
+            for (int i = 0; i < kNumRides; ++i) {
+                prefs[i] = 1.0f;
+            }
+            sum = static_cast<float>(kNumRides);
+        }
+        for (int i = 0; i < kNumRides; ++i) {
+            prefs[i] /= sum;
+        }
+        parties_.preferences[0] = prefs;
+        parties_.must_do_remaining[0] = must_do;
+        compute_preference_order(prefs, must_do, parties_.preference_order[0]);
+        compute_balk_sec(prefs, parties_.balk_sec[0]);
+
+        spawn_schedule_.erase(
+            std::remove_if(
+                spawn_schedule_.begin(),
+                spawn_schedule_.end(),
+                [](const std::pair<int, int>& p) { return p.second == 0; }),
+            spawn_schedule_.end());
+        spawn_schedule_.emplace_back(parties_.spawn_sec[0], 0);
+
+        focal_stats_ = FocalPartyStats{};
+        focal_stats_.party_id = 0;
+        focal_stats_.spawn_sec = parties_.spawn_sec[0];
+        focal_stats_.leave_sec = parties_.leave_sec[0];
+        focal_stats_.must_dos_assigned = must_assigned;
+        focal_stats_.preferences = prefs;
+        focal_stats_.must_dos_initial = must_do;
+        focal_top3_ = {};
+        for (int k = 0; k < 3 && k < kNumRides; ++k) {
+            focal_top3_[static_cast<size_t>(k)] = parties_.preference_order[0][k];
+        }
+    }
+
     void env_begin(uint64_t seed) {
         hold_routing_ = true;
+        hybrid_crowd_heuristic_ = false;
+        soft_human_leave_ = false;
+        play_mode_ = false;
+        focal_party_id_ = -1;
         env_done_ = false;
         env_now_sec_ = 0;
         env_queue_.clear();
@@ -508,6 +714,43 @@ public:
         pending_pref_reward_.assign(static_cast<size_t>(parties_.count), 0.0f);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
+        for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
+            wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
+        }
+    }
+
+    void env_begin_play(
+        uint64_t seed,
+        const FocalPartyConfig& focal,
+        bool crowd_auto_heuristic,
+        int focal_policy,
+        bool soft_human_leave,
+        bool enable_recording,
+        int sample_interval_sec) {
+        hold_routing_ = true;
+        env_done_ = false;
+        env_now_sec_ = 0;
+        env_queue_.clear();
+        env_queue_pos_ = 0;
+        rng_ = Rng(seed);
+        reset();
+        spawn_day();
+        override_focal_party(focal);
+        // Flags must be set after reset() which clears hybrid/play state.
+        hold_routing_ = true;
+        hybrid_crowd_heuristic_ = crowd_auto_heuristic;
+        soft_human_leave_ = soft_human_leave;
+        play_mode_ = true;
+        focal_policy_ = focal_policy;
+        pending_pref_reward_.assign(static_cast<size_t>(parties_.count), 0.0f);
+        metrics_.total_parties = parties_.count;
+        metrics_.total_guests = total_guests_;
+        if (enable_recording) {
+            owned_recording_ = DayRecording{};
+            set_recording(&owned_recording_, sample_interval_sec);
+        } else {
+            recording_ = nullptr;
+        }
         for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
             wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
         }
@@ -542,12 +785,52 @@ public:
     void env_apply_action(int action) {
         const int party_id = env_current_party();
         int target = target_from_action(action);
-        if (env_now_sec_ >= kDaySeconds || env_now_sec_ >= parties_.leave_sec[party_id]) {
+        if (env_now_sec_ >= kDaySeconds) {
+            target = kExitRideId;
+        } else if (!(soft_human_leave_ && party_id == focal_party_id_) &&
+                   env_now_sec_ >= parties_.leave_sec[party_id]) {
             target = kExitRideId;
         }
         assign_route(party_id, target, env_now_sec_);
         ++env_queue_pos_;
     }
+
+    void env_apply_heuristic_for_current() {
+        const int party_id = env_current_party();
+        const int target = route_one(
+            party_id,
+            env_now_sec_,
+            parties_,
+            open_mask_,
+            wait_arr_,
+            duration_arr_,
+            rng_.uniform01());
+        assign_route(party_id, target, env_now_sec_);
+        ++env_queue_pos_;
+    }
+
+    std::vector<int32_t> env_pending_party_ids() const {
+        std::vector<int32_t> out;
+        if (env_queue_pos_ >= env_queue_.size()) {
+            return out;
+        }
+        out.assign(env_queue_.begin() + static_cast<std::ptrdiff_t>(env_queue_pos_), env_queue_.end());
+        return out;
+    }
+
+    FocalPartyStats env_focal_stats() const {
+        FocalPartyStats out = focal_stats_;
+        if (focal_party_id_ >= 0 && focal_party_id_ < parties_.count) {
+            out.rides_completed = parties_.rides_completed[focal_party_id_];
+            out.exited =
+                parties_.state[focal_party_id_] == static_cast<int8_t>(PartyState::Exited) ? 1 : 0;
+        }
+        return out;
+    }
+
+    const DayRecording& env_owned_recording() const { return owned_recording_; }
+
+    DayRecording* mutable_owned_recording() { return &owned_recording_; }
 
     double current_wait_variance() const {
         double mean = 0.0;
@@ -687,6 +970,14 @@ private:
         active_walk_idx_.clear();
         next_viz_sample_sec_ = 0;
         pending_pref_reward_.clear();
+        focal_party_id_ = -1;
+        hybrid_crowd_heuristic_ = false;
+        soft_human_leave_ = false;
+        play_mode_ = false;
+        focal_policy_ = 0;
+        focal_stats_ = FocalPartyStats{};
+        focal_top3_ = {};
+        owned_recording_ = DayRecording{};
     }
 
     void spawn_day() {
@@ -944,6 +1235,10 @@ private:
         if (target_ride == kExitRideId) {
             parties_.state[party_id] = static_cast<int8_t>(PartyState::Exited);
             metrics_.parties_exited += 1;
+            if (party_id == focal_party_id_) {
+                focal_stats_.exited = 1;
+                focal_stats_.exit_sec = now_sec;
+            }
             return {};
         }
         if (target_ride == kRouteIdleCode) {
@@ -992,6 +1287,21 @@ private:
                 PartyRideEvent{party_id, now_sec, static_cast<int16_t>(ride_id)});
         }
         const bool was_must_do = parties_.must_do_remaining[party_id][ride_id] != 0;
+        if (party_id == focal_party_id_) {
+            focal_stats_.preference_score += parties_.preferences[party_id][static_cast<size_t>(ride_id)];
+            focal_stats_.completions.push_back(
+                PartyRideEvent{party_id, now_sec, static_cast<int16_t>(ride_id)});
+            for (int k = 0; k < 3; ++k) {
+                if (focal_top3_[static_cast<size_t>(k)] == ride_id) {
+                    focal_stats_.top3_hits += 1;
+                    break;
+                }
+            }
+            if (was_must_do) {
+                focal_stats_.must_dos_completed += 1;
+            }
+            focal_stats_.rides_completed = parties_.rides_completed[party_id];
+        }
         // Preference reward only for ParkEnv (PPO). Heuristic/BC days ignore pending.
         if (hold_routing_ && party_id >= 0 &&
             static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
@@ -1105,6 +1415,30 @@ private:
             return;
         }
 
+        if (hold_routing_ && hybrid_crowd_heuristic_ && focal_party_id_ >= 0) {
+            std::vector<int32_t> others;
+            std::vector<int32_t> focal;
+            others.reserve(ids.size());
+            for (int pid : ids) {
+                if (pid == focal_party_id_) {
+                    focal.push_back(pid);
+                } else {
+                    others.push_back(pid);
+                }
+            }
+            for (int pid : others) {
+                const int target = route_one(
+                    pid, now_sec, parties_, open_mask_, wait_arr_, duration_arr_, rng_.uniform01());
+                assign_route(pid, target, now_sec);
+            }
+            if (!focal.empty()) {
+                env_queue_ = std::move(focal);
+                env_queue_pos_ = 0;
+                env_now_sec_ = now_sec;
+            }
+            return;
+        }
+
         if (hold_routing_) {
             env_queue_ = std::move(ids);
             env_queue_pos_ = 0;
@@ -1178,6 +1512,7 @@ private:
 
         update_wait_estimates(now_sec);
         maybe_sample(now_sec);
+        maybe_record_ride_sample(now_sec);
 
         if (now_sec < kDaySeconds) {
             for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
@@ -1401,6 +1736,14 @@ private:
     }();
 
     bool hold_routing_ = false;
+    bool hybrid_crowd_heuristic_ = false;
+    bool soft_human_leave_ = false;
+    bool play_mode_ = false;
+    int focal_policy_ = 0;  // 0=human, 1=heuristic, 2=ppo
+    int focal_party_id_ = -1;
+    FocalPartyStats focal_stats_{};
+    std::array<int16_t, 3> focal_top3_{};
+    DayRecording owned_recording_{};
     bool env_done_ = false;
     int env_now_sec_ = 0;
     std::vector<int32_t> env_queue_;
@@ -1589,6 +1932,80 @@ DayRecording record_day(const uint64_t seed, const int sample_interval_sec) {
     sim.set_recording(&recording, sample_interval_sec);
     sim.run();
     return recording;
+}
+
+PlayDayResult run_play_day(
+    const uint64_t seed,
+    const FocalPartyConfig& focal,
+    const int sample_interval_sec,
+    const bool record) {
+    PlayDayResult out;
+    detail::Simulator sim(seed);
+    if (record) {
+        sim.set_recording(&out.recording, sample_interval_sec);
+    }
+    out.metrics = sim.run_focal(focal);
+    out.focal = sim.env_focal_stats();
+    if (record) {
+        out.recording.metrics = out.metrics;
+    }
+    return out;
+}
+
+void ParkEnv::reset_play(
+    const uint64_t seed,
+    const FocalPartyConfig& focal,
+    const bool crowd_auto_heuristic,
+    const int focal_policy,
+    const bool soft_human_leave,
+    const bool enable_recording,
+    const int sample_interval_sec) {
+    impl_->seed = seed;
+    impl_->episode_reward = 0.0f;
+    impl_->sim = std::make_unique<detail::Simulator>(seed);
+    impl_->sim->env_begin_play(
+        seed,
+        focal,
+        crowd_auto_heuristic,
+        focal_policy,
+        soft_human_leave,
+        enable_recording,
+        sample_interval_sec);
+}
+
+PlayStepResult ParkEnv::play_advance() {
+    return impl_->sim->play_advance_step();
+}
+
+void ParkEnv::play_apply_human_action(const int action) {
+    impl_->sim->env_apply_action(action);
+}
+
+void ParkEnv::play_apply_ppo_actions(const std::vector<int>& actions) {
+    for (int action : actions) {
+        // Skip reward accounting; interactive play does not train.
+        impl_->sim->env_apply_action(action);
+    }
+}
+
+const DayRecording& ParkEnv::play_recording() const {
+    return impl_->sim->env_owned_recording();
+}
+
+FocalPartyStats ParkEnv::play_focal_stats() const {
+    return impl_->sim->env_focal_stats();
+}
+
+int ParkEnv::play_now_sec() const {
+    return impl_->sim->env_now_sec();
+}
+
+int ParkEnv::play_focal_party_id() const {
+    return impl_->sim->env_focal_stats().party_id;
+}
+
+bool ParkEnv::play_done() const {
+    return impl_->sim->env_is_done();
 }
 
 }  // namespace park
