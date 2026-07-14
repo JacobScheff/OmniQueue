@@ -28,7 +28,7 @@ Crowd router (**Heuristic** vs **PPO**) is toggled in the Setup UI, not via CLI.
 
 ## Setup UI
 
-- Enter time / soft leave time (`[` / `]` and `;` / `'` ±30 min)
+- **Enter** / **Leave** time pickers (`−` / `+` buttons, ±30 min). AI compare and shadow runs use these **exact** times for the focal guest.
 - Preference list rows: **ride name | preference slider | must-do checkbox** (large readable names)
 - **Sort by preference** reorders rows by current slider values
 - **Crowd AI** toggle: Heuristic ↔ PPO
@@ -39,8 +39,9 @@ Crowd router (**Heuristic** vs **PPO**) is toggled in the Setup UI, not via CLI.
 
 1. Sim advances with hybrid routing until **your** party needs a decision.
 2. Recorded walks animate at `--speed` up to that decision (full crowd).
-3. Modal: pick a ride (large names, sorted by your prefs), **Wander** (AI idle action), or **Exit**.
-4. Soft leave: shown as a target; you are not hard-forced out until park close. AI shadow runs use the same `leave_sec` in the normal router/obs sense.
+3. Map shows ride wait minutes and short names (same style as `visualize.py`), plus a pulsing **YOU** marker for your guest.
+4. Choose a ride from the wider sidebar list **or by clicking a ride circle on the map**; **Wander** (AI idle) or **Exit**.
+5. Soft leave: shown as a target; you are not hard-forced out until park close. AI shadow runs use the same `leave_sec` in the normal router/obs sense.
 
 Focal party is always **party id 0**, size 1, with your prefs/must-dos/spawn/leave injected after seed spawn.
 

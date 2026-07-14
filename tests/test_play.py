@@ -77,3 +77,13 @@ def test_hybrid_heuristic_focal_completes():
     run = driver.run_headless()
     assert run.focal.rides_completed > 0
     assert run.park.rides_completed > 0
+
+
+def test_focal_uses_exact_enter_time():
+    profile = _profile()
+    profile.spawn_sec = 12_345
+    profile.leave_sec = 40_000
+    run = run_heuristic_focal_day(seed=2, profile=profile, record=False)
+    assert run.focal.spawn_sec == 12_345
+    assert run.focal.leave_sec == 40_000
+    assert run.profile.spawn_sec == 12_345

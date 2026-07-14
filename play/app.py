@@ -108,6 +108,23 @@ class PlayApp:
         )
         self.pref_scroll = 0
 
+    def adjust_enter(self, delta_sec: int) -> None:
+        """Change park entry time; keep soft leave at least MIN_DWELL after enter."""
+        max_spawn = config.DAY_SECONDS - config.MIN_DWELL_SEC
+        self.profile.spawn_sec = int(
+            max(0, min(max_spawn, self.profile.spawn_sec + int(delta_sec)))
+        )
+        min_leave = self.profile.spawn_sec + config.MIN_DWELL_SEC
+        if self.profile.leave_sec < min_leave:
+            self.profile.leave_sec = min(config.DAY_SECONDS, min_leave)
+
+    def adjust_leave(self, delta_sec: int) -> None:
+        """Change soft leave target; never earlier than enter + MIN_DWELL."""
+        min_leave = self.profile.spawn_sec + config.MIN_DWELL_SEC
+        self.profile.leave_sec = int(
+            max(min_leave, min(config.DAY_SECONDS, self.profile.leave_sec + int(delta_sec)))
+        )
+
     def start_play(self) -> None:
         self.error_msg = ""
         self.model_input_focused = False
@@ -233,9 +250,10 @@ class PlayApp:
             raise SystemExit("Native simulator required. Run: pip install -e .")
 
         pygame.init()
-        # Wider setup-friendly window (preference rows need horizontal room).
-        win_w = max(SCREEN_WIDTH, _s(1280))
-        win_h = max(SCREEN_HEIGHT, _s(900))
+        # Play sidebar ~12% wider than visualize.py so ride names fit.
+        play_sidebar_w = int(SIDEBAR_WIDTH * 1.12)
+        win_w = max(SCREEN_WIDTH, PARK_WIDTH + play_sidebar_w, _s(1280))
+        win_h = max(SCREEN_HEIGHT, _s(920))
         screen = pygame.display.set_mode((win_w, win_h))
         pygame.display.set_caption("OmniQueue — Interactive Play")
         clock = pygame.time.Clock()
@@ -245,6 +263,7 @@ class PlayApp:
         title_f = pygame.font.SysFont("DejaVu Sans", _s(26), bold=True)
         bold = pygame.font.SysFont("DejaVu Sans", _s(18), bold=True)
         small = pygame.font.SysFont("DejaVu Sans", _s(14))
+        map_name_f = pygame.font.SysFont("DejaVu Sans", _s(12))
         decision_name_f = pygame.font.SysFont("DejaVu Sans", _s(18), bold=True)
 
         BG = (28, 36, 44)
@@ -288,12 +307,13 @@ class PlayApp:
 
         self.sort_preferences()
 
-        header_h = _s(168)
+        header_h = _s(210)
         footer_h = _s(64)
         row_h = _s(48)
         name_w = _s(420)
         check_w = _s(120)
         pad = _s(20)
+        step_sec = 30 * 60  # ±30 minutes for enter/leave buttons
 
         pref_list = pygame.Rect(
             pad,
@@ -308,16 +328,29 @@ class PlayApp:
         btn_play = pygame.Rect(pad, win_h - _s(50), _s(140), _s(36))
         btn_compare = pygame.Rect(pad + _s(160), win_h - _s(50), _s(170), _s(36))
         btn_bench = pygame.Rect(pad + _s(350), win_h - _s(50), _s(170), _s(36))
-        btn_sort = pygame.Rect(pad, _s(118), _s(200), _s(34))
-        btn_crowd = pygame.Rect(pad + _s(220), _s(118), _s(220), _s(34))
-        model_box = pygame.Rect(pad + _s(460), _s(118), win_w - pad - _s(480), _s(34))
-        btn_setup = pygame.Rect(PARK_WIDTH + _s(16), win_h - _s(50), _s(140), _s(36))
+        btn_sort = pygame.Rect(pad, _s(156), _s(200), _s(34))
+        btn_crowd = pygame.Rect(pad + _s(220), _s(156), _s(220), _s(34))
+        model_box = pygame.Rect(pad + _s(460), _s(156), win_w - pad - _s(480), _s(34))
 
-        btn_exit = pygame.Rect(PARK_WIDTH + _s(16), win_h - _s(110), _s(120), _s(36))
-        btn_idle = pygame.Rect(PARK_WIDTH + _s(150), win_h - _s(110), _s(120), _s(36))
-        ride_list = pygame.Rect(PARK_WIDTH + _s(12), _s(90), SIDEBAR_WIDTH - _s(24), win_h - _s(220))
+        # Enter / leave time pickers (visible buttons — not keyboard-only).
+        btn_enter_minus = pygame.Rect(pad, _s(88), _s(44), _s(34))
+        btn_enter_plus = pygame.Rect(pad + _s(250), _s(88), _s(44), _s(34))
+        btn_leave_minus = pygame.Rect(pad + _s(340), _s(88), _s(44), _s(34))
+        btn_leave_plus = pygame.Rect(pad + _s(600), _s(88), _s(44), _s(34))
+
+        sidebar_x = PARK_WIDTH
+        btn_setup = pygame.Rect(sidebar_x + _s(16), win_h - _s(50), _s(140), _s(36))
+        btn_exit = pygame.Rect(sidebar_x + _s(16), win_h - _s(110), _s(120), _s(36))
+        btn_idle = pygame.Rect(sidebar_x + _s(150), win_h - _s(110), _s(120), _s(36))
+        ride_list = pygame.Rect(
+            sidebar_x + _s(12),
+            _s(90),
+            play_sidebar_w - _s(24),
+            win_h - _s(220),
+        )
         hist_list = pygame.Rect(pad, _s(80), win_w - 2 * pad, win_h - _s(160))
         decision_row_h = _s(36)
+        ride_hit_radius = _s(18)
 
         def draw_button(rect, label, color=BTN) -> None:
             pygame.draw.rect(screen, color, rect, border_radius=_s(6))
@@ -341,14 +374,33 @@ class PlayApp:
         def draw_setup() -> None:
             screen.fill(PANEL)
             screen.blit(title_f.render("Interactive Play — Setup", True, TEXT), (pad, _s(14)))
+            screen.blit(
+                font.render(
+                    f"Seed {self.seed}    Scroll prefs · drag sliders · click must-do",
+                    True,
+                    MUTED,
+                ),
+                (pad, _s(52)),
+            )
 
-            meta = [
-                f"Seed {self.seed}   Enter {format_clock(self.profile.spawn_sec)}   "
-                f"Leave (soft) {format_clock(self.profile.leave_sec)}",
-                "[ / ] enter ±30m    ; / ' leave ±30m    Scroll the list    Drag sliders    Click must-do",
-            ]
-            for i, line in enumerate(meta):
-                screen.blit(font.render(line, True, MUTED), (pad, _s(52) + i * _s(24)))
+            # Enter / leave pickers
+            draw_button(btn_enter_minus, "−", BTN)
+            draw_button(btn_enter_plus, "+", BTN)
+            enter_label = bold.render(
+                f"Enter  {format_clock(self.profile.spawn_sec)}", True, TEXT
+            )
+            screen.blit(enter_label, (pad + _s(56), _s(94)))
+
+            draw_button(btn_leave_minus, "−", BTN)
+            draw_button(btn_leave_plus, "+", BTN)
+            leave_label = bold.render(
+                f"Leave  {format_clock(self.profile.leave_sec)}", True, TEXT
+            )
+            screen.blit(leave_label, (pad + _s(396), _s(94)))
+            screen.blit(
+                small.render("±30 min   (AI compare uses these exact times)", True, MUTED),
+                (pad + _s(660), _s(98)),
+            )
 
             draw_button(btn_sort, "Sort by preference", BTN2)
             crowd_color = BTN if self.crowd_router == "heuristic" else (130, 90, 170)
@@ -446,9 +498,10 @@ class PlayApp:
                 screen.blit(font.render(self.error_msg, True, ERR), (pad, win_h - _s(88)))
 
         def draw_play() -> None:
-            # Map uses original park layout; fill rest of taller window with panel.
+            # Map on the left; wider decision sidebar on the right.
             screen.fill(PANEL)
             screen.blit(park_surface, (0, 0))
+            sample = None
             if self.replay is not None:
                 walks_now = active_walks_at(self.replay, self.float_sec)
                 step = max(1, len(walks_now) // MAX_WALK_DOTS)
@@ -456,23 +509,38 @@ class PlayApp:
                     w = walks_now[i]
                     x, y = walk_position(self.replay, w, self.float_sec)
                     pygame.draw.circle(screen, WALK_DOT, _xy(x, y), max(1, _s(2)))
-
                 sample = ride_state_at(self.replay, self.float_sec)
-                for ride_id, ride in enumerate(config.RIDES):
-                    x, y = _xy(*ride["coords"])
-                    broken = bool(sample.broken[ride_id]) if sample is not None else False
-                    wait = float(sample.wait[ride_id]) if sample is not None else 0.0
-                    color = RIDE_BROKEN if broken else RIDE_OPEN
-                    pygame.draw.circle(screen, color, (x, y), _s(15))
-                    label = "X" if broken or wait >= 9000 else str(int(wait / 60))
-                    wt = bold.render(label, True, TEXT)
-                    screen.blit(wt, (x - wt.get_width() // 2, y - wt.get_height() // 2))
 
+            # Ride circles + wait minutes + short names (same style as visualize.py).
+            for ride_id, ride in enumerate(config.RIDES):
+                x, y = _xy(*ride["coords"])
+                broken = bool(sample.broken[ride_id]) if sample is not None else False
+                wait = float(sample.wait[ride_id]) if sample is not None else 0.0
+                color = RIDE_BROKEN if broken else RIDE_OPEN
+                pygame.draw.circle(screen, color, (x, y), _s(15))
+                pygame.draw.circle(screen, (10, 10, 10), (x, y), _s(15), 1)
+                label = "X" if broken or wait >= 9000 else str(int(wait / 60))
+                wt = bold.render(label, True, TEXT)
+                screen.blit(wt, (x - wt.get_width() // 2, y - wt.get_height() // 2))
+                words = ride["name"].split()
+                short = " ".join(words[:2]) + ("…" if len(words) > 2 else "")
+                nt = map_name_f.render(short, True, MUTED)
+                screen.blit(nt, (x - nt.get_width() // 2, y + _s(17)))
+
+            # Special indicator for the human-controlled guest (party 0).
+            if self.replay is not None:
                 g = party_state_at(self.replay, 0, self.float_sec)
                 if g and g.get("pos"):
                     gx, gy = _xy(*g["pos"])
+                    if "dest" in g and g["dest"] is not None:
+                        dx, dy = _xy(*g["dest"])
+                        pygame.draw.line(screen, ACCENT, (gx, gy), (dx, dy), max(1, _s(2)))
                     pulse = abs(math.sin(pygame.time.get_ticks() / 200.0)) * 5
-                    pygame.draw.circle(screen, ACCENT, (gx, gy), _s(10 + pulse))
+                    pygame.draw.circle(screen, ACCENT, (gx, gy), _s(12 + pulse))
+                    pygame.draw.circle(screen, (20, 20, 20), (gx, gy), _s(12 + pulse), max(1, _s(2)))
+                    pygame.draw.circle(screen, (255, 255, 255), (gx, gy), _s(4))
+                    you = bold.render("YOU", True, (20, 20, 20), ACCENT)
+                    screen.blit(you, (gx + _s(14), gy - _s(12)))
 
             pygame.draw.rect(screen, PANEL, (0, PARK_HEIGHT, PARK_WIDTH, CONTROL_HEIGHT))
             screen.blit(
@@ -481,34 +549,36 @@ class PlayApp:
             )
             screen.blit(
                 font.render(
-                    f"{self.sim_speed:.0f}x   crowd={self.crowd_router}   {self.status_msg}",
+                    f"{self.sim_speed:.0f}x   crowd={self.crowd_router}   "
+                    f"entered {format_clock(self.profile.spawn_sec)}   {self.status_msg}",
                     True,
                     MUTED,
                 ),
                 (_s(200), PARK_HEIGHT + _s(24)),
             )
 
-            pygame.draw.rect(screen, PANEL, (PARK_WIDTH, 0, win_w - PARK_WIDTH, win_h))
-            screen.blit(title_f.render("Your turn", True, ACCENT), (PARK_WIDTH + _s(16), _s(16)))
+            pygame.draw.rect(screen, PANEL, (sidebar_x, 0, play_sidebar_w, win_h))
+            screen.blit(title_f.render("Your turn", True, ACCENT), (sidebar_x + _s(16), _s(16)))
             screen.blit(
                 font.render(
-                    f"seed {self.seed}   leave {format_clock(self.profile.leave_sec)}",
+                    f"seed {self.seed}   enter {format_clock(self.profile.spawn_sec)}   "
+                    f"leave {format_clock(self.profile.leave_sec)}",
                     True,
                     MUTED,
                 ),
-                (PARK_WIDTH + _s(16), _s(52)),
+                (sidebar_x + _s(16), _s(52)),
             )
 
             if self.pending_decision is not None and not self.playing_segment:
                 dec = self.pending_decision
                 screen.blit(
-                    bold.render("Pick a ride", True, TEXT),
-                    (PARK_WIDTH + _s(16), _s(78)),
+                    bold.render("Pick a ride (list or map)", True, TEXT),
+                    (sidebar_x + _s(16), _s(78)),
                 )
                 list_rect = pygame.Rect(
-                    PARK_WIDTH + _s(12),
+                    sidebar_x + _s(12),
                     _s(110),
-                    win_w - PARK_WIDTH - _s(24),
+                    play_sidebar_w - _s(24),
                     win_h - _s(240),
                 )
                 pygame.draw.rect(screen, ROW_BG, list_rect, border_radius=_s(5))
@@ -529,16 +599,11 @@ class PlayApp:
                     col = ACCENT if md else (TEXT if open_ok else MUTED)
                     prefix = "★ " if md else "  "
                     screen.blit(
-                        decision_name_f.render(
-                            f"{prefix}{name}",
-                            True,
-                            col,
-                        ),
+                        decision_name_f.render(f"{prefix}{name}", True, col),
                         (list_rect.x + _s(10), y + _s(6)),
                     )
                     meta = small.render(f"{wait_m:.0f} min wait", True, MUTED)
                     screen.blit(meta, (list_rect.right - meta.get_width() - _s(12), y + _s(10)))
-                # Store for hit-testing
                 draw_play.list_rect = list_rect  # type: ignore[attr-defined]
                 draw_play.order = order  # type: ignore[attr-defined]
                 draw_button(btn_exit, "Exit", (160, 70, 70))
@@ -546,13 +611,27 @@ class PlayApp:
             elif self.playing_segment:
                 screen.blit(
                     font.render("Watching the crowd… (Space to pause)", True, MUTED),
-                    (PARK_WIDTH + _s(16), _s(120)),
+                    (sidebar_x + _s(16), _s(120)),
                 )
             else:
                 screen.blit(
                     font.render(self.status_msg or "…", True, MUTED),
-                    (PARK_WIDTH + _s(16), _s(120)),
+                    (sidebar_x + _s(16), _s(120)),
                 )
+
+        def hit_ride_on_map(mx: int, my: int) -> int | None:
+            """Return ride id if click is on a map ride circle, else None."""
+            if mx >= PARK_WIDTH or my >= PARK_HEIGHT:
+                return None
+            best = None
+            best_d2 = ride_hit_radius * ride_hit_radius
+            for ride_id, ride in enumerate(config.RIDES):
+                x, y = _xy(*ride["coords"])
+                d2 = (mx - x) * (mx - x) + (my - y) * (my - y)
+                if d2 <= best_d2:
+                    best_d2 = d2
+                    best = ride_id
+            return best
 
         draw_play.list_rect = ride_list  # type: ignore[attr-defined]
         draw_play.order = list(range(config.NUM_RIDES))  # type: ignore[attr-defined]
@@ -614,21 +693,13 @@ class PlayApp:
                             running = False
                     elif self.mode == "setup":
                         if event.key == pygame.K_LEFTBRACKET:
-                            self.profile.spawn_sec = max(0, self.profile.spawn_sec - 1800)
+                            self.adjust_enter(-step_sec)
                         elif event.key == pygame.K_RIGHTBRACKET:
-                            self.profile.spawn_sec = min(
-                                config.DAY_SECONDS - config.MIN_DWELL_SEC,
-                                self.profile.spawn_sec + 1800,
-                            )
+                            self.adjust_enter(step_sec)
                         elif event.key == pygame.K_SEMICOLON:
-                            self.profile.leave_sec = max(
-                                self.profile.spawn_sec + config.MIN_DWELL_SEC,
-                                self.profile.leave_sec - 1800,
-                            )
+                            self.adjust_leave(-step_sec)
                         elif event.key == pygame.K_QUOTE:
-                            self.profile.leave_sec = min(
-                                config.DAY_SECONDS, self.profile.leave_sec + 1800
-                            )
+                            self.adjust_leave(step_sec)
                         elif event.key == pygame.K_s:
                             self.sort_preferences()
                         elif event.key == pygame.K_c:
@@ -665,6 +736,14 @@ class PlayApp:
                             self.crowd_router = (
                                 "ppo" if self.crowd_router == "heuristic" else "heuristic"
                             )
+                        elif btn_enter_minus.collidepoint(mx, my):
+                            self.adjust_enter(-step_sec)
+                        elif btn_enter_plus.collidepoint(mx, my):
+                            self.adjust_enter(step_sec)
+                        elif btn_leave_minus.collidepoint(mx, my):
+                            self.adjust_leave(-step_sec)
+                        elif btn_leave_plus.collidepoint(mx, my):
+                            self.adjust_leave(step_sec)
                         elif pref_list.collidepoint(mx, my):
                             idx = int((my - pref_list.y + self.pref_scroll) // row_h)
                             if 0 <= idx < len(self.sorted_pref_ids):
@@ -672,7 +751,9 @@ class PlayApp:
                                 # Expand slider hit target vertically.
                                 slider_hit = slider.inflate(0, _s(16))
                                 if check.collidepoint(mx, my) or (
-                                    mx >= check.x and row.collidepoint(mx, my) and mx > slider.right + _s(40)
+                                    mx >= check.x
+                                    and row.collidepoint(mx, my)
+                                    and mx > slider.right + _s(40)
                                 ):
                                     self.profile.must_dos[rid] = (
                                         0 if self.profile.must_dos[rid] else 1
@@ -692,13 +773,17 @@ class PlayApp:
                         elif btn_idle.collidepoint(mx, my):
                             self.apply_action(35)
                         else:
-                            list_rect = draw_play.list_rect  # type: ignore[attr-defined]
-                            order = draw_play.order  # type: ignore[attr-defined]
-                            if list_rect.collidepoint(mx, my):
-                                start = int(self.decision_scroll // decision_row_h)
-                                idx = start + int((my - list_rect.y) // decision_row_h)
-                                if 0 <= idx < len(order):
-                                    self.apply_action(order[idx])
+                            map_ride = hit_ride_on_map(mx, my)
+                            if map_ride is not None:
+                                self.apply_action(int(map_ride))
+                            else:
+                                list_rect = draw_play.list_rect  # type: ignore[attr-defined]
+                                order = draw_play.order  # type: ignore[attr-defined]
+                                if list_rect.collidepoint(mx, my):
+                                    start = int(self.decision_scroll // decision_row_h)
+                                    idx = start + int((my - list_rect.y) // decision_row_h)
+                                    if 0 <= idx < len(order):
+                                        self.apply_action(order[idx])
                     elif self.mode == "results" and btn_setup.collidepoint(mx, my):
                         self.mode = "setup"
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
@@ -712,7 +797,7 @@ class PlayApp:
                         self.pref_scroll = max(
                             0, min(max_scroll, self.pref_scroll - event.y * row_h)
                         )
-                    elif self.mode == "play" and mx > PARK_WIDTH:
+                    elif self.mode == "play" and mx > sidebar_x:
                         self.decision_scroll = max(0, self.decision_scroll - event.y * decision_row_h)
                     elif self.mode == "results":
                         self.history_scroll = max(0, self.history_scroll - event.y * _s(40))
