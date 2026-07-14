@@ -264,18 +264,20 @@ class PlayApp:
                 stop = threading.Event()
 
                 def pulse() -> None:
-                    # Heuristic days are faster; PPO days slower — soft asymptote to ~90%.
-                    expected = (
-                        20.0
+                    # Soft asymptote: progress = 1 - exp(-t/tau), calibrated to hit ~90%
+                    # at target_sec. H/H days finish sooner; PPO cells use 80s → 90%.
+                    target_sec = (
+                        25.0
                         if cell.crowd == "heuristic" and cell.focal == "heuristic"
-                        else 55.0
+                        else 80.0
                     )
+                    tau = target_sec / -math.log(0.1)  # 1 - exp(-target/tau) == 0.9
                     while not stop.wait(0.1):
                         with cell.lock:
                             if cell.status != "running":
                                 break
                             elapsed = max(0.0, time.time() - cell.started_at)
-                            cell.progress = min(0.92, 1.0 - math.exp(-elapsed / expected))
+                            cell.progress = min(0.92, 1.0 - math.exp(-elapsed / tau))
 
                 pulser = threading.Thread(target=pulse, daemon=True)
                 pulser.start()
