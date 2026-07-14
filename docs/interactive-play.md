@@ -4,7 +4,7 @@
 
 ## Overview
 
-A **new** interactive program (separate from Phase 4 `visualize.py` replay) where you play as **one size-1 party** on a **full-population** park day. Other guests are routed by the **heuristic** or a **PPO** checkpoint. Session runs (human play, 4-cell AI compare, multi-day benchmark) are stored **in memory only** for the lifetime of the process.
+A **new** interactive program (separate from Phase 4 `visualize.py` replay) where you play as **one size-1 party** on a **full-population** park day. Other guests are routed by the **heuristic** or a **PPO** model. Session runs (human play, 4-cell AI compare, multi-day benchmark) are stored **in memory only** for the lifetime of the process.
 
 Walks use the same near-shortest path sampler as the AI (including idle **Wander**).
 
@@ -12,34 +12,34 @@ Walks use the same near-shortest path sampler as the AI (including idle **Wander
 
 ```bash
 pip install -e ".[viz]"
-python play.py --seed 42 --crowd heuristic
-python play.py --seed 42 --crowd ppo --checkpoint checkpoints/ppo/ppo_final.pt
+python play.py --seed 42
+python play.py --seed 42 --model checkpoints/ppo/ppo_final.pt
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--seed` | `42` | Shared day seed (human + AI compare) |
-| `--crowd` | `heuristic` | Router for all non-you parties while playing |
-| `--checkpoint` | — | Required for PPO crowd, AI compare, and benchmark |
+| `--model` | — | Optional PPO model/checkpoint path (also editable in the Setup UI). Alias: `--checkpoint` |
 | `--speed` | `120` | Simulated seconds per real second during segment animation |
 | `--sample-interval` | `60` | Ride wait snapshot interval in the live recording |
 | `--device` | `cpu` | Torch device for PPO |
 
-Missing / invalid checkpoint when PPO is needed → hard error.
+Crowd router (**Heuristic** vs **PPO**) is toggled in the Setup UI, not via CLI. Missing / invalid model when PPO is needed → hard error.
 
 ## Setup UI
 
 - Enter time / soft leave time (`[` / `]` and `;` / `'` ±30 min)
-- Full manual preference weights for all 34 rides (`+` / `-`, **Sort by preference**)
-- Must-do checkbox per ride (default off; click checkbox or press `M`)
-- Toggle crowd router Heuristic ↔ PPO (`C` or button)
+- Preference list rows: **ride name | preference slider | must-do checkbox** (large readable names)
+- **Sort by preference** reorders rows by current slider values
+- **Crowd AI** toggle: Heuristic ↔ PPO
+- **PPO model** text field: click and type a path (pre-filled from `--model` when provided)
 - **Play day**, **AI compare (4)**, **Benchmark 3d**
 
 ## Live play
 
 1. Sim advances with hybrid routing until **your** party needs a decision.
 2. Recorded walks animate at `--speed` up to that decision (full crowd).
-3. Modal: pick a ride (sorted by your prefs), **Wander** (AI idle action), or **Exit**.
+3. Modal: pick a ride (large names, sorted by your prefs), **Wander** (AI idle action), or **Exit**.
 4. Soft leave: shown as a target; you are not hard-forced out until park close. AI shadow runs use the same `leave_sec` in the normal router/obs sense.
 
 Focal party is always **party id 0**, size 1, with your prefs/must-dos/spawn/leave injected after seed spawn.

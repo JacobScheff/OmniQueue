@@ -2,8 +2,8 @@
 """Interactive human-vs-AI park day player.
 
 Usage:
-    python play.py --seed 42 --checkpoint checkpoints/ppo/ppo_final.pt
-    python play.py --seed 42 --crowd heuristic --speed 120
+    python play.py --seed 42
+    python play.py --seed 42 --model checkpoints/ppo/ppo_final.pt
 """
 
 from __future__ import annotations
@@ -17,29 +17,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Interactive OmniQueue play mode")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--model",
         "--checkpoint",
+        dest="model",
         type=str,
         default=None,
-        help="PPO checkpoint path (required for PPO crowd / AI compare / benchmark)",
-    )
-    parser.add_argument(
-        "--crowd",
-        choices=("heuristic", "ppo"),
-        default="heuristic",
-        help="Router for all non-you parties during play",
+        help="PPO model/checkpoint file path (used when crowd is PPO, AI compare, or benchmark)",
     )
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--speed", type=float, default=120.0, help="Sim seconds per real second")
     parser.add_argument("--sample-interval", type=int, default=60)
     args = parser.parse_args(argv)
 
-    if args.crowd == "ppo":
-        if not args.checkpoint:
-            print("error: --checkpoint is required when --crowd ppo", file=sys.stderr)
-            return 2
-        if not Path(args.checkpoint).is_file():
-            print(f"error: checkpoint not found: {args.checkpoint}", file=sys.stderr)
-            return 2
+    if args.model is not None and not Path(args.model).is_file():
+        print(f"error: PPO model not found: {args.model}", file=sys.stderr)
+        return 2
 
     try:
         import pygame  # noqa: F401
@@ -51,8 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_play_app(
         seed=args.seed,
-        checkpoint=args.checkpoint,
-        crowd_router=args.crowd,
+        checkpoint=args.model,
         device=args.device,
         speed=args.speed,
         sample_interval=args.sample_interval,
