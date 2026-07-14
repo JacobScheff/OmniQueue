@@ -47,14 +47,14 @@ Focal party is always **party id 0**, size 1, with your prefs/must-dos/spawn/lea
 
 ## AI compare (4 cells)
 
-Same seed + profile, anytime (even without playing):
+**AI compare (4)** opens a screen with one row per cell. Click **Run** on any cell to simulate it individually; each row shows a progress bar and, when finished, park + focal scores. Cells can be re-run. Uses the current Setup seed, enter/leave times, preferences, and PPO model path.
 
 | | Focal: Heuristic | Focal: PPO |
 |---|---|---|
 | **Crowd: Heuristic** | H / H | H / P |
 | **Crowd: PPO** | P / H | P / P |
 
-Each cell stores park KPIs (rides/party, mean wait, wait variance) and focal preference KPIs (preference score, must-do completion, top-3 hits).
+Each finished cell is stored in the in-session history (park KPIs + focal preference KPIs).
 
 ## Benchmark
 

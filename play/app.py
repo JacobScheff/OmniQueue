@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 import config
 from park_graph import get_park_graph
-from play.benchmark import run_ai_compare, run_park_benchmark
+from play.benchmark import COMPARE_CELLS, run_ai_compare_cell, run_park_benchmark
 from play.driver import HybridDriver
 from play.scoring import format_focal_line, format_park_line
-from play.session import FocalProfile, SessionStore
+from play.session import FocalProfile, SessionRun, SessionStore
 from simulator import native_backend_name
 from visualize import (
     CONTROL_HEIGHT,
@@ -44,6 +47,19 @@ def _default_weights() -> np.ndarray:
     return np.clip(pops, 0.0, WEIGHT_SLIDER_MAX)
 
 
+@dataclass
+class CompareCellState:
+    crowd: str
+    focal: str
+    label: str
+    status: str = "idle"  # idle | running | done | error
+    progress: float = 0.0
+    result: SessionRun | None = None
+    error: str = ""
+    started_at: float = 0.0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
 class PlayApp:
     """Setup → live play → session history / AI compare / benchmark."""
 
@@ -70,7 +86,7 @@ class PlayApp:
             preference_weights=_default_weights(),
             must_dos=np.zeros(config.NUM_RIDES, dtype=np.uint8),
         )
-        self.mode = "setup"  # setup | play | results
+        self.mode = "setup"  # setup | play | compare | results
         self.status_msg = ""
         self.error_msg = ""
 
@@ -87,6 +103,10 @@ class PlayApp:
         self.sorted_pref_ids = list(range(config.NUM_RIDES))
         self.model_input_focused = False
         self.dragging_slider_rid: int | None = None
+        self.compare_cells: list[CompareCellState] = [
+            CompareCellState(crowd=c, focal=f, label=label) for c, f, label in COMPARE_CELLS
+        ]
+        self._compare_threads: dict[int, threading.Thread] = {}
 
     def _checkpoint_or_none(self) -> str | None:
         text = (self.checkpoint or "").strip()
@@ -204,23 +224,87 @@ class PlayApp:
         self.float_sec = self.segment_end
         self._advance_to_decision_or_done()
 
-    def run_compare(self) -> None:
+    def open_compare(self) -> None:
+        """Open the per-cell AI compare screen (does not auto-run)."""
         self.error_msg = ""
         self.model_input_focused = False
-        try:
-            self._validate_ppo()
-            self.status_msg = "Running 4 AI compare cells…"
-            runs = run_ai_compare(
-                seed=self.seed,
-                profile=self.profile,
-                checkpoint=self._checkpoint_or_none(),
-                store=self.store,
-                device=self.device,
-            )
-            self.status_msg = f"AI compare done ({len(runs)} cells)."
-            self.mode = "results"
-        except Exception as exc:  # noqa: BLE001
-            self.error_msg = str(exc)
+        self.status_msg = (
+            f"AI compare — seed {self.seed}, enter {format_clock(self.profile.spawn_sec)}, "
+            f"leave {format_clock(self.profile.leave_sec)}"
+        )
+        self.mode = "compare"
+
+    def start_compare_cell(self, index: int) -> None:
+        """Kick off one compare cell in a background thread with a progress bar."""
+        if index < 0 or index >= len(self.compare_cells):
+            return
+        cell = self.compare_cells[index]
+        with cell.lock:
+            if cell.status == "running":
+                return
+            needs_ppo = cell.crowd == "ppo" or cell.focal == "ppo"
+            if needs_ppo:
+                try:
+                    self._validate_ppo()
+                except Exception as exc:  # noqa: BLE001
+                    cell.status = "error"
+                    cell.error = str(exc)
+                    cell.progress = 0.0
+                    self.error_msg = str(exc)
+                    return
+            cell.status = "running"
+            cell.progress = 0.02
+            cell.error = ""
+            cell.result = None
+            cell.started_at = time.time()
+
+        def worker() -> None:
+            try:
+                # Soft wall-clock progress while the sim runs (full day has no mid-callbacks).
+                stop = threading.Event()
+
+                def pulse() -> None:
+                    # Heuristic days are faster; PPO days slower — soft asymptote to ~90%.
+                    expected = (
+                        20.0
+                        if cell.crowd == "heuristic" and cell.focal == "heuristic"
+                        else 55.0
+                    )
+                    while not stop.wait(0.1):
+                        with cell.lock:
+                            if cell.status != "running":
+                                break
+                            elapsed = max(0.0, time.time() - cell.started_at)
+                            cell.progress = min(0.92, 1.0 - math.exp(-elapsed / expected))
+
+                pulser = threading.Thread(target=pulse, daemon=True)
+                pulser.start()
+                run = run_ai_compare_cell(
+                    seed=self.seed,
+                    profile=self.profile,
+                    crowd_router=cell.crowd,
+                    focal_router=cell.focal,
+                    label=cell.label,
+                    checkpoint=self._checkpoint_or_none(),
+                    store=self.store,
+                    device=self.device,
+                )
+                stop.set()
+                pulser.join(timeout=1.0)
+                with cell.lock:
+                    cell.result = run
+                    cell.progress = 1.0
+                    cell.status = "done"
+                    cell.error = ""
+            except Exception as exc:  # noqa: BLE001
+                with cell.lock:
+                    cell.status = "error"
+                    cell.error = str(exc)
+                    cell.progress = 0.0
+
+        thread = threading.Thread(target=worker, daemon=True)
+        self._compare_threads[index] = thread
+        thread.start()
 
     def run_benchmark(self, n_days: int = 3) -> None:
         self.error_msg = ""
@@ -636,6 +720,118 @@ class PlayApp:
         draw_play.list_rect = ride_list  # type: ignore[attr-defined]
         draw_play.order = list(range(config.NUM_RIDES))  # type: ignore[attr-defined]
 
+        # Compare screen layout: one row per cell with Run + progress bar.
+        compare_row_h = _s(150)
+        compare_top = _s(90)
+        compare_run_btns: list[pygame.Rect] = []
+        compare_bars: list[pygame.Rect] = []
+        for i in range(4):
+            y = compare_top + i * compare_row_h
+            compare_run_btns.append(pygame.Rect(pad, y + _s(48), _s(120), _s(36)))
+            compare_bars.append(
+                pygame.Rect(pad + _s(140), y + _s(54), win_w - pad * 2 - _s(160), _s(24))
+            )
+        btn_compare_back = pygame.Rect(pad, win_h - _s(50), _s(160), _s(36))
+        btn_compare_results = pygame.Rect(pad + _s(180), win_h - _s(50), _s(180), _s(36))
+
+        def draw_compare() -> None:
+            screen.fill(PANEL)
+            screen.blit(title_f.render("AI Compare — run cells individually", True, TEXT), (pad, _s(16)))
+            screen.blit(
+                font.render(
+                    f"Seed {self.seed}   enter {format_clock(self.profile.spawn_sec)}   "
+                    f"leave {format_clock(self.profile.leave_sec)}   "
+                    f"model: {Path(self.checkpoint).name if self.checkpoint else '(none)'}",
+                    True,
+                    MUTED,
+                ),
+                (pad, _s(52)),
+            )
+
+            for i, cell in enumerate(self.compare_cells):
+                with cell.lock:
+                    status = cell.status
+                    progress = cell.progress
+                    result = cell.result
+                    err = cell.error
+                y = compare_top + i * compare_row_h
+                row = pygame.Rect(pad, y, win_w - 2 * pad, compare_row_h - _s(12))
+                pygame.draw.rect(screen, ROW_BG, row, border_radius=_s(8))
+                screen.blit(bold.render(cell.label, True, TEXT), (pad + _s(16), y + _s(12)))
+                screen.blit(
+                    small.render(
+                        f"crowd={cell.crowd}   focal guest={cell.focal}",
+                        True,
+                        MUTED,
+                    ),
+                    (pad + _s(280), y + _s(16)),
+                )
+
+                run_btn = compare_run_btns[i]
+                bar = compare_bars[i]
+                if status == "running":
+                    draw_button(run_btn, "Running…", (90, 90, 100))
+                elif status == "done":
+                    draw_button(run_btn, "Re-run", BTN2)
+                else:
+                    draw_button(run_btn, "Run", BTN)
+
+                # Progress bar
+                pygame.draw.rect(screen, TRACK, bar, border_radius=_s(6))
+                fill_w = int(bar.w * max(0.0, min(1.0, progress)))
+                if fill_w > 0:
+                    color = CHECK_ON if status == "done" else FILL
+                    if status == "error":
+                        color = ERR
+                    pygame.draw.rect(
+                        screen,
+                        color,
+                        (bar.x, bar.y, fill_w, bar.h),
+                        border_radius=_s(6),
+                    )
+                pygame.draw.rect(screen, (90, 100, 110), bar, 1, border_radius=_s(6))
+                pct = bold.render(f"{int(progress * 100)}%", True, TEXT)
+                screen.blit(pct, (bar.right - pct.get_width() - _s(8), bar.y - _s(2)))
+
+                if status == "done" and result is not None:
+                    screen.blit(
+                        font.render(
+                            "park: " + format_park_line(result.park),
+                            True,
+                            TEXT,
+                        ),
+                        (pad + _s(16), y + _s(96)),
+                    )
+                    screen.blit(
+                        font.render(
+                            "focal: " + format_focal_line(result.focal),
+                            True,
+                            ACCENT,
+                        ),
+                        (pad + _s(16), y + _s(118)),
+                    )
+                elif status == "error":
+                    screen.blit(
+                        font.render(err or "error", True, ERR),
+                        (pad + _s(16), y + _s(100)),
+                    )
+                elif status == "idle":
+                    screen.blit(
+                        small.render("Click Run to simulate this cell", True, MUTED),
+                        (pad + _s(16), y + _s(100)),
+                    )
+                elif status == "running":
+                    elapsed = max(0.0, time.time() - cell.started_at)
+                    screen.blit(
+                        small.render(f"Simulating full park day… {elapsed:.0f}s", True, MUTED),
+                        (pad + _s(16), y + _s(100)),
+                    )
+
+            draw_button(btn_compare_back, "Back to setup", BTN)
+            draw_button(btn_compare_results, "Session history", BTN)
+            if self.error_msg:
+                screen.blit(font.render(self.error_msg, True, ERR), (pad + _s(380), win_h - _s(42)))
+
         def draw_results() -> None:
             screen.fill(PANEL)
             screen.blit(title_f.render("Session runs (this launch only)", True, TEXT), (pad, _s(16)))
@@ -689,6 +885,8 @@ class PlayApp:
                         if self.mode == "play":
                             self.mode = "setup"
                             self.driver = None
+                        elif self.mode == "compare":
+                            self.mode = "setup"
                         else:
                             running = False
                     elif self.mode == "setup":
@@ -715,7 +913,7 @@ class PlayApp:
                             self.sim_speed = min(600.0, self.sim_speed * 1.5)
                         elif event.key == pygame.K_MINUS:
                             self.sim_speed = max(1.0, self.sim_speed / 1.5)
-                    elif self.mode == "results" and event.key == pygame.K_b:
+                    elif self.mode in ("results", "compare") and event.key == pygame.K_b:
                         self.mode = "setup"
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if self.mode == "setup":
@@ -727,7 +925,7 @@ class PlayApp:
                         if btn_play.collidepoint(mx, my):
                             self.start_play()
                         elif btn_compare.collidepoint(mx, my):
-                            self.run_compare()
+                            self.open_compare()
                         elif btn_bench.collidepoint(mx, my):
                             self.run_benchmark(3)
                         elif btn_sort.collidepoint(mx, my):
@@ -763,6 +961,16 @@ class PlayApp:
                                 ):
                                     self.dragging_slider_rid = rid
                                     set_weight_from_x(rid, mx)
+                    elif self.mode == "compare":
+                        if btn_compare_back.collidepoint(mx, my):
+                            self.mode = "setup"
+                        elif btn_compare_results.collidepoint(mx, my):
+                            self.mode = "results"
+                        else:
+                            for i, btn in enumerate(compare_run_btns):
+                                if btn.collidepoint(mx, my):
+                                    self.start_compare_cell(i)
+                                    break
                     elif (
                         self.mode == "play"
                         and self.pending_decision is not None
@@ -812,6 +1020,8 @@ class PlayApp:
                 draw_setup()
             elif self.mode == "play":
                 draw_play()
+            elif self.mode == "compare":
+                draw_compare()
             else:
                 draw_results()
             pygame.display.flip()

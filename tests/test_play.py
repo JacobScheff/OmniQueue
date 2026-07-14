@@ -92,3 +92,22 @@ def test_focal_uses_exact_enter_time():
     )
     assert int(result.focal.spawn_sec) == 12_345
     assert int(result.focal.leave_sec) == 40_000
+
+
+def test_run_ai_compare_cell_heuristic():
+    from play.benchmark import run_ai_compare_cell
+    from play.session import SessionStore
+
+    store = SessionStore()
+    run = run_ai_compare_cell(
+        seed=4,
+        profile=_profile(),
+        crowd_router="heuristic",
+        focal_router="heuristic",
+        label="H-crowd / H-guest",
+        checkpoint=None,
+        store=store,
+    )
+    assert run.settings.label == "H-crowd / H-guest"
+    assert run.focal.rides_completed > 0
+    assert len(store.runs) == 1
