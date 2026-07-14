@@ -165,6 +165,93 @@ PYBIND11_MODULE(_park_sim, m) {
         .def_readonly("ride_samples", &park::DayRecording::ride_samples)
         .def_readonly("ride_completions", &park::DayRecording::ride_completions);
 
+    py::class_<park::FocalPartyConfig>(m, "FocalPartyConfig")
+        .def(py::init<>())
+        .def_readwrite("spawn_sec", &park::FocalPartyConfig::spawn_sec)
+        .def_readwrite("leave_sec", &park::FocalPartyConfig::leave_sec)
+        .def_property(
+            "preference_weights",
+            [](const park::FocalPartyConfig& c) {
+                py::array_t<float> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), c.preference_weights.data(), park::kNumRides * sizeof(float));
+                return arr;
+            },
+            [](park::FocalPartyConfig& c, const py::array_t<float>& arr) {
+                if (arr.size() != park::kNumRides) {
+                    throw std::invalid_argument("preference_weights must have length NUM_RIDES");
+                }
+                std::memcpy(c.preference_weights.data(), arr.data(), park::kNumRides * sizeof(float));
+            })
+        .def_property(
+            "must_dos",
+            [](const park::FocalPartyConfig& c) {
+                py::array_t<uint8_t> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), c.must_dos.data(), park::kNumRides * sizeof(uint8_t));
+                return arr;
+            },
+            [](park::FocalPartyConfig& c, const py::array_t<uint8_t>& arr) {
+                if (arr.size() != park::kNumRides) {
+                    throw std::invalid_argument("must_dos must have length NUM_RIDES");
+                }
+                std::memcpy(c.must_dos.data(), arr.data(), park::kNumRides * sizeof(uint8_t));
+            });
+
+    py::class_<park::FocalPartyStats>(m, "FocalPartyStats")
+        .def_readonly("party_id", &park::FocalPartyStats::party_id)
+        .def_readonly("spawn_sec", &park::FocalPartyStats::spawn_sec)
+        .def_readonly("leave_sec", &park::FocalPartyStats::leave_sec)
+        .def_readonly("exit_sec", &park::FocalPartyStats::exit_sec)
+        .def_readonly("rides_completed", &park::FocalPartyStats::rides_completed)
+        .def_readonly("must_dos_assigned", &park::FocalPartyStats::must_dos_assigned)
+        .def_readonly("must_dos_completed", &park::FocalPartyStats::must_dos_completed)
+        .def_readonly("top3_hits", &park::FocalPartyStats::top3_hits)
+        .def_readonly("preference_score", &park::FocalPartyStats::preference_score)
+        .def_readonly("exited", &park::FocalPartyStats::exited)
+        .def_property_readonly(
+            "preferences",
+            [](const park::FocalPartyStats& s) {
+                py::array_t<float> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), s.preferences.data(), park::kNumRides * sizeof(float));
+                return arr;
+            })
+        .def_property_readonly(
+            "must_dos_initial",
+            [](const park::FocalPartyStats& s) {
+                py::array_t<uint8_t> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), s.must_dos_initial.data(), park::kNumRides * sizeof(uint8_t));
+                return arr;
+            })
+        .def_readonly("completions", &park::FocalPartyStats::completions);
+
+    py::class_<park::PlayStepResult>(m, "PlayStepResult")
+        .def_readonly("done", &park::PlayStepResult::done)
+        .def_readonly("needs_human", &park::PlayStepResult::needs_human)
+        .def_readonly("needs_ppo_batch", &park::PlayStepResult::needs_ppo_batch)
+        .def_readonly("now_sec", &park::PlayStepResult::now_sec)
+        .def_readonly("focal_party_id", &park::PlayStepResult::focal_party_id)
+        .def_readonly("human_obs", &park::PlayStepResult::human_obs)
+        .def_readonly("n_ppo", &park::PlayStepResult::n_ppo)
+        .def_readonly("metrics", &park::PlayStepResult::metrics)
+        .def_readonly("focal", &park::PlayStepResult::focal)
+        .def_property_readonly("ppo_obs", [](const park::PlayStepResult& self) {
+            return vector_to_obs_batch(self.ppo_obs, self.n_ppo);
+        })
+        .def_property_readonly("ppo_party_ids", [](const park::PlayStepResult& self) {
+            py::array_t<int32_t> arr(static_cast<py::ssize_t>(self.ppo_party_ids.size()));
+            if (!self.ppo_party_ids.empty()) {
+                std::memcpy(
+                    arr.mutable_data(),
+                    self.ppo_party_ids.data(),
+                    self.ppo_party_ids.size() * sizeof(int32_t));
+            }
+            return arr;
+        });
+
+    py::class_<park::PlayDayResult>(m, "PlayDayResult")
+        .def_readonly("metrics", &park::PlayDayResult::metrics)
+        .def_readonly("recording", &park::PlayDayResult::recording)
+        .def_readonly("focal", &park::PlayDayResult::focal);
+
     py::class_<park::ParkEnv>(m, "ParkEnv")
         .def(py::init<uint64_t>(), py::arg("seed") = 0)
         .def("reset", &park::ParkEnv::reset, py::arg("seed"))
@@ -174,7 +261,45 @@ PYBIND11_MODULE(_park_sim, m) {
             &park::ParkEnv::exchange_batch,
             py::arg("actions"),
             py::arg("max_obs"),
-            "Apply a batch of actions, then collect up to max_obs pending observations.");
+            "Apply a batch of actions, then collect up to max_obs pending observations.")
+        .def(
+            "reset_play",
+            [](park::ParkEnv& env,
+               uint64_t seed,
+               const park::FocalPartyConfig& focal,
+               bool crowd_auto_heuristic,
+               int focal_policy,
+               bool soft_human_leave,
+               bool enable_recording,
+               int sample_interval_sec) {
+                env.reset_play(
+                    seed,
+                    focal,
+                    crowd_auto_heuristic,
+                    focal_policy,
+                    soft_human_leave,
+                    enable_recording,
+                    sample_interval_sec);
+            },
+            py::arg("seed"),
+            py::arg("focal"),
+            py::arg("crowd_auto_heuristic") = true,
+            py::arg("focal_policy") = 0,
+            py::arg("soft_human_leave") = true,
+            py::arg("enable_recording") = true,
+            py::arg("sample_interval_sec") = 60,
+            "Start a hybrid play/shadow session. focal_policy: 0=human, 1=heuristic, 2=ppo.")
+        .def("play_advance", &park::ParkEnv::play_advance)
+        .def("play_apply_human_action", &park::ParkEnv::play_apply_human_action, py::arg("action"))
+        .def("play_apply_ppo_actions", &park::ParkEnv::play_apply_ppo_actions, py::arg("actions"))
+        .def(
+            "play_recording",
+            &park::ParkEnv::play_recording,
+            py::return_value_policy::reference_internal)
+        .def("play_focal_stats", &park::ParkEnv::play_focal_stats)
+        .def("play_now_sec", &park::ParkEnv::play_now_sec)
+        .def("play_focal_party_id", &park::ParkEnv::play_focal_party_id)
+        .def("play_done", &park::ParkEnv::play_done);
 
     m.attr("NUM_RIDES") = park::kNumRides;
     m.attr("NUM_ACTIONS") = park::kNumActions;
@@ -193,6 +318,14 @@ PYBIND11_MODULE(_park_sim, m) {
         py::arg("seed") = 0,
         py::arg("sample_interval_sec") = 60,
         "Simulate one park day and return a visualization recording.");
+    m.def(
+        "run_play_day",
+        &park::run_play_day,
+        py::arg("seed"),
+        py::arg("focal"),
+        py::arg("sample_interval_sec") = 60,
+        py::arg("record") = true,
+        "Heuristic crowd + heuristic focal day with a custom focal guest.");
     m.def(
         "collect_bc_dataset",
         &park::collect_bc_dataset,

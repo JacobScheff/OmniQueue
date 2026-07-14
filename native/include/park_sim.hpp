@@ -200,12 +200,65 @@ struct DayRecording {
     std::vector<PartyRideEvent> ride_completions;
 };
 
+/** Override for the interactive / shadow focal guest (always size 1). */
+struct FocalPartyConfig {
+    int spawn_sec = 0;
+    int leave_sec = kDaySeconds;
+    std::array<float, kNumRides> preference_weights{};
+    std::array<uint8_t, kNumRides> must_dos{};
+};
+
+/** Per-focal-guest preference / itinerary KPIs for interactive play. */
+struct FocalPartyStats {
+    int32_t party_id = -1;
+    int32_t spawn_sec = 0;
+    int32_t leave_sec = 0;
+    int32_t exit_sec = -1;
+    int32_t rides_completed = 0;
+    int32_t must_dos_assigned = 0;
+    int32_t must_dos_completed = 0;
+    int32_t top3_hits = 0;
+    float preference_score = 0.0f;
+    uint8_t exited = 0;
+    std::array<float, kNumRides> preferences{};
+    std::array<uint8_t, kNumRides> must_dos_initial{};
+    std::vector<PartyRideEvent> completions;
+};
+
+/** Result of advancing a hybrid play session until the next decision point. */
+struct PlayStepResult {
+    bool done = false;
+    bool needs_human = false;
+    bool needs_ppo_batch = false;
+    int now_sec = 0;
+    int focal_party_id = -1;
+    Observation human_obs{};
+    std::vector<float> ppo_obs;
+    std::vector<int32_t> ppo_party_ids;
+    int n_ppo = 0;
+    DayMetricsResult metrics;
+    FocalPartyStats focal;
+};
+
 int action_from_target(int target_ride_id);
 int target_from_action(int action);
 
 DayMetricsResult run_day(uint64_t seed);
 DayRecording record_day(uint64_t seed, int sample_interval_sec = 60);
 std::vector<BCSample> collect_bc_dataset(int num_days, uint64_t seed_start);
+
+/** Heuristic crowd + heuristic focal day with a custom focal guest profile. */
+struct PlayDayResult {
+    DayMetricsResult metrics;
+    DayRecording recording;
+    FocalPartyStats focal;
+};
+
+PlayDayResult run_play_day(
+    uint64_t seed,
+    const FocalPartyConfig& focal,
+    int sample_interval_sec = 60,
+    bool record = true);
 
 /** Deterministic heuristic route helper for unit tests. */
 struct RouteOneTestInput {
@@ -237,6 +290,26 @@ public:
     Observation reset(uint64_t seed);
     EnvStepResult step(int action);
     RolloutBatchResult exchange_batch(const std::vector<int>& actions, int max_obs);
+
+    /** Interactive / shadow hybrid session (focal guest + crowd policy).
+     *  focal_policy: 0=human, 1=heuristic, 2=ppo
+     */
+    void reset_play(
+        uint64_t seed,
+        const FocalPartyConfig& focal,
+        bool crowd_auto_heuristic,
+        int focal_policy,
+        bool soft_human_leave,
+        bool enable_recording,
+        int sample_interval_sec = 60);
+    PlayStepResult play_advance();
+    void play_apply_human_action(int action);
+    void play_apply_ppo_actions(const std::vector<int>& actions);
+    const DayRecording& play_recording() const;
+    FocalPartyStats play_focal_stats() const;
+    int play_now_sec() const;
+    int play_focal_party_id() const;
+    bool play_done() const;
 
 private:
     struct Impl;
