@@ -337,6 +337,43 @@ class _WaveTable:
         )
 
 
+def _select_wave_subsample(wave_ids: np.ndarray, subsample_size: int) -> np.ndarray:
+    """Return row indices for a random whole-wave subsample.
+
+    Wave ids are contiguous runs (assigned in rollout order). GAE still uses the
+    full trajectory; only these rows keep obs/actions/logprobs for the update.
+    """
+    n = int(wave_ids.shape[0])
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    if subsample_size <= 0 or n <= subsample_size:
+        return np.arange(n, dtype=np.int64)
+
+    changes = np.flatnonzero(wave_ids[1:] != wave_ids[:-1]) + 1
+    starts = np.concatenate((np.array([0], dtype=np.int64), changes.astype(np.int64)))
+    ends = np.concatenate((starts[1:], np.array([n], dtype=np.int64)))
+    order = list(range(int(starts.size)))
+    random.shuffle(order)
+
+    chosen_ranges: list[tuple[int, int]] = []
+    count = 0
+    for wi in order:
+        s = int(starts[wi])
+        e = int(ends[wi])
+        wsize = e - s
+        if count + wsize > subsample_size and count > 0:
+            break
+        chosen_ranges.append((s, e))
+        count += wsize
+        if count >= subsample_size:
+            break
+
+    if not chosen_ranges:
+        return np.arange(0, dtype=np.int64)
+    chosen_ranges.sort()
+    return np.concatenate([np.arange(s, e, dtype=np.int64) for s, e in chosen_ranges])
+
+
 def _collect_episode(
     agent: Agent,
     cfg: PPOConfig,
@@ -346,21 +383,29 @@ def _collect_episode(
     day_label: str = "",
     env_label: str = "",
 ) -> EpisodeBatch:
-    """Run one full park day via native C++ sim + batched policy inference."""
+    """Run one full park day via native C++ sim + batched policy inference.
+
+    Full-day rewards/values/dones stay compact for GAE. Observations (and the
+    matching actions/logprobs) are retained only for the wave subsample used by
+    the PPO update, so a ~500k-step day does not keep a full (N, 321) tensor
+    through training.
+    """
     env = _park_sim.ParkEnv(seed)
     env.reset(seed)
 
-    obs_buf: list[np.ndarray] = []
-    action_buf: list[int] = []
-    logprob_buf: list[float] = []
-    reward_buf: list[float] = []
-    value_buf: list[float] = []
-    done_buf: list[float] = []
-    wave_id_buf: list[int] = []
+    max_steps = max(1, int(cfg.max_routing_steps))
+    # Scratch buffers for the full trajectory. Obs is released after subsample.
+    obs_buf = np.empty((max_steps, FLAT_OBS_DIM), dtype=np.float32)
+    actions_buf = np.empty(max_steps, dtype=np.int64)
+    logprobs_buf = np.empty(max_steps, dtype=np.float32)
+    rewards_buf = np.empty(max_steps, dtype=np.float32)
+    values_buf = np.empty(max_steps, dtype=np.float32)
+    dones_buf = np.empty(max_steps, dtype=np.float32)
+    wave_ids_buf = np.empty(max_steps, dtype=np.int64)
+    routing_steps = 0
 
     episode_return = 0.0
     terminal_info: dict = {}
-    routing_steps = 0
     rollout_t0 = time.perf_counter()
     last_log_step = 0
     prefix = " ".join(part for part in (day_label, env_label) if part)
@@ -382,33 +427,45 @@ def _collect_episode(
         if staged_wave_ids is None:
             raise RuntimeError("Rollout batch state missing staged wave ids.")
 
-        for i in range(len(rewards_arr)):
-            obs_row = staged_obs[i]
-            obs_buf.append(obs_row.copy())
-            action_buf.append(int(staged_actions[i]))
-            logprob_buf.append(float(staged_logprobs[i]))
-            value_buf.append(float(staged_values[i]))
-            reward_buf.append(float(rewards_arr[i]))
-            wave_id_buf.append(int(staged_wave_ids[i]))
-            episode_return += float(rewards_arr[i])
-            routing_steps += 1
-            done_buf.append(1.0 if terminal and i == len(rewards_arr) - 1 else 0.0)
+        batch_n = int(rewards_arr.shape[0])
+        if batch_n == 0:
+            return
+        if routing_steps + batch_n > max_steps:
+            batch_n = max_steps - routing_steps
+            if batch_n <= 0:
+                return
+            rewards_arr = rewards_arr[:batch_n]
 
-            if cfg.log_every > 0 and routing_steps - last_log_step >= cfg.log_every:
-                elapsed = time.perf_counter() - rollout_t0
-                steps_per_sec = routing_steps / max(elapsed, 1e-6)
-                remaining = max(cfg.max_routing_steps - routing_steps, 0)
-                eta_sec = remaining / max(steps_per_sec, 1e-6)
-                env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
-                mean_wait_min = float(obs_row[env_offset + 1]) * 60.0
-                wait_var = float(obs_row[env_offset + 2]) * 1_000_000.0
-                _log(
-                    f"{prefix} rollout progress: steps={routing_steps:,} "
-                    f"park_time={_park_time_label(obs_row)} return={episode_return:.2f} "
-                    f"mean_wait={mean_wait_min:.0f}m wait_var={wait_var:.0f} "
-                    f"speed={steps_per_sec:,.0f} steps/s eta={eta_sec / 60.0:.1f}m"
-                )
-                last_log_step = routing_steps
+        sl = slice(routing_steps, routing_steps + batch_n)
+        obs_buf[sl] = staged_obs[:batch_n]
+        actions_buf[sl] = staged_actions[:batch_n]
+        logprobs_buf[sl] = staged_logprobs[:batch_n]
+        values_buf[sl] = staged_values[:batch_n]
+        rewards_buf[sl] = rewards_arr
+        wave_ids_buf[sl] = staged_wave_ids[:batch_n]
+        dones_buf[sl] = 0.0
+        if terminal:
+            dones_buf[routing_steps + batch_n - 1] = 1.0
+
+        episode_return += float(rewards_arr.sum())
+        routing_steps += batch_n
+
+        if cfg.log_every > 0 and routing_steps - last_log_step >= cfg.log_every:
+            obs_row = obs_buf[routing_steps - 1]
+            elapsed = time.perf_counter() - rollout_t0
+            steps_per_sec = routing_steps / max(elapsed, 1e-6)
+            remaining = max(cfg.max_routing_steps - routing_steps, 0)
+            eta_sec = remaining / max(steps_per_sec, 1e-6)
+            env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+            mean_wait_min = float(obs_row[env_offset + 1]) * 60.0
+            wait_var = float(obs_row[env_offset + 2]) * 1_000_000.0
+            _log(
+                f"{prefix} rollout progress: steps={routing_steps:,} "
+                f"park_time={_park_time_label(obs_row)} return={episode_return:.2f} "
+                f"mean_wait={mean_wait_min:.0f}m wait_var={wait_var:.0f} "
+                f"speed={steps_per_sec:,.0f} steps/s eta={eta_sec / 60.0:.1f}m"
+            )
+            last_log_step = routing_steps
 
     episode_done = False
     while routing_steps < cfg.max_routing_steps and not episode_done:
@@ -460,7 +517,7 @@ def _collect_episode(
             wave_counter += 1
         pending_actions = [int(a) for a in staged_actions.tolist()]
 
-    if not obs_buf:
+    if routing_steps <= 0:
         raise RuntimeError("Episode collected zero routing steps.")
 
     rollout_sec = time.perf_counter() - rollout_t0
@@ -475,10 +532,12 @@ def _collect_episode(
     ):
         bootstrap_value = float(staged_values[0])
 
-    rewards_t = torch.tensor(reward_buf, dtype=torch.float32, device=device)
-    values_t = torch.tensor(value_buf, dtype=torch.float32, device=device)
-    dones_t = torch.tensor(done_buf, dtype=torch.float32, device=device)
-    advantages_t, returns_t = _compute_gae(
+    n = routing_steps
+    # GAE over the full day on compact CPU tensors (no full-day obs on device).
+    rewards_t = torch.from_numpy(rewards_buf[:n].copy())
+    values_t = torch.from_numpy(values_buf[:n].copy())
+    dones_t = torch.from_numpy(dones_buf[:n].copy())
+    advantages_full, returns_full = _compute_gae(
         rewards_t,
         values_t,
         dones_t,
@@ -487,35 +546,22 @@ def _collect_episode(
         bootstrap_value=bootstrap_value,
     )
 
-    obs_t = torch.tensor(np.stack(obs_buf), dtype=torch.float32, device=device)
-    actions_t = torch.tensor(action_buf, dtype=torch.long, device=device)
-    logprobs_t = torch.tensor(logprob_buf, dtype=torch.float32, device=device)
-    wave_ids_t = torch.tensor(wave_id_buf, dtype=torch.long, device=device)
+    idx = _select_wave_subsample(wave_ids_buf[:n], cfg.subsample_size)
+    # Materialize only the subsampled rows for the PPO update, then free the
+    # full-day observation scratch buffer (~N × FLAT_OBS_DIM floats).
+    kept_obs = np.ascontiguousarray(obs_buf[idx])
+    kept_actions = np.ascontiguousarray(actions_buf[idx])
+    kept_logprobs = np.ascontiguousarray(logprobs_buf[idx])
+    kept_wave_ids = np.ascontiguousarray(wave_ids_buf[idx])
+    del obs_buf, actions_buf, logprobs_buf, rewards_buf, values_buf, dones_buf, wave_ids_buf
 
-    n = obs_t.shape[0]
-    if cfg.subsample_size > 0 and n > cfg.subsample_size:
-        # Subsample whole waves so joint coordinator context stays intact.
-        unique_waves = torch.unique(wave_ids_t).tolist()
-        random.shuffle(unique_waves)
-        chosen: list[int] = []
-        count = 0
-        for wid in unique_waves:
-            members = (wave_ids_t == wid).nonzero(as_tuple=False).squeeze(-1).tolist()
-            if isinstance(members, int):
-                members = [members]
-            if count + len(members) > cfg.subsample_size and count > 0:
-                break
-            chosen.extend(members)
-            count += len(members)
-            if count >= cfg.subsample_size:
-                break
-        idx = torch.tensor(sorted(chosen), dtype=torch.long, device=device)
-        obs_t = obs_t[idx]
-        actions_t = actions_t[idx]
-        logprobs_t = logprobs_t[idx]
-        advantages_t = advantages_t[idx]
-        returns_t = returns_t[idx]
-        wave_ids_t = wave_ids_t[idx]
+    obs_t = torch.from_numpy(kept_obs).to(device=device, dtype=torch.float32)
+    actions_t = torch.from_numpy(kept_actions).to(device=device, dtype=torch.long)
+    logprobs_t = torch.from_numpy(kept_logprobs).to(device=device, dtype=torch.float32)
+    wave_ids_t = torch.from_numpy(kept_wave_ids).to(device=device, dtype=torch.long)
+    idx_t = torch.from_numpy(idx)
+    advantages_t = advantages_full.index_select(0, idx_t).to(device=device)
+    returns_t = returns_full.index_select(0, idx_t).to(device=device)
 
     return EpisodeBatch(
         obs=obs_t,

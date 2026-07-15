@@ -50,6 +50,8 @@ All PPO hyperparameters (`PPO_LEARNING_RATE`, `PPO_GAMMA`, `PPO_GAE_LAMBDA`, `PP
 
 Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `PPO_SUBSAMPLE_SIZE` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, batch size `PPO_INFERENCE_BATCH_SIZE`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
 
+**Memory:** GAE still uses the full day’s compact reward/value/done streams. After advantages are computed, only a random **whole-wave** subsample keeps observations (and the matching actions/logprobs) for the optimizer — the full `(N, FLAT_OBS_DIM)` scratch buffer is freed before the update. That avoids holding ~500k×321 floats through PPO training when `PPO_SUBSAMPLE_SIZE` is smaller than the day.
+
 Expect ~10–60 seconds per rollout day depending on hardware.
 
 Output: `checkpoints/ppo/ppo_final.pt`
@@ -109,6 +111,7 @@ Related memory knobs in `config.py`:
 |------|---------|--------|
 | `MAX_COORDINATOR_GUESTS` | 32 | Hard cap on G per forward |
 | `BC_BATCH_SIZE` | 64 | Count of *waves*, not decisions |
+| `PPO_SUBSAMPLE_SIZE` | 262144 | Max transitions retained (whole waves) for the PPO update |
 | `PPO_INFERENCE_BATCH_SIZE` | 256 | C++ pending parties; policy chunks to `MAX_COORDINATOR_GUESTS` |
 | `PPO_UPDATE_WAVE_BATCH` | 32 | Waves per optimizer step (small = less laptop display freeze) |
 | `PPO_UPDATE_YIELD_SEC` | 0.05 | Sleep after each update step so the desktop can refresh |

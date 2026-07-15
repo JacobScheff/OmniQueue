@@ -22,7 +22,7 @@ from training.features import (
     build_action_mask,
     masked_cross_entropy,
 )
-from training.ppo_train import Agent, _compute_gae
+from training.ppo_train import Agent, _compute_gae, _select_wave_subsample
 
 
 def test_model_forward_shape():
@@ -216,6 +216,67 @@ def test_compute_gae_bootstraps_when_truncated():
     )
     # Terminal last step ignores bootstrap: δ = 1 + 0 - 0 = 1
     assert abs(float(adv_t[-1]) - 1.0) < 1e-5
+
+
+def test_select_wave_subsample_keeps_whole_waves():
+    # Contiguous runs: wave 0×3, 1×5, 2×4, 3×2 → 14 rows
+    wave_ids = np.array([0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3], dtype=np.int64)
+    idx = _select_wave_subsample(wave_ids, subsample_size=8)
+    assert idx.dtype == np.int64
+    assert 0 < idx.size <= 8
+    # Every selected row's wave is fully included.
+    selected = set(int(x) for x in idx)
+    for wid in np.unique(wave_ids[idx]):
+        members = set(int(i) for i in np.flatnonzero(wave_ids == wid))
+        assert members.issubset(selected)
+    # Indices are sorted ascending.
+    assert list(idx) == sorted(idx.tolist())
+
+
+def test_select_wave_subsample_noop_when_small():
+    wave_ids = np.array([0, 0, 1, 1, 1], dtype=np.int64)
+    idx = _select_wave_subsample(wave_ids, subsample_size=100)
+    assert idx.tolist() == [0, 1, 2, 3, 4]
+    idx_all = _select_wave_subsample(wave_ids, subsample_size=0)
+    assert idx_all.tolist() == [0, 1, 2, 3, 4]
+
+
+def test_collect_episode_subsample_shapes():
+    """Short rollout retains at most subsample_size obs rows for the update."""
+    import config
+    from training.ppo_train import PPOConfig, _collect_episode
+
+    agent = Agent()
+    cfg = PPOConfig(
+        seed=0,
+        total_days=1,
+        num_envs=1,
+        device="cpu",
+        subsample_size=512,
+        max_routing_steps=2_000,
+        inference_batch_size=64,
+        log_every=0,
+        update_epochs=1,
+    )
+    # Keep coordinator chunk small for faster joint forwards in this smoke test.
+    old_max_g = getattr(config, "MAX_COORDINATOR_GUESTS", 32)
+    config.MAX_COORDINATOR_GUESTS = 16
+    try:
+        batch = _collect_episode(agent, cfg, torch.device("cpu"), seed=1)
+    finally:
+        config.MAX_COORDINATOR_GUESTS = old_max_g
+
+    assert batch.routing_steps > 0
+    assert batch.obs.shape[0] == batch.actions.shape[0] == batch.logprobs.shape[0]
+    assert batch.obs.shape[0] == batch.advantages.shape[0] == batch.returns.shape[0]
+    assert batch.obs.shape[0] == batch.wave_ids.shape[0]
+    assert batch.obs.shape[0] <= cfg.subsample_size
+    assert batch.obs.shape[1] == FLAT_OBS_DIM
+    # Whole waves only: each wave id's members are contiguous in the kept batch.
+    ids = batch.wave_ids.numpy()
+    for wid in np.unique(ids):
+        positions = np.flatnonzero(ids == wid)
+        assert positions[-1] - positions[0] + 1 == positions.size
 
 
 def test_chunk_wave_respects_max_guests():
