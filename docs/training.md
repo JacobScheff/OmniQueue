@@ -110,7 +110,8 @@ Related memory knobs in `config.py`:
 | `MAX_COORDINATOR_GUESTS` | 32 | Hard cap on G per forward |
 | `BC_BATCH_SIZE` | 64 | Count of *waves*, not decisions |
 | `PPO_INFERENCE_BATCH_SIZE` | 256 | C++ pending parties; policy chunks to `MAX_COORDINATOR_GUESTS` |
-| `PPO_UPDATE_WAVE_BATCH` | 256 | Waves packed per neural forward during PPO update |
+| `PPO_UPDATE_WAVE_BATCH` | 32 | Waves per optimizer step (small = less laptop display freeze) |
+| `PPO_UPDATE_YIELD_SEC` | 0.05 | Sleep after each update step so the desktop can refresh |
 
 ## Checkpoint format
 

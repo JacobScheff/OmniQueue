@@ -101,6 +101,7 @@ class PPOConfig:
     max_routing_steps: int = config.PPO_MAX_ROUTING_STEPS
     inference_batch_size: int = config.PPO_INFERENCE_BATCH_SIZE
     update_wave_batch: int = config.PPO_UPDATE_WAVE_BATCH
+    update_yield_sec: float = getattr(config, "PPO_UPDATE_YIELD_SEC", 0.05)
     save_dir: str = config.PPO_SAVE_DIR
     save_every: int = config.PPO_SAVE_EVERY
     log_every: int = config.PPO_LOG_EVERY
@@ -244,48 +245,61 @@ class Agent(nn.Module):
         pack: int,
     ) -> None:
         """Run joint policy on selected waves; write outputs at original row indices."""
-        wave_rows = wave_rows.detach().cpu().tolist()
+        rows = wave_rows.detach().cpu().tolist()
+        for start in range(0, len(rows), pack):
+            chunk = rows[start : start + pack]
+            flat_lp, flat_ent, flat_val, flat_orig = self._forward_wave_rows(table, chunk)
+            logprobs_out.index_copy_(0, flat_orig, flat_lp)
+            entropy_out.index_copy_(0, flat_orig, flat_ent)
+            values_out.index_copy_(0, flat_orig, flat_val)
+
+    def _forward_wave_rows(
+        self,
+        table: "_WaveTable",
+        rows: list[int],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Single joint forward over ``rows`` (one pack). Returns flat lp/ent/val/orig_idx."""
+        if not rows:
+            device = table.obs.device
+            empty_f = table.obs.new_zeros((0,))
+            empty_i = torch.zeros(0, dtype=torch.long, device=device)
+            return empty_f, empty_f, empty_f, empty_i
+
         guest_end = GUEST_FEAT_DIM
         ride_end = guest_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
         device = table.obs.device
+        lengths = [int(table.ends[r] - table.starts[r]) for r in rows]
+        max_g = max(lengths)
+        bsz = len(rows)
 
-        for start in range(0, len(wave_rows), pack):
-            rows = wave_rows[start : start + pack]
-            lengths = [int(table.ends[r] - table.starts[r]) for r in rows]
-            max_g = max(lengths)
-            bsz = len(rows)
+        guest = table.obs.new_zeros((bsz, max_g, GUEST_FEAT_DIM))
+        ride = table.obs.new_zeros((bsz, max_g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM))
+        env = table.obs.new_zeros((bsz, ENV_DYNAMIC_FEAT_DIM))
+        act = torch.zeros(bsz, max_g, dtype=torch.long, device=device)
+        padding = torch.zeros(bsz, max_g, dtype=torch.bool, device=device)
+        orig_idx = torch.empty(bsz, max_g, dtype=torch.long, device=device)
 
-            guest = table.obs.new_zeros((bsz, max_g, GUEST_FEAT_DIM))
-            ride = table.obs.new_zeros((bsz, max_g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM))
-            env = table.obs.new_zeros((bsz, ENV_DYNAMIC_FEAT_DIM))
-            act = torch.zeros(bsz, max_g, dtype=torch.long, device=device)
-            padding = torch.zeros(bsz, max_g, dtype=torch.bool, device=device)
-            orig_idx = torch.empty(bsz, max_g, dtype=torch.long, device=device)
+        for row, w in enumerate(rows):
+            s = int(table.starts[w])
+            e = int(table.ends[w])
+            g = e - s
+            flat = table.obs[s:e]
+            guest[row, :g] = flat[:, :guest_end]
+            ride[row, :g] = flat[:, guest_end:ride_end].view(g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+            env[row] = flat[0, ride_end:]
+            act[row, :g] = table.actions[s:e]
+            padding[row, :g] = True
+            orig_idx[row, :g] = table.order[s:e]
 
-            for row, w in enumerate(rows):
-                s = int(table.starts[w])
-                e = int(table.ends[w])
-                g = e - s
-                flat = table.obs[s:e]
-                guest[row, :g] = flat[:, :guest_end]
-                ride[row, :g] = flat[:, guest_end:ride_end].view(g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
-                env[row] = flat[0, ride_end:]
-                act[row, :g] = table.actions[s:e]
-                padding[row, :g] = True
-                orig_idx[row, :g] = table.order[s:e]
-
-            logits, value, _ = forward_with_mask(
-                self.model, guest, ride, env, guest_padding_mask=padding
-            )
-            flat_logits = logits[padding]
-            flat_actions = act[padding]
-            flat_values = value.squeeze(-1)[padding]
-            flat_orig = orig_idx[padding]
-            dist = torch.distributions.Categorical(logits=flat_logits)
-            logprobs_out.index_copy_(0, flat_orig, dist.log_prob(flat_actions))
-            entropy_out.index_copy_(0, flat_orig, dist.entropy())
-            values_out.index_copy_(0, flat_orig, flat_values)
-
+        logits, value, _ = forward_with_mask(
+            self.model, guest, ride, env, guest_padding_mask=padding
+        )
+        flat_logits = logits[padding]
+        flat_actions = act[padding]
+        flat_values = value.squeeze(-1)[padding]
+        flat_orig = orig_idx[padding]
+        dist = torch.distributions.Categorical(logits=flat_logits)
+        return dist.log_prob(flat_actions), dist.entropy(), flat_values, flat_orig
 
 @dataclass
 class _WaveTable:
@@ -552,12 +566,17 @@ def _ppo_update(
     batch: EpisodeBatch,
     cfg: PPOConfig,
 ) -> PPOStats:
-    # Build contiguous wave table once; minibatches only select wave rows.
+    """PPO update with small per-step graphs (laptop-friendly).
+
+    Each optimizer step forwards at most ``update_wave_batch`` waves, then
+    ``backward``/``step`` immediately so autograd does not retain a ~30k-sample
+    graph. A short yield after each step reduces display freezes on laptop dGPUs.
+    """
     table = _WaveTable.build(batch.obs, batch.actions, batch.wave_ids)
     n_waves = table.n_waves
-    waves_per_mb = max(1, n_waves // cfg.num_minibatches)
-    wave_order = list(range(n_waves))
     pack = max(1, int(cfg.update_wave_batch))
+    wave_order = list(range(n_waves))
+    yield_sec = float(getattr(cfg, "update_yield_sec", 0.0) or 0.0)
 
     last_pg_loss = 0.0
     last_v_loss = 0.0
@@ -567,45 +586,28 @@ def _ppo_update(
     mb_adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
     update_t0 = time.perf_counter()
-    total_mb = cfg.update_epochs * ((n_waves + waves_per_mb - 1) // waves_per_mb)
+    steps_per_epoch = max(1, (n_waves + pack - 1) // pack)
+    total_mb = cfg.update_epochs * steps_per_epoch
     mb_done = 0
     last_log_t = update_t0
     device = batch.obs.device
-    scratch_lp = torch.empty(batch.obs.shape[0], dtype=torch.float32, device=device)
-    scratch_ent = torch.empty(batch.obs.shape[0], dtype=torch.float32, device=device)
-    scratch_val = torch.empty(batch.obs.shape[0], dtype=torch.float32, device=device)
 
     for epoch in range(cfg.update_epochs):
         random.shuffle(wave_order)
-        for start in range(0, n_waves, waves_per_mb):
-            rows = wave_order[start : start + waves_per_mb]
-            # Original sample indices covered by these waves (for advantages / old logprobs).
-            mb_parts = [table.order[table.starts[r] : table.ends[r]] for r in rows]
-            mb = torch.cat(mb_parts, dim=0)
-            if mb.numel() == 0:
+        for start in range(0, n_waves, pack):
+            rows = wave_order[start : start + pack]
+            new_logprob, entropy, new_value, orig = agent._forward_wave_rows(table, rows)
+            if orig.numel() == 0:
                 continue
 
-            agent._eval_wave_table(
-                table,
-                torch.as_tensor(rows, dtype=torch.long),
-                scratch_lp,
-                scratch_ent,
-                scratch_val,
-                pack=pack,
-            )
-            new_logprob = scratch_lp.index_select(0, mb)
-            entropy = scratch_ent.index_select(0, mb)
-            new_value = scratch_val.index_select(0, mb)
-
-            logratio = new_logprob - batch.logprobs.index_select(0, mb)
+            logratio = new_logprob - batch.logprobs.index_select(0, orig)
             ratio = logratio.exp()
+            adv = mb_adv.index_select(0, orig)
 
-            adv = mb_adv.index_select(0, mb)
             pg_loss1 = -adv * ratio
             pg_loss2 = -adv * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-            v_loss = 0.5 * ((new_value - batch.returns.index_select(0, mb)) ** 2).mean()
+            v_loss = 0.5 * ((new_value - batch.returns.index_select(0, orig)) ** 2).mean()
             entropy_loss = entropy.mean()
             loss = pg_loss - cfg.ent_coef * entropy_loss + cfg.vf_coef * v_loss
 
@@ -634,6 +636,11 @@ def _ppo_update(
                     f"elapsed={now - update_t0:.1f}s"
                 )
                 last_log_t = now
+
+            if yield_sec > 0:
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                time.sleep(yield_sec)
 
     return PPOStats(
         pg_loss=last_pg_loss,
@@ -675,6 +682,7 @@ def train(cfg: PPOConfig) -> None:
         f"PPO full-day mode: target_days={cfg.total_days}, num_envs={cfg.num_envs}, "
         f"subsample={cfg.subsample_size}, inference_batch={cfg.inference_batch_size}, "
         f"update_wave_batch={cfg.update_wave_batch}, "
+        f"update_yield_sec={cfg.update_yield_sec}, "
         f"save_every={cfg.save_every} routing steps, log_every={cfg.log_every} rollout steps"
     )
     _log(

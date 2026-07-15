@@ -236,9 +236,12 @@ PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
 # C++ may return up to this many pending parties; the policy chunks them into
 # groups of MAX_COORDINATOR_GUESTS for the neural forward.
 PPO_INFERENCE_BATCH_SIZE = 256
-# Waves packed into one neural forward during PPO update (pad to max G in pack).
-# Larger packs → fewer Python packing loops / CUDA launches per minibatch.
-PPO_UPDATE_WAVE_BATCH = 256
+# Waves packed into one neural forward / optimizer step during PPO update.
+# Keep this small on laptop dGPUs: one large minibatch was retaining a giant
+# autograd graph (~30k transitions) and freezing the display every few seconds.
+PPO_UPDATE_WAVE_BATCH = 32
+# Pause after each optimizer step so Windows can composite the desktop.
+PPO_UPDATE_YIELD_SEC = 0.05
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 
 # PPO reward shaping (mirrored in park_sim.hpp)
