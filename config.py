@@ -206,14 +206,14 @@ MACRO_EDGES.extend([
 # ---------------------------------------------------------------------------
 BC_SAVE_DIR = "checkpoints/bc"
 BC_SAVE_EVERY = 500        # save checkpoint every N optimizer steps
-BC_EPOCHS = 3
+BC_EPOCHS = 10
 # Batch size is in *waves* (co-timed party groups), not individual decisions.
 # Keep modest: each wave expands to (B, G, 34, 8) ride tensors.
-BC_BATCH_SIZE = 64
+BC_BATCH_SIZE = 128
 BC_LR = 3e-4
 # Cap parties attending together. Opening-rush waves can be thousands of parties;
 # padding a BC batch to that G (and O(G²) attention) OOMs long before d_model matters.
-MAX_COORDINATOR_GUESTS = 32
+MAX_COORDINATOR_GUESTS = 34
 
 # ---------------------------------------------------------------------------
 # PPO (Phase 3) training defaults
@@ -221,14 +221,14 @@ MAX_COORDINATOR_GUESTS = 32
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
 PPO_SAVE_EVERY = 500_000          # save checkpoint every N routing steps
-PPO_LEARNING_RATE = 1e-3
+PPO_LEARNING_RATE = 1e-6
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
 PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
 PPO_NUM_MINIBATCHES = 8           # PPO minibatch count per update
-PPO_UPDATE_EPOCHS = 10            # PPO epochs per day
-PPO_CLIP_COEF = 0.2               # PPO clipping epsilon
-PPO_ENT_COEF = 0.01               # entropy bonus coefficient
+PPO_UPDATE_EPOCHS = 1             # PPO epochs per day
+PPO_CLIP_COEF = 0.1               # PPO clipping epsilon
+PPO_ENT_COEF = 0.001              # entropy bonus coefficient
 PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
 PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
@@ -239,7 +239,7 @@ PPO_INFERENCE_BATCH_SIZE = 256
 # Waves packed into one neural forward / optimizer step during PPO update.
 # Keep this small on laptop dGPUs: one large minibatch was retaining a giant
 # autograd graph (~30k transitions) and freezing the display every few seconds.
-PPO_UPDATE_WAVE_BATCH = 32
+PPO_UPDATE_WAVE_BATCH = 256
 # Pause after each optimizer step so Windows can composite the desktop.
 PPO_UPDATE_YIELD_SEC = 0.05
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
