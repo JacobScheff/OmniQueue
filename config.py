@@ -237,8 +237,8 @@ PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
 # groups of MAX_COORDINATOR_GUESTS for the neural forward.
 PPO_INFERENCE_BATCH_SIZE = 256
 # Waves packed into one neural forward during PPO update (pad to max G in pack).
-# Old path did one CUDA forward per wave (~10k sequential launches) and looked "stuck".
-PPO_UPDATE_WAVE_BATCH = 128
+# Larger packs → fewer Python packing loops / CUDA launches per minibatch.
+PPO_UPDATE_WAVE_BATCH = 256
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 
 # PPO reward shaping (mirrored in park_sim.hpp)

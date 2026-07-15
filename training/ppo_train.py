@@ -210,71 +210,117 @@ class Agent(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Recompute logprobs/values with the same joint waves used at rollout.
 
-        Packs many waves into padded ``(B, G, …)`` forwards instead of one
-        tiny CUDA launch per wave (which made PPO updates look hung).
+        Sorts by ``wave_id`` once so members are contiguous, then packs many
+        waves into padded ``(B, G, …)`` forwards (no per-wave full-tensor scans).
         """
         n = obs.shape[0]
         device = obs.device
-        logprobs = torch.zeros(n, dtype=torch.float32, device=device)
-        entropy = torch.zeros(n, dtype=torch.float32, device=device)
-        values = torch.zeros(n, dtype=torch.float32, device=device)
-
+        logprobs = torch.empty(n, dtype=torch.float32, device=device)
+        entropy = torch.empty(n, dtype=torch.float32, device=device)
+        values = torch.empty(n, dtype=torch.float32, device=device)
         if n == 0:
             return logprobs, entropy, values
 
-        pack = int(wave_batch_size or getattr(config, "PPO_UPDATE_WAVE_BATCH", 128))
-        pack = max(1, pack)
+        pack = max(1, int(wave_batch_size or getattr(config, "PPO_UPDATE_WAVE_BATCH", 256)))
+        table = _WaveTable.build(obs, actions, wave_ids)
+        self._eval_wave_table(
+            table,
+            torch.arange(table.n_waves, device=device),
+            logprobs,
+            entropy,
+            values,
+            pack=pack,
+        )
+        return logprobs, entropy, values
 
-        # Stable grouping: waves stay contiguous after rollout chunking, but
-        # subsample / minibatch gather can interleave — build index lists.
-        unique_ids = torch.unique(wave_ids)
-        wave_index_lists: list[torch.Tensor] = []
-        for wid in unique_ids.tolist():
-            wave_index_lists.append((wave_ids == wid).nonzero(as_tuple=False).squeeze(-1))
+    def _eval_wave_table(
+        self,
+        table: "_WaveTable",
+        wave_rows: torch.Tensor,
+        logprobs_out: torch.Tensor,
+        entropy_out: torch.Tensor,
+        values_out: torch.Tensor,
+        *,
+        pack: int,
+    ) -> None:
+        """Run joint policy on selected waves; write outputs at original row indices."""
+        wave_rows = wave_rows.detach().cpu().tolist()
+        guest_end = GUEST_FEAT_DIM
+        ride_end = guest_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+        device = table.obs.device
 
-        for start in range(0, len(wave_index_lists), pack):
-            group = wave_index_lists[start : start + pack]
-            max_g = max(int(idx.numel()) for idx in group)
-            bsz = len(group)
+        for start in range(0, len(wave_rows), pack):
+            rows = wave_rows[start : start + pack]
+            lengths = [int(table.ends[r] - table.starts[r]) for r in rows]
+            max_g = max(lengths)
+            bsz = len(rows)
 
-            guest = torch.zeros(bsz, max_g, GUEST_FEAT_DIM, dtype=torch.float32, device=device)
-            ride = torch.zeros(
-                bsz, max_g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32, device=device
-            )
-            env = torch.zeros(bsz, ENV_DYNAMIC_FEAT_DIM, dtype=torch.float32, device=device)
+            guest = table.obs.new_zeros((bsz, max_g, GUEST_FEAT_DIM))
+            ride = table.obs.new_zeros((bsz, max_g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM))
+            env = table.obs.new_zeros((bsz, ENV_DYNAMIC_FEAT_DIM))
             act = torch.zeros(bsz, max_g, dtype=torch.long, device=device)
             padding = torch.zeros(bsz, max_g, dtype=torch.bool, device=device)
+            orig_idx = torch.empty(bsz, max_g, dtype=torch.long, device=device)
 
-            for row, idx in enumerate(group):
-                g = int(idx.numel())
-                g_t, r_t, e_t = obs_group_to_tensors(obs.index_select(0, idx))
-                guest[row, :g] = g_t[0]
-                ride[row, :g] = r_t[0]
-                env[row] = e_t[0]
-                act[row, :g] = actions.index_select(0, idx)
+            for row, w in enumerate(rows):
+                s = int(table.starts[w])
+                e = int(table.ends[w])
+                g = e - s
+                flat = table.obs[s:e]
+                guest[row, :g] = flat[:, :guest_end]
+                ride[row, :g] = flat[:, guest_end:ride_end].view(g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+                env[row] = flat[0, ride_end:]
+                act[row, :g] = table.actions[s:e]
                 padding[row, :g] = True
+                orig_idx[row, :g] = table.order[s:e]
 
             logits, value, _ = forward_with_mask(
                 self.model, guest, ride, env, guest_padding_mask=padding
             )
-            # Flatten valid guest slots for one Categorical.
             flat_logits = logits[padding]
             flat_actions = act[padding]
             flat_values = value.squeeze(-1)[padding]
+            flat_orig = orig_idx[padding]
             dist = torch.distributions.Categorical(logits=flat_logits)
-            flat_lp = dist.log_prob(flat_actions)
-            flat_ent = dist.entropy()
+            logprobs_out.index_copy_(0, flat_orig, dist.log_prob(flat_actions))
+            entropy_out.index_copy_(0, flat_orig, dist.entropy())
+            values_out.index_copy_(0, flat_orig, flat_values)
 
-            # Scatter back in the same order we filled padding rows.
-            cursor = 0
-            for idx in group:
-                g = int(idx.numel())
-                logprobs.index_copy_(0, idx, flat_lp[cursor : cursor + g])
-                entropy.index_copy_(0, idx, flat_ent[cursor : cursor + g])
-                values.index_copy_(0, idx, flat_values[cursor : cursor + g])
-                cursor += g
 
-        return logprobs, entropy, values
+@dataclass
+class _WaveTable:
+    """Wave members laid out contiguously after sorting by wave_id."""
+
+    obs: torch.Tensor
+    actions: torch.Tensor
+    order: torch.Tensor  # sorted -> original row
+    starts: list[int]
+    ends: list[int]
+    n_waves: int
+
+    @staticmethod
+    def build(obs: torch.Tensor, actions: torch.Tensor, wave_ids: torch.Tensor) -> "_WaveTable":
+        order = torch.argsort(wave_ids, stable=True)
+        sorted_ids = wave_ids.index_select(0, order)
+        sorted_obs = obs.index_select(0, order)
+        sorted_actions = actions.index_select(0, order)
+
+        ids_np = sorted_ids.detach().cpu().numpy()
+        if ids_np.size == 0:
+            starts_arr = np.array([], dtype=np.int64)
+            ends_arr = np.array([], dtype=np.int64)
+        else:
+            changes = np.flatnonzero(ids_np[1:] != ids_np[:-1]) + 1
+            starts_arr = np.concatenate((np.array([0], dtype=np.int64), changes.astype(np.int64)))
+            ends_arr = np.concatenate((starts_arr[1:], np.array([ids_np.size], dtype=np.int64)))
+        return _WaveTable(
+            obs=sorted_obs,
+            actions=sorted_actions,
+            order=order,
+            starts=starts_arr.tolist(),
+            ends=ends_arr.tolist(),
+            n_waves=int(starts_arr.size),
+        )
 
 
 def _collect_episode(
@@ -506,11 +552,12 @@ def _ppo_update(
     batch: EpisodeBatch,
     cfg: PPOConfig,
 ) -> PPOStats:
-    # Minibatch by waves so coordinator joint context matches rollout.
-    unique_waves = torch.unique(batch.wave_ids)
-    n_waves = int(unique_waves.numel())
+    # Build contiguous wave table once; minibatches only select wave rows.
+    table = _WaveTable.build(batch.obs, batch.actions, batch.wave_ids)
+    n_waves = table.n_waves
     waves_per_mb = max(1, n_waves // cfg.num_minibatches)
-    wave_order = unique_waves.tolist()
+    wave_order = list(range(n_waves))
+    pack = max(1, int(cfg.update_wave_batch))
 
     last_pg_loss = 0.0
     last_v_loss = 0.0
@@ -523,31 +570,42 @@ def _ppo_update(
     total_mb = cfg.update_epochs * ((n_waves + waves_per_mb - 1) // waves_per_mb)
     mb_done = 0
     last_log_t = update_t0
+    device = batch.obs.device
+    scratch_lp = torch.empty(batch.obs.shape[0], dtype=torch.float32, device=device)
+    scratch_ent = torch.empty(batch.obs.shape[0], dtype=torch.float32, device=device)
+    scratch_val = torch.empty(batch.obs.shape[0], dtype=torch.float32, device=device)
 
     for epoch in range(cfg.update_epochs):
         random.shuffle(wave_order)
         for start in range(0, n_waves, waves_per_mb):
-            wave_mb = wave_order[start : start + waves_per_mb]
-            wave_mb_t = torch.as_tensor(wave_mb, device=batch.wave_ids.device, dtype=batch.wave_ids.dtype)
-            mb = torch.isin(batch.wave_ids, wave_mb_t).nonzero(as_tuple=False).squeeze(-1)
+            rows = wave_order[start : start + waves_per_mb]
+            # Original sample indices covered by these waves (for advantages / old logprobs).
+            mb_parts = [table.order[table.starts[r] : table.ends[r]] for r in rows]
+            mb = torch.cat(mb_parts, dim=0)
             if mb.numel() == 0:
                 continue
 
-            new_logprob, entropy, new_value = agent.get_action_and_value_by_waves(
-                batch.obs[mb],
-                batch.actions[mb],
-                batch.wave_ids[mb],
-                wave_batch_size=cfg.update_wave_batch,
+            agent._eval_wave_table(
+                table,
+                torch.as_tensor(rows, dtype=torch.long),
+                scratch_lp,
+                scratch_ent,
+                scratch_val,
+                pack=pack,
             )
-            logratio = new_logprob - batch.logprobs[mb]
+            new_logprob = scratch_lp.index_select(0, mb)
+            entropy = scratch_ent.index_select(0, mb)
+            new_value = scratch_val.index_select(0, mb)
+
+            logratio = new_logprob - batch.logprobs.index_select(0, mb)
             ratio = logratio.exp()
 
-            adv = mb_adv[mb]
+            adv = mb_adv.index_select(0, mb)
             pg_loss1 = -adv * ratio
             pg_loss2 = -adv * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-            v_loss = 0.5 * ((new_value - batch.returns[mb]) ** 2).mean()
+            v_loss = 0.5 * ((new_value - batch.returns.index_select(0, mb)) ** 2).mean()
             entropy_loss = entropy.mean()
             loss = pg_loss - cfg.ent_coef * entropy_loss + cfg.vf_coef * v_loss
 
