@@ -50,7 +50,7 @@ Parties whose `leave_sec` is the day end may still join long lines near close: f
 - Count per party: uniform **0–4** rides.
 - Rides are sampled **without replacement**, weighted by ride `popularity` (same table as preferences), so must-dos skew toward high-demand attractions.
 - Unfinished must-dos sort first in `preference_order`.
-- Completing a must-do ride clears that flag, refreshes `preference_order` / `balk_sec`, and (in `ParkEnv` / PPO only) adds `PPO_MUST_DO_COMPLETION_BONUS` to the party’s pending preference reward (see `docs/training.md`).
+- Completing a must-do ride clears that flag, refreshes `preference_order` / `balk_sec`, and (in `ParkEnv` / PPO only) adds a time-decayed `PPO_MUST_DO_COMPLETION_BONUS` (optionally × `party_size`) to the party’s pending preference reward (see `docs/training.md`).
 
 ## Preferences
 

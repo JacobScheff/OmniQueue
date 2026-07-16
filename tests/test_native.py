@@ -17,6 +17,11 @@ def test_native_run_day_smoke():
 def test_native_metrics_sanity():
     metrics = run_day(seed=0, backend="native")
     assert metrics.rides_per_party > 0
+    assert metrics.must_dos_assigned > 0
+    assert 0.0 <= metrics.must_do_completion_rate <= 1.0
+    assert metrics.avg_preference_score_per_guest > 0.0
+    assert metrics.must_do_latency_count > 0
+    assert metrics.avg_must_do_latency_sec > 0.0
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
@@ -61,19 +66,27 @@ def test_exchange_batch_matches_step():
     assert batch_rewards == pytest.approx(step_rewards, rel=1e-5, abs=1e-5)
     assert batch_metrics.rides_completed == step_metrics.rides_completed
     assert batch_metrics.avg_wait_variance() == pytest.approx(step_metrics.avg_wait_variance(), rel=1e-5)
+    assert batch_metrics.must_do_completion_rate() == pytest.approx(
+        step_metrics.must_do_completion_rate(), rel=1e-5
+    )
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
-def test_dense_wait_var_reward_is_not_constant_step_penalty():
-    """Every routing step should use live wait variance, not a flat -0.001."""
+def test_pref_reward_has_no_wait_variance_term():
+    """Step rewards should not track park wait variance (preference objective)."""
     import _park_sim
+    from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
 
     seed = 7
     env = _park_sim.ParkEnv(seed)
-    env.reset(seed)
+    obs0 = env.reset(seed)
+    flat = list(obs0.flat())
+    assert len(flat) == FLAT_OBS_DIM
+    env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    # Wait-variance slot withheld from the policy.
+    assert flat[env_offset + 2] == pytest.approx(0.0)
 
     rewards: list[float] = []
-    # Send parties to rides so queues (and wait variance) actually form.
     action = 0
     while True:
         result = env.step(action)
@@ -84,10 +97,9 @@ def test_dense_wait_var_reward_is_not_constant_step_penalty():
 
     mid = rewards[:-1]
     assert len(mid) > 1000
-    # Dense wait-var penalties vary with park state; not a constant step tax.
-    assert len({round(r, 6) for r in mid}) > 1
-    # Mid-day congestion should produce some clearly negative wait-var penalties.
-    assert min(mid) < -0.0005
+    # Urgency alone is a small non-positive tax; completions can push steps positive.
+    assert min(mid) > -0.01
+    assert any(r > 0.0 for r in mid)
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
@@ -111,8 +123,24 @@ def test_preference_reward_flushed_after_ride_complete():
         action = (action + 1) % 34
 
     assert rides_seen > 0
-    # Must-do bonus (0.005) exceeds typical dense wait-var step penalties mid-day.
     assert any(r > 0.0 for r in rewards[:-1]), (
         "expected at least one positive mid-episode reward from preference/must-do flush "
         f"(got max={max(rewards[:-1]):.6f})"
     )
+
+
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_obs_includes_remaining_pref_and_elapsed():
+    import _park_sim
+    from training.features import (
+        GUEST_FEAT_ELAPSED_SINCE_SPAWN,
+        GUEST_FEAT_REMAINING_PREF_MASS,
+        GUEST_FEAT_DIM,
+    )
+
+    env = _park_sim.ParkEnv(0)
+    obs = env.reset(0)
+    guest = list(obs.guest)
+    assert len(guest) == GUEST_FEAT_DIM
+    assert 0.0 <= guest[GUEST_FEAT_REMAINING_PREF_MASS] <= 1.0 + 1e-5
+    assert guest[GUEST_FEAT_ELAPSED_SINCE_SPAWN] >= 0.0

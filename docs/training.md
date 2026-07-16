@@ -56,20 +56,19 @@ Output: `checkpoints/ppo/ppo_final.pt`
 
 ## PPO reward (ParkEnv)
 
+Objective: **get each party’s preferred and must-do rides done quickly** (optionally guest-weighted by `party_size`). Wait variance is **not** in the training reward (still logged as a diagnostic KPI).
+
 Rewards are emitted **only on routing decisions** (~300k–500k/day). Components (C++ `env_reward_delta` / terminal bonus):
 
 | Component | When | Formula (defaults in `config.py`) |
 |-----------|------|-----------------------------------|
-| **Dense wait variance** | **Every** routing step | `-PPO_WAIT_VAR_STEP_COEF × current_wait_variance / 1e6` (fallback `-0.001` if no valid waits) |
-| Preference / must-do | Party’s **next** routing step after a real `RideComplete` | `PPO_PREF_REWARD_SCALE × preference[ride]` (+ `PPO_MUST_DO_COMPLETION_BONUS` if that ride was a must-do) |
-| Terminal wait variance | Last routing step of the day | `-avg_wait_variance / 1000` |
-| Terminal must-do | Last routing step | `-PPO_UNFULFILLED_MUST_DO_PENALTY × remaining_must_dos` (park-wide) |
+| **Dense urgency** | **Every** routing step (party-local) | `-PPO_MUST_DO_URGENCY_COEF × remaining_must_dos` `- PPO_PREF_URGENCY_COEF × remaining_pref_mass` (`remaining_pref_mass` = Σ preference for rides with `history == 0`) |
+| Preference / must-do | Party’s **next** routing step after a real `RideComplete` | `time_factor × (PPO_PREF_REWARD_SCALE × preference[ride] + PPO_MUST_DO_COMPLETION_BONUS if must-do)`; `time_factor = max(0, 1 - PPO_TIME_DECAY × (now − spawn) / DAY)`; × `party_size` if `PPO_WEIGHT_BY_PARTY_SIZE` |
+| Terminal must-do | Last routing step | `-PPO_UNFULFILLED_MUST_DO_PENALTY × (remaining / assigned)` + flush leftover pending bonuses |
 
-`current_wait_variance` is computed from live ride wait estimates at the routing step (same definition as KPI samples). The 300 s metrics sampler still records wait variance for logging / terminal bonus, but **no longer gates** the per-step reward — so GAE can credit load-balancing decisions within a few hundred routing steps instead of waiting ~5 park minutes.
+Preference / must-do bonuses are **accumulated at ride completion** into a per-party pending buffer and **flushed** when that party is routed again. Breakdown evacuations never call `RideComplete`, so they earn **no** preference credit (see `docs/breakdowns.md`).
 
-Preference bonuses are **accumulated at ride completion** into a per-party pending buffer and **flushed** when that party is routed again. Breakdown evacuations never call `RideComplete`, so they earn **no** preference credit (see `docs/breakdowns.md`).
-
-Preference scales are intentionally **secondary** to wait variance (`PPO_PREF_REWARD_SCALE=0.01`, must-do `0.005`). Tune via `config.py` (mirrored in `native/include/park_sim.hpp`).
+Must-do completion bonuses dominate filler preference mass. Tune via `config.py` (mirrored in `native/include/park_sim.hpp`). See also `docs/pref-mustdo-reward-plan.md`.
 
 ## Evaluate a checkpoint
 
@@ -84,12 +83,12 @@ python training/eval_policy.py \
 
 | Tensor | Shape | Content |
 |--------|-------|---------|
-| Guest features | `(B, G, 45)` | Preferences + party state (`G` = co-timed parties in a routing wave) |
+| Guest features | `(B, G, 46)` | Prefs `0..33`, remaining pref mass `34`, party state `35..44`, elapsed since spawn `45` |
 | Ride features | `(B, G, 34, 8)` | Wait, incoming, open, duration, capacity, walk, history, must-do |
-| Env features | `(B, 4)` | Time of day, mean wait, variance, broken fraction |
+| Env features | `(B, 4)` | Time of day, mean wait, **wait-variance slot zeroed**, broken fraction |
 | Actions | `0–33` ride, `34` exit, `35` idle wander |
 
-Flat observation size: **321** (`FLAT_OBS_DIM` = 45 + 34×8 + 4).
+Flat observation size: **322** (`FLAT_OBS_DIM` = 46 + 34×8 + 4).
 
 ### Architecture (`ParkRouterModel`)
 

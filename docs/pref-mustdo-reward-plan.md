@@ -1,6 +1,6 @@
 # Plan: Preference / Must-Do PPO Objective
 
-**Status:** design only (not implemented)  
+**Status:** implemented (reward, obs, metrics, eval/logging)  
 **Goal:** Retarget PPO so the policy maximizes **getting each party’s preferred and must-do rides done quickly**, and **drop wait-variance from the training objective**.
 
 Related code today: `native/src/park_sim.cpp` (`env_reward_delta`, `handle_ride_complete`, `build_observation`), `config.py` (`PPO_*` knobs), `model.py`, `training/ppo_train.py`, `training/eval_policy.py`, `docs/training.md`, `docs/metrics.md`. Interactive play already tracks per-party preference KPIs via `FocalPartyStats` / `play/scoring.py` — reuse those ideas for park-wide eval.

@@ -120,6 +120,9 @@ class EpisodeBatch:
     avg_wait_variance: float
     rides_completed: int
     rides_per_party: float
+    must_do_completion_rate: float
+    avg_preference_score_per_guest: float
+    avg_must_do_latency_sec: float
     rollout_sec: float
 
 
@@ -401,11 +404,10 @@ def _collect_episode(
                 eta_sec = remaining / max(steps_per_sec, 1e-6)
                 env_offset = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
                 mean_wait_min = float(obs_row[env_offset + 1]) * 60.0
-                wait_var = float(obs_row[env_offset + 2]) * 1_000_000.0
                 _log(
                     f"{prefix} rollout progress: steps={routing_steps:,} "
                     f"park_time={_park_time_label(obs_row)} return={episode_return:.2f} "
-                    f"mean_wait={mean_wait_min:.0f}m wait_var={wait_var:.0f} "
+                    f"mean_wait={mean_wait_min:.0f}m "
                     f"speed={steps_per_sec:,.0f} steps/s eta={eta_sec / 60.0:.1f}m"
                 )
                 last_log_step = routing_steps
@@ -429,6 +431,9 @@ def _collect_episode(
                 "avg_wait_variance": result.metrics.avg_wait_variance(),
                 "rides_completed": result.metrics.rides_completed,
                 "rides_per_party": result.metrics.rides_per_party(),
+                "must_do_completion_rate": result.metrics.must_do_completion_rate(),
+                "avg_preference_score_per_guest": result.metrics.avg_preference_score_per_guest(),
+                "avg_must_do_latency_sec": result.metrics.avg_must_do_latency_sec(),
             }
             break
 
@@ -529,6 +534,11 @@ def _collect_episode(
         avg_wait_variance=float(terminal_info.get("avg_wait_variance", 0.0)),
         rides_completed=int(terminal_info.get("rides_completed", 0)),
         rides_per_party=float(terminal_info.get("rides_per_party", 0.0)),
+        must_do_completion_rate=float(terminal_info.get("must_do_completion_rate", 0.0)),
+        avg_preference_score_per_guest=float(
+            terminal_info.get("avg_preference_score_per_guest", 0.0)
+        ),
+        avg_must_do_latency_sec=float(terminal_info.get("avg_must_do_latency_sec", 0.0)),
         rollout_sec=rollout_sec,
     )
 
@@ -686,8 +696,8 @@ def train(cfg: PPOConfig) -> None:
         f"save_every={cfg.save_every} routing steps, log_every={cfg.log_every} rollout steps"
     )
     _log(
-        "Primary metrics: wait_var (lower is better), rides_per_party (higher is better), "
-        "day_return (wait variance + preference/must-do shaping; often negative)"
+        "Primary metrics: must_do rate (higher better), pref/guest (higher better), "
+        "must-do latency (lower better); wait_var is diagnostic only"
     )
     if init_extra:
         _log(f"Init checkpoint metadata: {init_extra}")
@@ -695,7 +705,7 @@ def train(cfg: PPOConfig) -> None:
     days_done = 0
     update = 0
     last_save_step = 0
-    best_wait_var = float("inf")
+    best_must_do_rate = -1.0
     day_durations: list[float] = []
 
     while days_done < cfg.total_days:
@@ -728,7 +738,9 @@ def train(cfg: PPOConfig) -> None:
             env_label = f" env={i + 1}" if envs_this_update > 1 else ""
             _log(
                 f"{day_label}{env_label} rollout done: steps={ep.routing_steps:,} "
-                f"return={ep.episode_return:.2f} wait_var={ep.avg_wait_variance:.0f} "
+                f"return={ep.episode_return:.2f} must_do={ep.must_do_completion_rate:.3f} "
+                f"pref/guest={ep.avg_preference_score_per_guest:.4f} "
+                f"must_do_lat={ep.avg_must_do_latency_sec / 60.0:.1f}m "
                 f"rides={ep.rides_completed:,} rides/party={ep.rides_per_party:.2f} "
                 f"time={ep.rollout_sec:.1f}s ({ep.routing_steps / max(ep.rollout_sec, 1e-6):,.0f} steps/s)"
             )
@@ -758,6 +770,15 @@ def train(cfg: PPOConfig) -> None:
             avg_wait_variance=float(np.mean([ep.avg_wait_variance for ep in episodes])),
             rides_completed=int(np.mean([ep.rides_completed for ep in episodes])),
             rides_per_party=float(np.mean([ep.rides_per_party for ep in episodes])),
+            must_do_completion_rate=float(
+                np.mean([ep.must_do_completion_rate for ep in episodes])
+            ),
+            avg_preference_score_per_guest=float(
+                np.mean([ep.avg_preference_score_per_guest for ep in episodes])
+            ),
+            avg_must_do_latency_sec=float(
+                np.mean([ep.avg_must_do_latency_sec for ep in episodes])
+            ),
             rollout_sec=rollout_sec,
         )
 
@@ -777,8 +798,8 @@ def train(cfg: PPOConfig) -> None:
         stats = _ppo_update(agent, optimizer, batch, cfg)
         elapsed = time.perf_counter() - t0
 
-        if batch.avg_wait_variance < best_wait_var:
-            best_wait_var = batch.avg_wait_variance
+        if batch.must_do_completion_rate > best_must_do_rate:
+            best_must_do_rate = batch.must_do_completion_rate
             best_marker = " new_best"
         else:
             best_marker = ""
@@ -790,7 +811,9 @@ def train(cfg: PPOConfig) -> None:
         _log(
             f"{day_label} update={update} global_steps={global_step:,} "
             f"train_samples={batch.obs.shape[0]:,} "
-            f"return={batch.episode_return:.2f} wait_var={batch.avg_wait_variance:.0f}{best_marker} "
+            f"return={batch.episode_return:.2f} must_do={batch.must_do_completion_rate:.3f}"
+            f"{best_marker} pref/guest={batch.avg_preference_score_per_guest:.4f} "
+            f"must_do_lat={batch.avg_must_do_latency_sec / 60.0:.1f}m "
             f"rides={batch.rides_completed:,} rides/party={batch.rides_per_party:.2f} "
             f"pg_loss={stats.pg_loss:.4f} v_loss={stats.v_loss:.4f} "
             f"entropy={stats.entropy:.3f} kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
@@ -809,6 +832,9 @@ def train(cfg: PPOConfig) -> None:
                     "phase": "ppo",
                     "update": update,
                     "days_done": days_done,
+                    "must_do_completion_rate": batch.must_do_completion_rate,
+                    "avg_preference_score_per_guest": batch.avg_preference_score_per_guest,
+                    "avg_must_do_latency_sec": batch.avg_must_do_latency_sec,
                     "avg_wait_variance": batch.avg_wait_variance,
                     "rides_per_party": batch.rides_per_party,
                 },
@@ -822,11 +848,15 @@ def train(cfg: PPOConfig) -> None:
         agent.model,
         optimizer,
         global_step,
-        {"phase": "ppo", "days_done": days_done, "best_wait_var": best_wait_var},
+        {
+            "phase": "ppo",
+            "days_done": days_done,
+            "best_must_do_completion_rate": best_must_do_rate,
+        },
     )
     _log(
         f"PPO complete after {days_done} day(s) and {global_step:,} routing steps. "
-        f"Best wait_var={best_wait_var:.0f}. Final checkpoint: {final_path}"
+        f"Best must_do rate={best_must_do_rate:.3f}. Final checkpoint: {final_path}"
     )
 
 

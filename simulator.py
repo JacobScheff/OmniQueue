@@ -27,6 +27,11 @@ def _metrics_from_native(result) -> DayMetrics:
         wait_variance_samples=list(result.wait_variance_samples),
         mean_wait_samples=list(result.mean_wait_samples),
         wall_time_sec=result.wall_time_sec,
+        must_dos_assigned=int(getattr(result, "must_dos_assigned", 0) or 0),
+        must_dos_completed=int(getattr(result, "must_dos_completed", 0) or 0),
+        preference_score_sum=float(getattr(result, "preference_score_sum", 0.0) or 0.0),
+        must_do_latency_sum_sec=float(getattr(result, "must_do_latency_sum_sec", 0.0) or 0.0),
+        must_do_latency_count=int(getattr(result, "must_do_latency_count", 0) or 0),
     )
 
 

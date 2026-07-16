@@ -419,6 +419,7 @@ public:
         spawn_day();
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
+        metrics_.must_dos_assigned = must_dos_assigned_at_spawn_;
 
         for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
             wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
@@ -448,6 +449,7 @@ public:
         override_focal_party(focal);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
+        metrics_.must_dos_assigned = must_dos_assigned_at_spawn_;
 
         for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
             wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
@@ -632,6 +634,10 @@ public:
         }
         focal_party_id_ = 0;
         const int old_size = parties_.party_size[0];
+        int old_must_assigned = 0;
+        for (int i = 0; i < kNumRides; ++i) {
+            old_must_assigned += parties_.must_do_remaining[0][i];
+        }
         total_guests_ = total_guests_ - old_size + 1;
         parties_.party_size[0] = 1;
         parties_.spawn_sec[0] = std::clamp(cfg.spawn_sec, 0, kDaySeconds - kMinDwellSec);
@@ -676,6 +682,7 @@ public:
         parties_.must_do_remaining[0] = must_do;
         compute_preference_order(prefs, must_do, parties_.preference_order[0]);
         compute_balk_sec(prefs, parties_.balk_sec[0]);
+        must_dos_assigned_at_spawn_ += static_cast<int64_t>(must_assigned - old_must_assigned);
 
         spawn_schedule_.erase(
             std::remove_if(
@@ -782,6 +789,7 @@ public:
         pending_pref_reward_.assign(static_cast<size_t>(parties_.count), 0.0f);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
+        metrics_.must_dos_assigned = must_dos_assigned_at_spawn_;
         for (const auto& [spawn_sec, party_id] : spawn_schedule_) {
             wheel_.schedule(spawn_sec, Event{EventType::PartySpawn, party_id, -1, 0});
         }
@@ -813,6 +821,7 @@ public:
         pending_pref_reward_.assign(static_cast<size_t>(parties_.count), 0.0f);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
+        metrics_.must_dos_assigned = must_dos_assigned_at_spawn_;
         if (enable_recording) {
             owned_recording_ = DayRecording{};
             set_recording(&owned_recording_, sample_interval_sec);
@@ -923,14 +932,35 @@ public:
         return var / valid;
     }
 
+    float remaining_pref_mass(int party_id) const {
+        float mass = 0.0f;
+        for (int r = 0; r < kNumRides; ++r) {
+            if (parties_.ride_history[party_id][r] == 0) {
+                mass += parties_.preferences[party_id][static_cast<size_t>(r)];
+            }
+        }
+        return mass;
+    }
+
+    int remaining_must_do_count(int party_id) const {
+        int count = 0;
+        for (int r = 0; r < kNumRides; ++r) {
+            count += parties_.must_do_remaining[party_id][r];
+        }
+        return count;
+    }
+
     float env_reward_delta() {
-        // Dense wait-variance signal every routing step (not only on 300s KPI samples).
-        const double var = current_wait_variance();
-        float reward = (var > 0.0) ? static_cast<float>(-kWaitVarStepCoef * var / 1'000'000.0)
-                                   : -kRoutingStepPenalty;
-        // Flush preference / must-do completion bonus earned since this party's last route.
+        float reward = 0.0f;
         const int party_id = env_current_party();
-        if (party_id >= 0 && static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
+        if (party_id < 0) {
+            return reward;
+        }
+        // Dense party-local urgency toward unfinished must-dos / fresh preferred rides.
+        reward -= kMustDoUrgencyCoef * static_cast<float>(remaining_must_do_count(party_id));
+        reward -= kPrefUrgencyCoef * remaining_pref_mass(party_id);
+        // Flush preference / must-do completion bonus earned since this party's last route.
+        if (static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
             reward += pending_pref_reward_[static_cast<size_t>(party_id)];
             pending_pref_reward_[static_cast<size_t>(party_id)] = 0.0f;
         }
@@ -947,18 +977,20 @@ public:
     }
 
     float unfulfilled_must_do_penalty() const {
-        int remaining = 0;
-        for (int party_id = 0; party_id < parties_.count; ++party_id) {
-            for (int ride_id = 0; ride_id < kNumRides; ++ride_id) {
-                remaining += parties_.must_do_remaining[party_id][ride_id];
-            }
+        const int64_t assigned = metrics_.must_dos_assigned;
+        if (assigned <= 0) {
+            return 0.0f;
         }
-        return -kUnfulfilledMustDoPenalty * static_cast<float>(remaining);
+        int64_t remaining = 0;
+        for (int party_id = 0; party_id < parties_.count; ++party_id) {
+            remaining += remaining_must_do_count(party_id);
+        }
+        return -kUnfulfilledMustDoPenalty * static_cast<float>(remaining) /
+               static_cast<float>(assigned);
     }
 
     float terminal_reward_bonus() {
-        return static_cast<float>(-metrics_.avg_wait_variance() / 1000.0) + unfulfilled_must_do_penalty() +
-               flush_all_pending_pref_reward();
+        return unfulfilled_must_do_penalty() + flush_all_pending_pref_reward();
     }
 
     DayMetricsResult env_finalize() {
@@ -1160,6 +1192,12 @@ private:
         }
 
         total_guests_ = guests_assigned;
+        must_dos_assigned_at_spawn_ = 0;
+        for (int i = 0; i < n; ++i) {
+            for (int r = 0; r < kNumRides; ++r) {
+                must_dos_assigned_at_spawn_ += parties_.must_do_remaining[i][r];
+            }
+        }
     }
 
     void update_wait_estimates(int now_sec) {
@@ -1355,8 +1393,18 @@ private:
                 PartyRideEvent{party_id, now_sec, static_cast<int16_t>(ride_id)});
         }
         const bool was_must_do = parties_.must_do_remaining[party_id][ride_id] != 0;
+        const float pref = parties_.preferences[party_id][static_cast<size_t>(ride_id)];
+        const int size = std::max(1, parties_.party_size[party_id]);
+        metrics_.preference_score_sum += static_cast<double>(pref) * static_cast<double>(size);
+        if (was_must_do) {
+            metrics_.must_dos_completed += 1;
+            const double latency =
+                static_cast<double>(std::max(0, now_sec - parties_.spawn_sec[party_id]));
+            metrics_.must_do_latency_sum_sec += latency;
+            metrics_.must_do_latency_count += 1;
+        }
         if (party_id == focal_party_id_) {
-            focal_stats_.preference_score += parties_.preferences[party_id][static_cast<size_t>(ride_id)];
+            focal_stats_.preference_score += pref;
             focal_stats_.completions.push_back(
                 PartyRideEvent{party_id, now_sec, static_cast<int16_t>(ride_id)});
             for (int k = 0; k < 3; ++k) {
@@ -1373,9 +1421,16 @@ private:
         // Preference reward only for ParkEnv (PPO). Heuristic/BC days ignore pending.
         if (hold_routing_ && party_id >= 0 &&
             static_cast<size_t>(party_id) < pending_pref_reward_.size()) {
-            float bonus = kPrefRewardScale * parties_.preferences[party_id][static_cast<size_t>(ride_id)];
+            const float elapsed =
+                static_cast<float>(std::max(0, now_sec - parties_.spawn_sec[party_id]));
+            const float time_factor = std::max(
+                0.0f, 1.0f - kTimeDecay * elapsed / static_cast<float>(kDaySeconds));
+            float bonus = kPrefRewardScale * pref * time_factor;
             if (was_must_do) {
-                bonus += kMustDoCompletionBonus;
+                bonus += kMustDoCompletionBonus * time_factor;
+            }
+            if (kWeightByPartySize) {
+                bonus *= static_cast<float>(size);
             }
             pending_pref_reward_[static_cast<size_t>(party_id)] += bonus;
         }
@@ -1634,9 +1689,14 @@ private:
 
     Observation build_observation(int party_id, int now_sec) const {
         Observation obs{};
+        float remaining_pref = 0.0f;
         for (int i = 0; i < kNumRides; ++i) {
             obs.guest[static_cast<size_t>(i)] = parties_.preferences[party_id][i];
+            if (parties_.ride_history[party_id][i] == 0) {
+                remaining_pref += parties_.preferences[party_id][i];
+            }
         }
+        obs.guest[34] = remaining_pref;
         obs.guest[35] = parties_.party_size[party_id] / 8.0f;
         obs.guest[36] = parties_.effective_speed[party_id] / 2.0f;
         obs.guest[37] = static_cast<float>(parties_.leave_sec[party_id] - now_sec) / static_cast<float>(kDaySeconds);
@@ -1653,6 +1713,8 @@ private:
         obs.guest[42] = parties_.state[party_id] / 16.0f;
         obs.guest[43] = balk_sum / static_cast<float>(kNumRides) / 3600.0f;
         obs.guest[44] = parties_.walk_target_ride[party_id] >= 0 ? 1.0f : 0.0f;
+        obs.guest[45] = static_cast<float>(std::max(0, now_sec - parties_.spawn_sec[party_id])) /
+                        static_cast<float>(kDaySeconds);
 
         const int node_idx = parties_.location_node_idx[party_id];
         const int current_ride = gd::kNodeIdxToRide[node_idx];
@@ -1681,7 +1743,6 @@ private:
         }
 
         double mean = 0.0;
-        double var = 0.0;
         int broken = 0;
         int valid = 0;
         for (int r = 0; r < kNumRides; ++r) {
@@ -1695,17 +1756,11 @@ private:
         }
         if (valid > 0) {
             mean /= valid;
-            for (int r = 0; r < kNumRides; ++r) {
-                if (wait_arr_[r] < 9000.0f) {
-                    const double d = wait_arr_[r] - mean;
-                    var += d * d;
-                }
-            }
-            var /= valid;
         }
         obs.env[0] = static_cast<float>(now_sec) / static_cast<float>(kDaySeconds);
         obs.env[1] = static_cast<float>(mean / 3600.0);
-        obs.env[2] = static_cast<float>(var / 1'000'000.0);
+        // Wait variance withheld from the policy (preference objective); keep slot for layout.
+        obs.env[2] = 0.0f;
         obs.env[3] = static_cast<float>(broken) / static_cast<float>(kNumRides);
         return obs;
     }
@@ -1792,6 +1847,7 @@ private:
     DayMetricsResult metrics_;
     std::vector<std::pair<int, int>> spawn_schedule_;
     int total_guests_ = 0;
+    int64_t must_dos_assigned_at_spawn_ = 0;
     int next_sample_sec_ = 0;
     std::array<bool, kNumRides> open_mask_{};
     std::array<float, kNumRides> wait_arr_{};

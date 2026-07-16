@@ -21,7 +21,9 @@ constexpr int kBreakdownRepairMaxSec = 60 * 60;
 constexpr int kMetricsSampleIntervalSec = 300;
 constexpr int kMinDwellSec = 2 * 3600;
 
-constexpr int kGuestFeatDim = 45;
+// Guest feats: 0..33 preferences, 34 remaining_pref_mass, 35..44 party state,
+// 45 elapsed_since_spawn / DAY_SECONDS.
+constexpr int kGuestFeatDim = 46;
 // Per-ride dynamic feats (party-relative walk/history/must-do included):
 // 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do
 constexpr int kRideDynamicFeatDim = 8;
@@ -66,12 +68,15 @@ constexpr double kRepeatBalkFactor = 1.0;         // optional tighter balk on re
 constexpr double kShortWaitSec = 12.0 * 60.0;     // Pass 3 absolute short-wait bar
 constexpr double kShortWaitSlackSec = 2.0 * 60.0; // Pass 3 relative-to-best slack
 
-// PPO reward shaping (mirrored from config.py PPO_* reward knobs)
-constexpr float kWaitVarStepCoef = 0.002f;  // dense: -coef * var/1e6 every routing step
-constexpr float kPrefRewardScale = 0.01f;
-constexpr float kMustDoCompletionBonus = 0.005f;
-constexpr float kUnfulfilledMustDoPenalty = 0.002f;
-constexpr float kRoutingStepPenalty = 0.001f;  // fallback when no valid wait samples
+// PPO reward shaping (mirrored from config.py PPO_* reward knobs).
+// Preference / must-do latency objective; wait variance is not rewarded.
+constexpr float kPrefRewardScale = 0.05f;
+constexpr float kMustDoCompletionBonus = 0.15f;
+constexpr float kTimeDecay = 0.75f;
+constexpr float kMustDoUrgencyCoef = 2e-5f;
+constexpr float kPrefUrgencyCoef = 1e-5f;
+constexpr bool kWeightByPartySize = true;
+constexpr float kUnfulfilledMustDoPenalty = 2.0f;
 
 enum class EventType : uint8_t {
     PartySpawn = 0,
@@ -108,6 +113,12 @@ struct DayMetricsResult {
     std::vector<double> wait_variance_samples;
     std::vector<double> mean_wait_samples;
     double wall_time_sec = 0.0;
+    // Preference / must-do KPIs (diagnostic + PPO eval headlines).
+    int64_t must_dos_assigned = 0;
+    int64_t must_dos_completed = 0;
+    double preference_score_sum = 0.0;       // Σ preference[ride] * party_size
+    double must_do_latency_sum_sec = 0.0;    // Σ (complete_sec - spawn_sec) for must-dos
+    int64_t must_do_latency_count = 0;
 
     double rides_per_party() const {
         return static_cast<double>(rides_completed) / std::max(1, total_parties);
@@ -122,6 +133,27 @@ struct DayMetricsResult {
             sum += v;
         }
         return sum / static_cast<double>(wait_variance_samples.size());
+    }
+
+    double must_do_completion_rate() const {
+        if (must_dos_assigned <= 0) {
+            return 1.0;
+        }
+        return static_cast<double>(must_dos_completed) / static_cast<double>(must_dos_assigned);
+    }
+
+    double avg_preference_score_per_guest() const {
+        if (total_guests <= 0) {
+            return 0.0;
+        }
+        return preference_score_sum / static_cast<double>(total_guests);
+    }
+
+    double avg_must_do_latency_sec() const {
+        if (must_do_latency_count <= 0) {
+            return 0.0;
+        }
+        return must_do_latency_sum_sec / static_cast<double>(must_do_latency_count);
     }
 };
 

@@ -54,8 +54,16 @@ PYBIND11_MODULE(_park_sim, m) {
         .def_readonly("wait_variance_samples", &park::DayMetricsResult::wait_variance_samples)
         .def_readonly("mean_wait_samples", &park::DayMetricsResult::mean_wait_samples)
         .def_readonly("wall_time_sec", &park::DayMetricsResult::wall_time_sec)
+        .def_readonly("must_dos_assigned", &park::DayMetricsResult::must_dos_assigned)
+        .def_readonly("must_dos_completed", &park::DayMetricsResult::must_dos_completed)
+        .def_readonly("preference_score_sum", &park::DayMetricsResult::preference_score_sum)
+        .def_readonly("must_do_latency_sum_sec", &park::DayMetricsResult::must_do_latency_sum_sec)
+        .def_readonly("must_do_latency_count", &park::DayMetricsResult::must_do_latency_count)
         .def("rides_per_party", &park::DayMetricsResult::rides_per_party)
         .def("avg_wait_variance", &park::DayMetricsResult::avg_wait_variance)
+        .def("must_do_completion_rate", &park::DayMetricsResult::must_do_completion_rate)
+        .def("avg_preference_score_per_guest", &park::DayMetricsResult::avg_preference_score_per_guest)
+        .def("avg_must_do_latency_sec", &park::DayMetricsResult::avg_must_do_latency_sec)
         .def("rides_per_guest", [](const park::DayMetricsResult& self) {
             if (self.total_guests == 0) {
                 return 0.0;

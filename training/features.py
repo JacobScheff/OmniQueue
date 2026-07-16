@@ -5,7 +5,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-GUEST_FEAT_DIM = 45
+GUEST_FEAT_DIM = 46
+# 0..33 preferences, 34 remaining_pref_mass, 35..44 party state, 45 elapsed_since_spawn
 # 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do
 RIDE_DYNAMIC_FEAT_DIM = 8
 ENV_DYNAMIC_FEAT_DIM = 4
@@ -27,9 +28,11 @@ RIDE_FEAT_OPEN = 2
 RIDE_FEAT_DURATION = 3
 RIDE_FEAT_WALK = 5
 
-# Guest feature indices used for masking
+# Guest feature indices used for masking / diagnostics
+GUEST_FEAT_REMAINING_PREF_MASS = 34
 GUEST_FEAT_TIME_LEFT = 37
 GUEST_FEAT_AT_RIDE_NODE = 41
+GUEST_FEAT_ELAPSED_SINCE_SPAWN = 45
 
 
 def build_action_mask(
