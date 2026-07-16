@@ -6,7 +6,7 @@ from collections import defaultdict
 
 import pytest
 
-from simulator import native_backend_name, record_day
+from Park.simulator import native_backend_name, record_day
 
 pytestmark = pytest.mark.skipif(
     native_backend_name() != "native", reason="C++ extension not built"

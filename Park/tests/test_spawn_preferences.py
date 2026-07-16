@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-import config
-from simulator import native_backend_name
+import Park.config as config
+from Park.simulator import native_backend_name
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")

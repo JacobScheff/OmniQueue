@@ -9,8 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import config  # noqa: E402
-from park_graph import get_park_graph  # noqa: E402
+import Park.config as config  # noqa: E402
+from Park.park_graph import get_park_graph  # noqa: E402
 
 
 def _fmt_int_row(values: list[int]) -> str:

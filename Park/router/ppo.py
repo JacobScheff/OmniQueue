@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
-from training.checkpoint import load_checkpoint
+from Park.model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
+from Park.training.checkpoint import load_checkpoint
 
 
 class PPOPolicy:

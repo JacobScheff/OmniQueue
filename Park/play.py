@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: pygame required. Install with: pip install -e '.[viz]'", file=sys.stderr)
         return 2
 
-    from play.app import run_play_app
+    from Park.play.app import run_play_app
 
     run_play_app(
         seed=args.seed,

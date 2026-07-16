@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from training.env import ParkRoutingEnv
-from router.ppo import PPOPolicy
+from Park.training.env import ParkRoutingEnv
+from Park.router.ppo import PPOPolicy
 
 
 def main() -> None:

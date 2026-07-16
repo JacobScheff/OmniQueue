@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import config  # noqa: E402
+import Park.config as config  # noqa: E402
 
 PLACE_NAME = "Disneyland Park, Anaheim, California, USA"
 OUT_PATH = ROOT / "data" / "pathways.json"
@@ -378,7 +378,7 @@ def main() -> None:
     if not os.environ.get("SKIP_SIMPLIFY"):
         # Light cleanup + ride nudges (Indiana / Rise / Buzz).
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from simplify_pathways import main as simplify_main
+        from Park.tools.simplify_pathways import main as simplify_main
 
         simplify_main()
 

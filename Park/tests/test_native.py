@@ -2,7 +2,7 @@
 
 import pytest
 
-from simulator import native_backend_name, run_day
+from Park.simulator import native_backend_name, run_day
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
@@ -75,7 +75,7 @@ def test_exchange_batch_matches_step():
 def test_pref_reward_has_no_wait_variance_term():
     """Step rewards should not track park wait variance (preference objective)."""
     import _park_sim
-    from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+    from Park.training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
 
     seed = 7
     env = _park_sim.ParkEnv(seed)
@@ -132,7 +132,7 @@ def test_preference_reward_flushed_after_ride_complete():
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
 def test_obs_includes_remaining_pref_and_elapsed():
     import _park_sim
-    from training.features import (
+    from Park.training.features import (
         GUEST_FEAT_ELAPSED_SINCE_SPAWN,
         GUEST_FEAT_REMAINING_PREF_MASS,
         GUEST_FEAT_DIM,

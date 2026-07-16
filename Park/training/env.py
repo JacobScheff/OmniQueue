@@ -7,7 +7,7 @@ import numpy as np
 from gymnasium import spaces
 
 import _park_sim
-from training.features import FLAT_OBS_DIM, NUM_ACTIONS
+from Park.training.features import FLAT_OBS_DIM, NUM_ACTIONS
 
 
 class ParkRoutingEnv(gym.Env):

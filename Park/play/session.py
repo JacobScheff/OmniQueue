@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from play.scoring import FocalScore, ParkScore
+from Park.play.scoring import FocalScore, ParkScore
 
 
 @dataclass

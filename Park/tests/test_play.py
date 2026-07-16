@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from play.driver import HybridDriver, run_heuristic_focal_day
-from play.scoring import normalize_weights
-from play.session import FocalProfile
-from simulator import native_backend_name
+from Park.play.driver import HybridDriver, run_heuristic_focal_day
+from Park.play.scoring import normalize_weights
+from Park.play.session import FocalProfile
+from Park.simulator import native_backend_name
 
 
 pytestmark = pytest.mark.skipif(
@@ -82,7 +82,7 @@ def test_hybrid_heuristic_focal_completes():
 def test_focal_uses_exact_enter_time():
     import _park_sim
 
-    from play.driver import make_focal_config
+    from Park.play.driver import make_focal_config
 
     profile = _profile()
     profile.spawn_sec = 12_345
@@ -95,8 +95,8 @@ def test_focal_uses_exact_enter_time():
 
 
 def test_run_ai_compare_cell_heuristic():
-    from play.benchmark import run_ai_compare_cell
-    from play.session import SessionStore
+    from Park.play.benchmark import run_ai_compare_cell
+    from Park.play.session import SessionStore
 
     store = SessionStore()
     run = run_ai_compare_cell(

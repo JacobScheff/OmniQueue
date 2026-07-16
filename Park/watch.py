@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: pygame required. Install with: pip install -e '.[viz]'", file=sys.stderr)
         return 2
 
-    from watch.app import run_watch_app
+    from Park.watch.app import run_watch_app
 
     run_watch_app(
         seed=args.seed,

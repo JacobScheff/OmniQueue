@@ -10,14 +10,14 @@ from pathlib import Path
 
 import numpy as np
 
-import config
-from park_graph import get_park_graph
-from play.benchmark import COMPARE_CELLS, run_ai_compare_cell, run_park_benchmark
-from play.driver import HybridDriver
-from play.scoring import format_focal_line, format_park_line
-from play.session import FocalProfile, SessionRun, SessionStore
-from simulator import native_backend_name
-from visualize import (
+import Park.config as config
+from Park.park_graph import get_park_graph
+from Park.play.benchmark import COMPARE_CELLS, run_ai_compare_cell, run_park_benchmark
+from Park.play.driver import HybridDriver
+from Park.play.scoring import format_focal_line, format_park_line
+from Park.play.session import FocalProfile, SessionRun, SessionStore
+from Park.simulator import native_backend_name
+from Park.visualize import (
     CONTROL_HEIGHT,
     FPS,
     MAX_FRAME_DT,
@@ -330,7 +330,7 @@ class PlayApp:
 
     def run(self) -> None:
         import pygame
-        from pathways import load_pathways
+        from Park.pathways import load_pathways
 
         if native_backend_name() != "native":
             raise SystemExit("Native simulator required. Run: pip install -e .")

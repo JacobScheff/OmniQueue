@@ -1,8 +1,8 @@
 """Tests for OSM pathway network integration."""
 
-from pathways import interpolate_polyline, load_pathways, softmax_path_weights
-from park_graph import get_park_graph
-import config
+from Park.pathways import interpolate_polyline, load_pathways, softmax_path_weights
+from Park.park_graph import get_park_graph
+import Park.config as config
 
 
 def test_pathways_json_loads():
@@ -49,7 +49,7 @@ def test_path_polyline_curves():
 
 
 def test_interpolate_polyline_endpoints():
-    from pathways import interpolate_polyline_cached, polyline_arc_lengths
+    from Park.pathways import interpolate_polyline_cached, polyline_arc_lengths
 
     pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
     assert interpolate_polyline(pts, 0.0) == (0.0, 0.0)

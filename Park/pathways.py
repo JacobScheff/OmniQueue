@@ -110,7 +110,7 @@ class PathwayNetwork:
         slack: float | None = None,
     ) -> list[PathVariant]:
         """Enumerate near-shortest OSM paths between routing nodes (deterministic order)."""
-        import config
+        import Park.config as config
 
         if max_variants is None:
             max_variants = int(config.WALK_PATH_MAX_VARIANTS)

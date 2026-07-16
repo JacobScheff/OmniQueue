@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from simulator import native_backend_name, run_day
+from Park.simulator import native_backend_name, run_day
 
 
 def main() -> None:

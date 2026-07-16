@@ -7,8 +7,8 @@ from typing import Any
 
 import numpy as np
 
-from play.scoring import FocalScore, ParkScore
-from play.session import FocalProfile
+from Park.play.scoring import FocalScore, ParkScore
+from Park.play.session import FocalProfile
 
 
 @dataclass

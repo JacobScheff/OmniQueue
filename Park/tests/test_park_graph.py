@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from park_graph import (
+from Park.park_graph import (
     _load_walk_matrix_cache,
     build_graph,
     get_park_graph,

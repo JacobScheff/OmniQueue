@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from simulator import native_backend_name, record_day
+from Park.simulator import native_backend_name, record_day
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
@@ -55,7 +55,7 @@ def test_record_day_completions_match_metrics():
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
 def test_replay_helpers():
-    from visualize import ReplayState, active_walks_at, build_node_coords, party_state_at, walk_position
+    from Park.visualize import ReplayState, active_walks_at, build_node_coords, party_state_at, walk_position
 
     rec = record_day(seed=7, sample_interval_sec=300)
     state = ReplayState.from_recording(rec, build_node_coords())
@@ -76,8 +76,8 @@ def test_replay_helpers():
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
 def test_prefetch_and_arc_cache():
-    from park_graph import get_park_graph, reset_park_graph
-    from visualize import (
+    from Park.park_graph import get_park_graph, reset_park_graph
+    from Park.visualize import (
         MAX_FRAME_DT,
         MAX_WALK_DOTS,
         PREFETCH_UNTIL_SEC,
@@ -120,7 +120,7 @@ def test_prefetch_and_arc_cache():
 
 
 def test_visualize_window_is_scaled_down():
-    from visualize import (
+    from Park.visualize import (
         CONTROL_HEIGHT,
         PARK_HEIGHT,
         PARK_LOGICAL,

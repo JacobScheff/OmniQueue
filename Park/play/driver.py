@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from play.scoring import FocalScore, ParkScore, focal_from_native, park_from_native
-from play.session import FocalProfile, RunSettings, SessionRun
+from Park.play.scoring import FocalScore, ParkScore, focal_from_native, park_from_native
+from Park.play.session import FocalProfile, RunSettings, SessionRun
 
 
 def _require_native():
@@ -94,7 +94,7 @@ class HybridDriver:
         self._park_sim = _require_native()
         self._policy = None
         if self.checkpoint:
-            from router.ppo import PPOPolicy
+            from Park.router.ppo import PPOPolicy
 
             self._policy = PPOPolicy(self.checkpoint, device=device)
 

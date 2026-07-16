@@ -4,9 +4,9 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from model import ParkRouterModel, forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
-from training.checkpoint import TrainConfig, default_model, load_checkpoint, save_checkpoint
-from training.features import (
+from Park.model import ParkRouterModel, forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
+from Park.training.checkpoint import TrainConfig, default_model, load_checkpoint, save_checkpoint
+from Park.training.features import (
     D_MODEL,
     ENV_DYNAMIC_FEAT_DIM,
     FLAT_OBS_DIM,
@@ -22,7 +22,7 @@ from training.features import (
     build_action_mask,
     masked_cross_entropy,
 )
-from training.ppo_train import Agent, _compute_gae
+from Park.training.ppo_train import Agent, _compute_gae
 
 
 def test_model_forward_shape():
@@ -219,7 +219,7 @@ def test_compute_gae_bootstraps_when_truncated():
 
 
 def test_chunk_wave_respects_max_guests():
-    from training.bc_train import WaveSample, chunk_wave
+    from Park.training.bc_train import WaveSample, chunk_wave
 
     g = 100
     wave = WaveSample(

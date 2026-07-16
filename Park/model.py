@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from training.features import (
+from Park.training.features import (
     D_MODEL,
     ENV_DYNAMIC_FEAT_DIM,
     GUEST_FEAT_DIM,

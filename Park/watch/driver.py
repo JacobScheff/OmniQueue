@@ -7,12 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-import config
-from play.driver import make_focal_config
-from play.scoring import ParkScore, focal_from_native, park_from_native
-from play.session import FocalProfile
-from watch.session import DecisionMark, WatchRun, WatchSettings
-from watch.timeline import insert_sorted_by_sec
+import Park.config as config
+from Park.play.driver import make_focal_config
+from Park.play.scoring import ParkScore, focal_from_native, park_from_native
+from Park.play.session import FocalProfile
+from Park.watch.session import DecisionMark, WatchRun, WatchSettings
+from Park.watch.timeline import insert_sorted_by_sec
 
 # PartyState::InQueue from native/include/park_sim.hpp
 STATE_IN_QUEUE = 2
@@ -83,7 +83,7 @@ class WatchDriver:
 
         self._park_sim = _require_native()
         _require_watch_apis(self._park_sim)
-        from router.ppo import PPOPolicy
+        from Park.router.ppo import PPOPolicy
 
         self._policy = PPOPolicy(self.checkpoint, device=device)
         self.env = self._park_sim.ParkEnv(self.seed)

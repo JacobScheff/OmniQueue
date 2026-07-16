@@ -20,10 +20,10 @@ import torch.nn as nn
 import torch.optim as optim
 
 import _park_sim
-import config
-from model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
-from training.checkpoint import default_model, load_checkpoint, save_checkpoint
-from training.features import (
+import Park.config as config
+from Park.model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
+from Park.training.checkpoint import default_model, load_checkpoint, save_checkpoint
+from Park.training.features import (
     ENV_DYNAMIC_FEAT_DIM,
     FLAT_OBS_DIM,
     GUEST_FEAT_DIM,

@@ -20,10 +20,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 import _park_sim
-import config
-from model import ParkRouterModel
-from training.checkpoint import default_model, save_checkpoint
-from training.features import (
+import Park.config as config
+from Park.model import ParkRouterModel
+from Park.training.checkpoint import default_model, save_checkpoint
+from Park.training.features import (
     ENV_DYNAMIC_FEAT_DIM,
     GUEST_FEAT_DIM,
     NUM_RIDES,

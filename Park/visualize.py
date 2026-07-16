@@ -13,10 +13,10 @@ import math
 import sys
 from dataclasses import dataclass, field
 
-import config
-from park_graph import get_park_graph
-from pathways import interpolate_polyline_cached, load_pathways
-from simulator import native_backend_name, record_day
+import Park.config as config
+from Park.park_graph import get_park_graph
+from Park.pathways import interpolate_polyline_cached, load_pathways
+from Park.simulator import native_backend_name, record_day
 
 # Layout (park coords are ~0–1000; display scaled ~15% down)
 UI_SCALE = 0.85

@@ -7,12 +7,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import config
-from play.driver import make_focal_config
-from play.session import FocalProfile
-from simulator import native_backend_name
-from watch.session import DecisionMark
-from watch.timeline import (
+import Park.config as config
+from Park.play.driver import make_focal_config
+from Park.play.session import FocalProfile
+from Park.simulator import native_backend_name
+from Park.watch.session import DecisionMark
+from Park.watch.timeline import (
     TimelineState,
     completion_counts_at,
     mark_index_for_click,
@@ -40,7 +40,7 @@ def _profile() -> FocalProfile:
 
 
 def test_require_watch_apis_message():
-    from watch.driver import _require_watch_apis
+    from Park.watch.driver import _require_watch_apis
 
     class FakeEnv:
         pass
@@ -153,9 +153,9 @@ def test_mark_click_hit():
 
 def test_ppo_act_with_probs(tmp_path: Path):
     pytest.importorskip("torch")
-    from router.ppo import PPOPolicy
-    from training.checkpoint import default_model, save_checkpoint
-    from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_ACTIONS, RIDE_DYNAMIC_FEAT_DIM
+    from Park.router.ppo import PPOPolicy
+    from Park.training.checkpoint import default_model, save_checkpoint
+    from Park.training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_ACTIONS, RIDE_DYNAMIC_FEAT_DIM
 
     ckpt = tmp_path / "tiny.pt"
     save_checkpoint(ckpt, default_model(), None, step=1, extra={"phase": "test"})
@@ -180,8 +180,8 @@ def test_ppo_act_with_probs(tmp_path: Path):
 @pytestmark_native
 def test_watch_driver_records_focal_decisions(tmp_path: Path):
     pytest.importorskip("torch")
-    from training.checkpoint import default_model, save_checkpoint
-    from watch.driver import WatchDriver
+    from Park.training.checkpoint import default_model, save_checkpoint
+    from Park.watch.driver import WatchDriver
 
     ckpt = tmp_path / "watch.pt"
     save_checkpoint(ckpt, default_model(), None, step=1, extra={"phase": "test"})

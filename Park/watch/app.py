@@ -7,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-import config
-from park_graph import get_park_graph
-from play.scoring import format_focal_line, format_park_line
-from play.session import FocalProfile
-from visualize import (
+import Park.config as config
+from Park.park_graph import get_park_graph
+from Park.play.scoring import format_focal_line, format_park_line
+from Park.play.session import FocalProfile
+from Park.visualize import (
     CONTROL_HEIGHT,
     FPS,
     MAX_FRAME_DT,
@@ -31,9 +31,9 @@ from visualize import (
     ride_state_at,
     walk_position,
 )
-from watch.driver import STATE_IN_QUEUE, WatchDriver
-from watch.session import WatchStore
-from watch.timeline import (
+from Park.watch.driver import STATE_IN_QUEUE, WatchDriver
+from Park.watch.session import WatchStore
+from Park.watch.timeline import (
     TimelineState,
     completion_counts_at,
     mark_index_for_click,
@@ -98,7 +98,7 @@ def _weight_from_track_x(mx: int, track_x: int, track_w: int) -> float:
 
 def _build_park_surface(pygame_mod):
     """Static pathway / hub / entrance backdrop (matches play/visualize)."""
-    from pathways import load_pathways
+    from Park.pathways import load_pathways
 
     surf = pygame_mod.Surface((PARK_WIDTH, PARK_HEIGHT))
     surf.fill(PARK_BG)

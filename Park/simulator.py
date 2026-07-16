@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 
-import config
-from metrics import DayMetrics
+import Park.config as config
+from Park.metrics import DayMetrics
 
 
 def _native_available() -> bool:

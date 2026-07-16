@@ -44,7 +44,7 @@ class ParkScore:
 
 def normalize_weights(weights: np.ndarray, must_dos: np.ndarray | None = None) -> np.ndarray:
     """L1-normalize preference weights; optional must-do boost matches spawn semantics."""
-    import config
+    import Park.config as config
 
     w = np.asarray(weights, dtype=np.float64).copy()
     if w.shape != (config.NUM_RIDES,):

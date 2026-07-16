@@ -11,8 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
-import config
-from pathways import PATHWAYS_PATH, load_pathways
+import Park.config as config
+from Park.pathways import PATHWAYS_PATH, load_pathways
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 WALK_MATRIX_CACHE_PATH = CACHE_DIR / "walk_matrix.npz"
@@ -111,7 +111,7 @@ def _load_polyline_cache(
             return None
         if len(offsets) != len(keys) + 1:
             return None
-        from pathways import polyline_arc_lengths
+        from Park.pathways import polyline_arc_lengths
 
         out: dict[
             tuple[int, int, int], tuple[list[tuple[float, float]], list[float], float]
@@ -382,7 +382,7 @@ class ParkGraph:
         self, from_idx: int, to_idx: int, variant: int = 0
     ) -> tuple[list[tuple[float, float]], list[float], float]:
         """Return (polyline, cumulative arc lengths, total length) for a walk."""
-        from pathways import polyline_arc_lengths
+        from Park.pathways import polyline_arc_lengths
 
         if from_idx == to_idx:
             nid = self.idx_to_node(from_idx)
@@ -426,7 +426,7 @@ def reset_park_graph() -> None:
 def get_park_graph(*, force_recompute: bool = False) -> ParkGraph:
     global _GRAPH, _COORDS_APPLIED
     if not _COORDS_APPLIED:
-        from pathways import apply_pathway_coords
+        from Park.pathways import apply_pathway_coords
 
         apply_pathway_coords(config)
         _COORDS_APPLIED = True

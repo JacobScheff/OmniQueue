@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import config
+import Park.config as config
 
 
 class Router(Protocol):
@@ -28,7 +28,7 @@ def get_router(name: str | None = None) -> Router:
             "Heuristic routing runs inside the C++ simulator. Call simulator.run_day() instead."
         )
     if router_name == "ppo":
-        from router.ppo import PPORouter
+        from Park.router.ppo import PPORouter
 
         return PPORouter()
     raise ValueError(f"Unknown router: {router_name}")
