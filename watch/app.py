@@ -54,6 +54,10 @@ WATCH_MUST_W = 36
 WATCH_MUST_H = 22
 
 PANEL = (32, 38, 46)
+PARK_BG = (28, 36, 44)
+PATH = (55, 72, 88)
+HUB = (70, 95, 110)
+ENTRANCE = (46, 125, 70)
 TEXT = (230, 230, 230)
 MUTED = (140, 150, 160)
 ACCENT = (255, 170, 40)  # golden/orange focal
@@ -90,6 +94,71 @@ def _fit_text(font, text: str, max_w: int) -> str:
 def _weight_from_track_x(mx: int, track_x: int, track_w: int) -> float:
     t = (mx - track_x) / max(1, track_w)
     return float(np.clip(t * WEIGHT_SLIDER_MAX, 0.0, WEIGHT_SLIDER_MAX))
+
+
+def _build_park_surface(pygame_mod):
+    """Static pathway / hub / entrance backdrop (matches play/visualize)."""
+    from pathways import load_pathways
+
+    surf = pygame_mod.Surface((PARK_WIDTH, PARK_HEIGHT))
+    surf.fill(PARK_BG)
+    park = get_park_graph()
+    pathways = load_pathways()
+    if pathways is not None:
+        for poly in pathways.all_edge_polylines():
+            if len(poly) < 2:
+                continue
+            pygame_mod.draw.lines(
+                surf, PATH, False, [_xy(x, y) for x, y in poly], max(1, _s(2))
+            )
+    else:
+        for a, b in config.MACRO_EDGES:
+            ax, ay = park._graph.node_coords[a]
+            bx, by = park._graph.node_coords[b]
+            pygame_mod.draw.line(surf, PATH, _xy(ax, ay), _xy(bx, by), max(1, _s(2)))
+        for ride_id, hub in enumerate(config.RIDE_HUB):
+            rx, ry = config.RIDES[ride_id]["coords"]
+            hx, hy = config.HUB_COORDS[hub]
+            pygame_mod.draw.line(surf, PATH, _xy(hx, hy), _xy(rx, ry), 1)
+    for nid, (hx, hy) in config.HUB_COORDS.items():
+        if nid == config.NODE_ENTRANCE:
+            continue
+        pygame_mod.draw.circle(surf, HUB, _xy(hx, hy), _s(6))
+    ex, ey = _xy(*config.ENTRANCE_COORDS)
+    pygame_mod.draw.rect(
+        surf, ENTRANCE, (ex - _s(40), ey - _s(18), _s(80), _s(36)), border_radius=_s(4)
+    )
+    return surf
+
+
+def _focal_map_pos(replay: ReplayState, sec: float) -> tuple[tuple[float, float], dict] | None:
+    """Return ((park_x, park_y), party_state) for the focal guest, or None.
+
+    While queued / on-ride, pin beside the ride circle so the marker stays visible.
+    """
+    g = party_state_at(replay, 0, sec)
+    if not g or g.get("pos") is None:
+        return None
+    # Walking (has dest): use interpolated walk position.
+    if g.get("dest") is not None:
+        return g["pos"], g
+
+    # Standing at a ride node after the walk ended → offset beside the ride.
+    idxs = replay.walks_by_party.get(0, [])
+    current = None
+    for wi in idxs:
+        w = replay.walks[wi]
+        if float(w.start_sec) <= sec:
+            current = w
+        else:
+            break
+    if current is not None and sec >= float(current.end_sec):
+        target = int(current.target_ride)
+        if 0 <= target < len(config.RIDES):
+            rx, ry = config.RIDES[target]["coords"]
+            # Park-coord offset: sit just outside the ride wait circle.
+            return (rx + 36.0, ry - 10.0), g
+    return g["pos"], g
 
 
 class WatchApp:
@@ -316,6 +385,7 @@ class WatchApp:
         bold = pygame.font.SysFont("consolas", _s(16), bold=True)
         title_f = pygame.font.SysFont("consolas", _s(22), bold=True)
         map_name_f = pygame.font.SysFont("consolas", _s(11))
+        ride_list_f = pygame.font.SysFont("consolas", _s(15), bold=True)
 
         win_w, win_h = SCREEN_WIDTH, SCREEN_HEIGHT
         pad = _s(16)
@@ -348,8 +418,7 @@ class WatchApp:
         btn_back_setup = pygame.Rect(pad, win_h - _s(50), _s(160), _s(36))
         hist_list = pygame.Rect(pad, _s(60), win_w - pad * 2, win_h - _s(130))
 
-        park_surface = pygame.Surface((PARK_WIDTH, PARK_HEIGHT))
-        park_surface.fill((18, 22, 28))
+        park_surface = _build_park_surface(pygame)
 
         def setup_track_rect(row_y: int) -> pygame.Rect:
             return pygame.Rect(
@@ -503,21 +572,26 @@ class WatchApp:
                 nt = map_name_f.render(short, True, MUTED)
                 screen.blit(nt, (x - nt.get_width() // 2, y + _s(17)))
 
-            # Golden/orange focal guest
+            # Golden/orange focal guest (offset beside ride while queued / on-ride)
             if self.replay is not None:
-                g = party_state_at(self.replay, 0, self.timeline.playhead_sec)
-                if g and g.get("pos"):
-                    gx, gy = _xy(*g["pos"])
-                    if "dest" in g and g["dest"] is not None:
+                focal = _focal_map_pos(self.replay, self.timeline.playhead_sec)
+                if focal is not None:
+                    pos, g = focal
+                    gx, gy = _xy(*pos)
+                    if g.get("dest") is not None:
                         dx, dy = _xy(*g["dest"])
-                        pygame.draw.line(screen, FOCAL_GLOW, (gx, gy), (dx, dy), max(1, _s(2)))
-                    pulse = abs(math.sin(pygame.time.get_ticks() / 220.0)) * 6
-                    pygame.draw.circle(screen, FOCAL_GLOW, (gx, gy), _s(13 + pulse))
-                    pygame.draw.circle(screen, ACCENT, (gx, gy), _s(9))
-                    pygame.draw.circle(screen, (20, 20, 20), (gx, gy), _s(13 + pulse), max(1, _s(2)))
-                    pygame.draw.circle(screen, (255, 255, 255), (gx, gy), _s(3))
+                        pygame.draw.line(
+                            screen, FOCAL_GLOW, (gx, gy), (dx, dy), max(1, _s(2))
+                        )
+                    pulse = abs(math.sin(pygame.time.get_ticks() / 220.0)) * 7
+                    pygame.draw.circle(screen, FOCAL_GLOW, (gx, gy), _s(16 + pulse))
+                    pygame.draw.circle(screen, ACCENT, (gx, gy), _s(11))
+                    pygame.draw.circle(
+                        screen, (20, 20, 20), (gx, gy), _s(16 + pulse), max(1, _s(2))
+                    )
+                    pygame.draw.circle(screen, (255, 255, 255), (gx, gy), _s(4))
                     you = bold.render("FOCAL", True, (20, 20, 20), ACCENT)
-                    screen.blit(you, (gx + _s(14), gy - _s(12)))
+                    screen.blit(you, (gx + _s(16), gy - _s(14)))
 
             # Control bar
             pygame.draw.rect(screen, PANEL, (0, PARK_HEIGHT, PARK_WIDTH, CONTROL_HEIGHT))
@@ -599,8 +673,11 @@ class WatchApp:
                 reverse=True,
             )
             list_top = _s(64)
-            list_h = _s(220)
-            row_h = _s(22)
+            row_h = _s(26)
+            # Leave room for decision probs (+ optional pref editor) at the bottom.
+            probs_reserve = _s(250)
+            edit_block = (_s(34) + _s(160)) if can_edit else _s(28)
+            list_h = max(_s(180), win_h - list_top - probs_reserve - edit_block - _s(12))
             list_rect = pygame.Rect(sidebar_x + _s(8), list_top, sidebar_w - _s(16), list_h)
             pygame.draw.rect(screen, ROW_BG, list_rect, border_radius=_s(4))
             start = int(self.ride_scroll // row_h)
@@ -617,15 +694,16 @@ class WatchApp:
                 else:
                     col = TEXT
                 name = config.RIDES[rid]["name"]
-                short = name if len(name) <= 28 else name[:27] + "…"
                 prefix = "★ " if md else "  "
+                label = _fit_text(ride_list_f, f"{prefix}{name}", list_rect.w - _s(48))
                 screen.blit(
-                    small.render(f"{prefix}{short}", True, col),
-                    (list_rect.x + _s(6), y + _s(3)),
+                    ride_list_f.render(label, True, col),
+                    (list_rect.x + _s(6), y + (row_h - ride_list_f.get_height()) // 2),
                 )
+                cnt = ride_list_f.render(f"×{n}", True, DONE_GREEN if n else MUTED)
                 screen.blit(
-                    small.render(f"×{n}", True, DONE_GREEN if n else MUTED),
-                    (list_rect.right - _s(36), y + _s(3)),
+                    cnt,
+                    (list_rect.right - cnt.get_width() - _s(8), y + (row_h - cnt.get_height()) // 2),
                 )
 
             y_cursor = list_rect.bottom + _s(10)
@@ -635,7 +713,7 @@ class WatchApp:
                     (sidebar_x + _s(12), y_cursor),
                 )
                 y_cursor += _s(24)
-                edit_h = _s(220)
+                edit_h = _s(160)
                 edit_rect = pygame.Rect(
                     sidebar_x + _s(8), y_cursor, sidebar_w - _s(16), edit_h
                 )
@@ -898,8 +976,8 @@ class WatchApp:
                     if self.mode == "setup" and pref_list.collidepoint(mx, my):
                         self.pref_scroll = max(0, self.pref_scroll - event.y * pref_row_h)
                     elif self.mode == "watch" and mx >= sidebar_x:
-                        self.ride_scroll = max(0, self.ride_scroll - event.y * _s(22))
-                        self.pref_scroll = max(0, self.pref_scroll - event.y * _s(26))
+                        self.ride_scroll = max(0, self.ride_scroll - event.y * _s(26))
+                        self.pref_scroll = max(0, self.pref_scroll - event.y * _s(WATCH_EDIT_ROW_H))
                     elif self.mode == "results" and hist_list.collidepoint(mx, my):
                         self.history_scroll = max(0, self.history_scroll - event.y * _s(20))
 

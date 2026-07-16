@@ -78,6 +78,8 @@ class ReplayState:
             end_m = max(start_m, (int(w.end_sec) - 1) // 60)
             for m in range(start_m, end_m + 1):
                 walks_by_minute.setdefault(m, []).append(i)
+        for wis in walks_by_party.values():
+            wis.sort(key=lambda i: int(walks[i].start_sec))
 
         completions_by_party: dict[int, list] = {}
         for ev in completions:

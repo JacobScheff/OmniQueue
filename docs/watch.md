@@ -46,8 +46,8 @@ If you see `ParkEnv has no attribute 'play_focal_state'`, the extension is stale
 ## Live watch
 
 1. Sim advances at the **recording frontier** while you play the timeline.
-2. Map shows ride waits; the focal guest is a pulsing **golden/orange** marker labeled `FOCAL`.
-3. Right sidebar lists rides sorted by preference with:
+2. Map shows ride waits and pathway network; the focal guest is a pulsing **golden/orange** marker labeled `FOCAL` (offset beside the ride while queued / on-ride).
+3. Right sidebar lists rides sorted by preference (tall scrollable list) with:
    - **×N** focal completion counts at the playhead
    - **Green** name once completed ≥ 1
    - **Amber** name for outstanding must-dos (until completed)
