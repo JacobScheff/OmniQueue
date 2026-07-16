@@ -152,20 +152,19 @@ def test_mark_click_hit():
 
 
 def test_ppo_act_with_probs(tmp_path: Path):
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     from router.ppo import PPOPolicy
     from training.checkpoint import default_model, save_checkpoint
-    from training.features import FLAT_OBS_DIM, NUM_ACTIONS
+    from training.features import FLAT_OBS_DIM, GUEST_FEAT_DIM, NUM_ACTIONS, RIDE_DYNAMIC_FEAT_DIM
 
     ckpt = tmp_path / "tiny.pt"
-    model = default_model()
-    save_checkpoint(ckpt, model, None, step=1, extra={"phase": "test"})
+    save_checkpoint(ckpt, default_model(), None, step=1, extra={"phase": "test"})
     policy = PPOPolicy(ckpt, device="cpu")
     obs = np.zeros(FLAT_OBS_DIM, dtype=np.float32)
     # Make rides look open / feasible enough for a non-degenerate mask.
-    # guest[37]=time_left, ride open/wait/duration/walk columns.
-    g = 45
-    ride = obs[g : g + 34 * 8].reshape(34, 8)
+    ride = obs[
+        GUEST_FEAT_DIM : GUEST_FEAT_DIM + config.NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    ].reshape(config.NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     ride[:, 0] = 0.01  # wait fraction
     ride[:, 2] = 1.0  # open
     ride[:, 3] = 0.05  # duration
@@ -181,7 +180,6 @@ def test_ppo_act_with_probs(tmp_path: Path):
 @pytestmark_native
 def test_watch_driver_records_focal_decisions(tmp_path: Path):
     pytest.importorskip("torch")
-    from router.ppo import PPOPolicy  # noqa: F401
     from training.checkpoint import default_model, save_checkpoint
     from watch.driver import WatchDriver
 
@@ -201,9 +199,9 @@ def test_watch_driver_records_focal_decisions(tmp_path: Path):
         max_batches=2000,
         min_time_advance=0,
     )
-    assert not result.done or len(driver.decisions) >= 0
-    # Should have at least one focal decision early in the day for a normal spawn.
+    assert not result.done
     focal = [d for d in driver.decisions if d.scope == "focal"]
     assert len(focal) >= 1
     assert focal[0].probs.shape[0] == 36
+    assert result.focal_decisions
     assert driver.recording() is not None

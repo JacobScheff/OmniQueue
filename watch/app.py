@@ -53,8 +53,6 @@ WATCH_SLIDER_H = 18
 WATCH_MUST_W = 36
 WATCH_MUST_H = 22
 
-# Colors
-BG = (24, 28, 34)
 PANEL = (32, 38, 46)
 TEXT = (230, 230, 230)
 MUTED = (140, 150, 160)
@@ -79,6 +77,19 @@ CHECK_ON = (80, 180, 100)
 def _default_weights() -> np.ndarray:
     pops = np.array([float(r["popularity"]) for r in config.RIDES], dtype=np.float32)
     return np.clip(pops, 0.0, WEIGHT_SLIDER_MAX)
+
+
+def _fit_text(font, text: str, max_w: int) -> str:
+    if font.size(text)[0] <= max_w:
+        return text
+    while text and font.size(text + "…")[0] > max_w:
+        text = text[:-1]
+    return text + "…" if text else ""
+
+
+def _weight_from_track_x(mx: int, track_x: int, track_w: int) -> float:
+    t = (mx - track_x) / max(1, track_w)
+    return float(np.clip(t * WEIGHT_SLIDER_MAX, 0.0, WEIGHT_SLIDER_MAX))
 
 
 class WatchApp:
@@ -123,13 +134,14 @@ class WatchApp:
         self.dragging_slider_rid: int | None = None
         self.dragging_timeline = False
         self.queue_pause_latched = False
+        self._edit_rect = None
+        self._edit_row_h = 0
 
-    def _checkpoint_or_none(self) -> str | None:
-        text = (self.checkpoint or "").strip()
-        return text or None
+    def _checkpoint_path(self) -> str:
+        return (self.checkpoint or "").strip()
 
     def _validate_ppo(self) -> None:
-        path = self._checkpoint_or_none()
+        path = self._checkpoint_path()
         if not path:
             raise FileNotFoundError(
                 "PPO model path is required. Set it in Setup or pass --model."
@@ -156,7 +168,7 @@ class WatchApp:
                 seed=self.seed,
                 profile=self.profile,
                 crowd_router=self.crowd_router,
-                checkpoint=self._checkpoint_or_none() or "",
+                checkpoint=self._checkpoint_path(),
                 device=self.device,
                 sample_interval_sec=self.sample_interval,
             )
@@ -205,7 +217,10 @@ class WatchApp:
         if self.driver.done:
             return
         if skip:
-            result = self.driver.skip_to_next_focal_decision()
+            result = self.driver.advance_until(
+                stop_on_queue=True,
+                stop_on_focal_decision=True,
+            )
         elif initial:
             result = self.driver.advance_until(
                 stop_on_queue=True,
@@ -369,6 +384,22 @@ class WatchApp:
                 screen, (20, 20, 20), (knob_x, track.centery), track.h // 2 + _s(2), 1
             )
 
+        def watch_edit_track_rect(edit_rect: pygame.Rect, row_y: int, row_h: int) -> pygame.Rect:
+            return pygame.Rect(
+                edit_rect.right - _s(WATCH_MUST_W) - _s(10) - _s(WATCH_SLIDER_W),
+                row_y + (row_h - _s(WATCH_SLIDER_H)) // 2,
+                _s(WATCH_SLIDER_W),
+                _s(WATCH_SLIDER_H),
+            )
+
+        def watch_edit_must_rect(edit_rect: pygame.Rect, row_y: int, row_h: int) -> pygame.Rect:
+            return pygame.Rect(
+                edit_rect.right - _s(WATCH_MUST_W) - _s(4),
+                row_y + (row_h - _s(WATCH_MUST_H)) // 2,
+                _s(WATCH_MUST_W),
+                _s(WATCH_MUST_H),
+            )
+
         def draw_button(rect: pygame.Rect, label: str, color) -> None:
             pygame.draw.rect(screen, color, rect, border_radius=_s(6))
             pygame.draw.rect(screen, (20, 20, 20), rect, 1, border_radius=_s(6))
@@ -408,12 +439,7 @@ class WatchApp:
                 w = float(self.profile.preference_weights[rid])
                 md = bool(self.profile.must_dos[rid])
                 col = MUST_AMBER if md else TEXT
-                label = ("★ " if md else "  ") + name
-                # Truncate by pixel width so the large slider stays fully visible.
-                while label and font.size(label)[0] > name_max_w:
-                    label = label[:-1]
-                if label != (("★ " if md else "  ") + name) and len(label) > 1:
-                    label = label[:-1] + "…"
+                label = _fit_text(font, ("★ " if md else "  ") + name, name_max_w)
                 screen.blit(
                     font.render(label, True, col),
                     (pref_list.x + _s(10), y + (pref_row_h - font.get_height()) // 2),
@@ -424,13 +450,14 @@ class WatchApp:
                 val = small.render(f"{w:.0f}", True, MUTED)
                 screen.blit(val, (track.x - val.get_width() - _s(8), track.centery - val.get_height() // 2))
                 md_box = setup_must_rect(y)
+                must_label = "MUST" if md else "must"
                 pygame.draw.rect(
                     screen, CHECK_ON if md else TRACK, md_box, border_radius=_s(6)
                 )
                 screen.blit(
-                    bold.render("MUST" if md else "must", True, TEXT),
+                    bold.render(must_label, True, TEXT),
                     (
-                        md_box.x + (md_box.w - bold.size("MUST" if md else "must")[0]) // 2,
+                        md_box.x + (md_box.w - bold.size(must_label)[0]) // 2,
                         md_box.y + (md_box.h - bold.get_height()) // 2,
                     ),
                 )
@@ -614,10 +641,6 @@ class WatchApp:
                 )
                 pygame.draw.rect(screen, ROW_BG, edit_rect, border_radius=_s(4))
                 erow = _s(WATCH_EDIT_ROW_H)
-                e_slider_w = _s(WATCH_SLIDER_W)
-                e_slider_h = _s(WATCH_SLIDER_H)
-                e_must_w = _s(WATCH_MUST_W)
-                e_must_h = _s(WATCH_MUST_H)
                 estart = int(self.pref_scroll // erow)
                 evis = edit_rect.h // erow
                 for i in range(estart, min(len(self.sorted_pref_ids), estart + evis)):
@@ -629,31 +652,24 @@ class WatchApp:
                         small.render(config.RIDES[rid]["name"][:16], True, MUST_AMBER if md else TEXT),
                         (edit_rect.x + _s(4), ey + (erow - small.get_height()) // 2),
                     )
-                    track = pygame.Rect(
-                        edit_rect.right - e_must_w - _s(10) - e_slider_w,
-                        ey + (erow - e_slider_h) // 2,
-                        e_slider_w,
-                        e_slider_h,
+                    draw_weight_slider(watch_edit_track_rect(edit_rect, ey, erow), w)
+                    pygame.draw.rect(
+                        screen,
+                        CHECK_ON if md else TRACK,
+                        watch_edit_must_rect(edit_rect, ey, erow),
+                        border_radius=_s(4),
                     )
-                    draw_weight_slider(track, w)
-                    mb = pygame.Rect(
-                        edit_rect.right - e_must_w - _s(4),
-                        ey + (erow - e_must_h) // 2,
-                        e_must_w,
-                        e_must_h,
-                    )
-                    pygame.draw.rect(screen, CHECK_ON if md else TRACK, mb, border_radius=_s(4))
                 y_cursor = edit_rect.bottom + _s(8)
-                draw_watch.edit_rect = edit_rect  # type: ignore[attr-defined]
-                draw_watch.edit_row_h = erow  # type: ignore[attr-defined]
+                self._edit_rect = edit_rect
+                self._edit_row_h = erow
             else:
                 screen.blit(
                     small.render("Scrubbing past — prefs locked", True, MUTED),
                     (sidebar_x + _s(12), y_cursor),
                 )
                 y_cursor += _s(28)
-                draw_watch.edit_rect = None  # type: ignore[attr-defined]
-                draw_watch.edit_row_h = _s(WATCH_EDIT_ROW_H)  # type: ignore[attr-defined]
+                self._edit_rect = None
+                self._edit_row_h = _s(WATCH_EDIT_ROW_H)
 
             # Probability panel for selected mark
             screen.blit(bold.render("Decision probs", True, TEXT), (sidebar_x + _s(12), y_cursor))
@@ -735,53 +751,36 @@ class WatchApp:
                 y = pref_list.y + (i - start) * pref_row_h
                 md_box = setup_must_rect(y)
                 track = setup_track_rect(y)
-                # Expand vertical hit box slightly around the track/knob.
-                hit_track = track.inflate(0, _s(10))
                 if md_box.collidepoint(mx, my):
                     self.profile.must_dos[rid] = 0 if self.profile.must_dos[rid] else 1
-                elif hit_track.collidepoint(mx, my):
+                elif track.inflate(0, _s(10)).collidepoint(mx, my):
                     self.dragging_slider_rid = rid
-                    t = (mx - track.x) / max(1, track.w)
-                    self.profile.preference_weights[rid] = float(
-                        np.clip(t * WEIGHT_SLIDER_MAX, 0.0, WEIGHT_SLIDER_MAX)
+                    self.profile.preference_weights[rid] = _weight_from_track_x(
+                        mx, track.x, track.w
                     )
-            else:
-                if not self.timeline.can_edit_prefs():
-                    return
-                edit_rect = getattr(draw_watch, "edit_rect", None)
-                erow = int(getattr(draw_watch, "edit_row_h", _s(WATCH_EDIT_ROW_H)))
-                if edit_rect is None or not edit_rect.collidepoint(mx, my):
-                    return
-                e_slider_w = _s(WATCH_SLIDER_W)
-                e_slider_h = _s(WATCH_SLIDER_H)
-                e_must_w = _s(WATCH_MUST_W)
-                e_must_h = _s(WATCH_MUST_H)
-                estart = int(self.pref_scroll // erow)
-                i = estart + (my - edit_rect.y) // erow
-                if i < 0 or i >= len(self.sorted_pref_ids):
-                    return
-                rid = self.sorted_pref_ids[i]
-                ey = edit_rect.y + (i - estart) * erow
-                track = pygame.Rect(
-                    edit_rect.right - e_must_w - _s(10) - e_slider_w,
-                    ey + (erow - e_slider_h) // 2,
-                    e_slider_w,
-                    e_slider_h,
+                return
+
+            if not self.timeline.can_edit_prefs() or self._edit_rect is None:
+                return
+            edit_rect = self._edit_rect
+            erow = self._edit_row_h or _s(WATCH_EDIT_ROW_H)
+            if not edit_rect.collidepoint(mx, my):
+                return
+            estart = int(self.pref_scroll // erow)
+            i = estart + (my - edit_rect.y) // erow
+            if i < 0 or i >= len(self.sorted_pref_ids):
+                return
+            rid = self.sorted_pref_ids[i]
+            ey = edit_rect.y + (i - estart) * erow
+            track = watch_edit_track_rect(edit_rect, ey, erow)
+            mb = watch_edit_must_rect(edit_rect, ey, erow)
+            if mb.collidepoint(mx, my):
+                self.profile.must_dos[rid] = 0 if self.profile.must_dos[rid] else 1
+            elif track.inflate(0, _s(8)).collidepoint(mx, my):
+                self.dragging_slider_rid = rid
+                self.profile.preference_weights[rid] = _weight_from_track_x(
+                    mx, track.x, track.w
                 )
-                mb = pygame.Rect(
-                    edit_rect.right - e_must_w - _s(4),
-                    ey + (erow - e_must_h) // 2,
-                    e_must_w,
-                    e_must_h,
-                )
-                if mb.collidepoint(mx, my):
-                    self.profile.must_dos[rid] = 0 if self.profile.must_dos[rid] else 1
-                elif track.inflate(0, _s(8)).collidepoint(mx, my):
-                    self.dragging_slider_rid = rid
-                    t = (mx - track.x) / max(1, track.w)
-                    self.profile.preference_weights[rid] = float(
-                        np.clip(t * WEIGHT_SLIDER_MAX, 0.0, WEIGHT_SLIDER_MAX)
-                    )
 
         running = True
         while running:
@@ -882,19 +881,14 @@ class WatchApp:
                         rid = self.dragging_slider_rid
                         if self.mode == "setup":
                             track = setup_track_rect(0)
-                            t = (mx - track.x) / max(1, track.w)
-                        else:
-                            edit_rect = getattr(draw_watch, "edit_rect", None)
-                            e_slider_w = _s(WATCH_SLIDER_W)
-                            e_must_w = _s(WATCH_MUST_W)
-                            if edit_rect is not None:
-                                track_x = edit_rect.right - e_must_w - _s(10) - e_slider_w
-                                t = (mx - track_x) / max(1, e_slider_w)
-                            else:
-                                t = 0.0
-                        self.profile.preference_weights[rid] = float(
-                            np.clip(t * WEIGHT_SLIDER_MAX, 0.0, WEIGHT_SLIDER_MAX)
-                        )
+                            self.profile.preference_weights[rid] = _weight_from_track_x(
+                                mx, track.x, track.w
+                            )
+                        elif self._edit_rect is not None:
+                            track = watch_edit_track_rect(self._edit_rect, 0, 1)
+                            self.profile.preference_weights[rid] = _weight_from_track_x(
+                                mx, track.x, track.w
+                            )
                     if self.dragging_timeline and self.mode == "watch":
                         frac = (mx - slider.x) / max(1, slider.w)
                         self.timeline.playhead_sec = scrub_to_frac(

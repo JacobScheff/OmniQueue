@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
@@ -18,16 +19,12 @@ class PPOPolicy:
 
     @torch.no_grad()
     def act(self, obs_flat) -> int:
-        import numpy as np
-
-        actions, _ = self.act_with_probs(obs_flat)
-        return int(actions)
+        action, _ = self.act_with_probs(obs_flat)
+        return int(action)
 
     @torch.no_grad()
-    def act_with_probs(self, obs_flat) -> tuple[int, "np.ndarray"]:
+    def act_with_probs(self, obs_flat) -> tuple[int, np.ndarray]:
         """Return (argmax action, masked softmax probabilities) for one flat obs."""
-        import numpy as np
-
         obs = torch.tensor(np.asarray(obs_flat), dtype=torch.float32, device=self.device).unsqueeze(0)
         guest, ride, env = obs_flat_to_tensors(obs)
         logits, _, _ = forward_with_mask(self.model, guest, ride, env)
@@ -36,17 +33,14 @@ class PPOPolicy:
         return action, probs.cpu().numpy()
 
     @torch.no_grad()
-    def act_batch(self, obs_batch) -> "np.ndarray":
+    def act_batch(self, obs_batch) -> np.ndarray:
         actions, _ = self.act_batch_with_probs(obs_batch)
         return actions
 
     @torch.no_grad()
-    def act_batch_with_probs(self, obs_batch) -> tuple["np.ndarray", "np.ndarray"]:
+    def act_batch_with_probs(self, obs_batch) -> tuple[np.ndarray, np.ndarray]:
         """Return (actions [G], probs [G, A]) for a co-timed PPO batch."""
-        import numpy as np
-
         obs = torch.tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
-        # Co-timed batches use joint coordinator attention.
         guest, ride, env = obs_group_to_tensors(obs)
         logits, _, _ = forward_with_mask(self.model, guest, ride, env)
         probs = torch.softmax(logits[0], dim=-1)  # (G, A)

@@ -33,21 +33,9 @@ class TimelineState:
             out.append((i, m))
         return out
 
-    def marks_at_or_before(self, sec: float) -> list[tuple[int, DecisionMark]]:
-        return [(i, m) for i, m in self.visible_marks() if float(m.sec) <= sec + 1e-6]
-
-    def nearest_mark(self, sec: float, max_dist: float = 90.0) -> int | None:
-        best_i = None
-        best_d = max_dist
-        for i, m in self.visible_marks():
-            d = abs(float(m.sec) - sec)
-            if d < best_d:
-                best_d = d
-                best_i = i
-        return best_i
 
 def completion_counts_at(completions: list, party_id: int, sec: float, num_rides: int) -> list[int]:
-    """Count focal ride completions with event.sec <= sec."""
+    """Count ride completions for ``party_id`` with event.sec <= sec."""
     counts = [0] * num_rides
     for ev in completions:
         if int(ev.party_id) != party_id:
@@ -84,18 +72,6 @@ def mark_index_for_click(
         if d <= best_d:
             best_d = d
             best = idx
-    return best
-
-
-def next_mark_after(decisions: list[DecisionMark], sec: float, scope: str) -> DecisionMark | None:
-    """Next decision strictly after sec for the given marks scope."""
-    best = None
-    for m in decisions:
-        if scope == "focal" and m.scope != "focal":
-            continue
-        if float(m.sec) > sec + 1e-6:
-            if best is None or m.sec < best.sec:
-                best = m
     return best
 
 

@@ -20,7 +20,6 @@ class DecisionMark:
     party_id: int
     action: int
     probs: np.ndarray  # (NUM_ACTIONS,)
-    wait_snapshot: np.ndarray | None = None  # optional per-ride waits at decision
 
 
 @dataclass
@@ -45,7 +44,6 @@ class WatchRun:
     profile: FocalProfile
     park: ParkScore
     focal: FocalScore
-    itinerary: list[tuple[int, int]] = field(default_factory=list)
     decisions: list[DecisionMark] = field(default_factory=list)
     recording: Any | None = None
 
@@ -56,6 +54,3 @@ class WatchStore:
 
     def add(self, run: WatchRun) -> None:
         self.runs.append(run)
-
-    def clear(self) -> None:
-        self.runs.clear()
