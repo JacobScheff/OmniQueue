@@ -48,6 +48,8 @@ python training/ppo_train.py \
 `--init-checkpoint` loads **model weights only** into the PPO agent (fresh Adam). Replacing `agent.model` with a newly constructed module would orphan the optimizer and silently freeze training.
 All PPO hyperparameters (`PPO_LEARNING_RATE`, `PPO_GAMMA`, `PPO_GAE_LAMBDA`, `PPO_CLIP_COEF`, etc.) are configured in `config.py`.
 
+**Checkpoint compatibility:** guest feature dim is **46** (`FLAT_OBS_DIM=322`). Older BC/PPO checkpoints trained with dim 45 will not load; re-run `training/bc_train.py` after pulling this change.
+
 Each **update** simulates `--num-envs` full park days (8 AM–11 PM), then runs PPO on up to `PPO_SUBSAMPLE_SIZE` random routing decisions per day. Rollouts use the native C++ simulator with batched policy inference (`ParkEnv.exchange_batch`, batch size `PPO_INFERENCE_BATCH_SIZE`) so the DES stays in C++ and PyTorch runs once per batch instead of once per routing step.
 
 Expect ~10–60 seconds per rollout day depending on hardware.
