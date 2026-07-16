@@ -27,6 +27,14 @@ python watch.py --seed 42 --model checkpoints/ppo/ppo_final.pt --crowd heuristic
 
 Missing / invalid model → hard error.
 
+**Build note:** watch needs a rebuilt `_park_sim` (adds `play_focal_state` / `play_update_focal_preferences`). After pulling this branch:
+
+```bash
+pip install -e ".[viz]"
+```
+
+If you see `ParkEnv has no attribute 'play_focal_state'`, the extension is stale — rebuild as above.
+
 ## Setup UI
 
 - Focal **preference sliders** + **must-do** flags (crowd parties keep normal randomized spawn prefs)

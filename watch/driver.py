@@ -32,6 +32,21 @@ def _require_native():
     return _park_sim
 
 
+def _require_watch_apis(park_sim) -> None:
+    """Fail fast if the installed extension predates watch-mode bindings."""
+    required = (
+        "play_focal_state",
+        "play_focal_ride_history",
+        "play_update_focal_preferences",
+    )
+    missing = [name for name in required if not hasattr(park_sim.ParkEnv, name)]
+    if missing:
+        raise RuntimeError(
+            "Installed _park_sim is missing watch APIs "
+            f"({', '.join(missing)}). Rebuild the extension: pip install -e ."
+        )
+
+
 @dataclass
 class WatchStepResult:
     done: bool
@@ -73,6 +88,7 @@ class WatchDriver:
         self.sample_interval_sec = int(sample_interval_sec)
 
         self._park_sim = _require_native()
+        _require_watch_apis(self._park_sim)
         from router.ppo import PPOPolicy
 
         self._policy = PPOPolicy(self.checkpoint, device=device)

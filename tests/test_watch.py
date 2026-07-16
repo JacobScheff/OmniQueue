@@ -39,6 +39,19 @@ def _profile() -> FocalProfile:
     )
 
 
+def test_require_watch_apis_message():
+    from watch.driver import _require_watch_apis
+
+    class FakeEnv:
+        pass
+
+    class FakeMod:
+        ParkEnv = FakeEnv
+
+    with pytest.raises(RuntimeError, match="pip install -e"):
+        _require_watch_apis(FakeMod())
+
+
 @pytestmark_native
 def test_play_update_focal_preferences_keeps_history():
     import _park_sim
