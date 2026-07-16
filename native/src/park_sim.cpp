@@ -698,6 +698,74 @@ public:
         }
     }
 
+    /** Update focal prefs/must-dos without resetting location, history, or clock. */
+    void update_focal_preferences(const FocalPartyConfig& cfg) {
+        if (focal_party_id_ < 0 || parties_.count <= 0) {
+            return;
+        }
+        const int pid = focal_party_id_;
+        std::array<float, kNumRides> prefs{};
+        std::array<uint8_t, kNumRides> must_do{};
+        float sum = 0.0f;
+        int must_assigned = 0;
+        for (int i = 0; i < kNumRides; ++i) {
+            must_do[i] = cfg.must_dos[i] ? 1 : 0;
+            if (must_do[i]) {
+                ++must_assigned;
+            }
+            float w = std::max(0.0f, cfg.preference_weights[i]);
+            if (must_do[i]) {
+                w *= static_cast<float>(kMustDoPrefBoost);
+            }
+            prefs[i] = w;
+            sum += w;
+        }
+        if (sum <= 0.0f) {
+            for (int i = 0; i < kNumRides; ++i) {
+                prefs[i] = 1.0f;
+            }
+            sum = static_cast<float>(kNumRides);
+        }
+        for (int i = 0; i < kNumRides; ++i) {
+            prefs[i] /= sum;
+        }
+
+        // Remaining must-dos: UI flags that have not yet been completed this day.
+        std::array<uint8_t, kNumRides> must_remaining{};
+        for (int i = 0; i < kNumRides; ++i) {
+            must_remaining[i] =
+                (must_do[i] && parties_.ride_history[pid][i] == 0) ? 1 : 0;
+        }
+
+        parties_.preferences[pid] = prefs;
+        parties_.must_do_remaining[pid] = must_remaining;
+        compute_preference_order(prefs, must_remaining, parties_.preference_order[pid]);
+        compute_balk_sec(prefs, parties_.balk_sec[pid]);
+
+        focal_stats_.must_dos_assigned = must_assigned;
+        focal_stats_.preferences = prefs;
+        focal_stats_.must_dos_initial = must_do;
+        focal_top3_ = {};
+        for (int k = 0; k < 3 && k < kNumRides; ++k) {
+            focal_top3_[static_cast<size_t>(k)] = parties_.preference_order[pid][k];
+        }
+    }
+
+    int env_focal_state() const {
+        if (focal_party_id_ < 0 || focal_party_id_ >= parties_.count) {
+            return 0;
+        }
+        return static_cast<int>(parties_.state[focal_party_id_]);
+    }
+
+    std::array<int16_t, kNumRides> env_focal_ride_history() const {
+        std::array<int16_t, kNumRides> out{};
+        if (focal_party_id_ >= 0 && focal_party_id_ < parties_.count) {
+            out = parties_.ride_history[focal_party_id_];
+        }
+        return out;
+    }
+
     void env_begin(uint64_t seed) {
         hold_routing_ = true;
         hybrid_crowd_heuristic_ = false;
@@ -1986,6 +2054,18 @@ void ParkEnv::play_apply_ppo_actions(const std::vector<int>& actions) {
         // Skip reward accounting; interactive play does not train.
         impl_->sim->env_apply_action(action);
     }
+}
+
+void ParkEnv::play_update_focal_preferences(const FocalPartyConfig& focal) {
+    impl_->sim->update_focal_preferences(focal);
+}
+
+int ParkEnv::play_focal_state() const {
+    return impl_->sim->env_focal_state();
+}
+
+std::array<int16_t, kNumRides> ParkEnv::play_focal_ride_history() const {
+    return impl_->sim->env_focal_ride_history();
 }
 
 const DayRecording& ParkEnv::play_recording() const {

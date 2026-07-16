@@ -293,6 +293,24 @@ PYBIND11_MODULE(_park_sim, m) {
         .def("play_apply_human_action", &park::ParkEnv::play_apply_human_action, py::arg("action"))
         .def("play_apply_ppo_actions", &park::ParkEnv::play_apply_ppo_actions, py::arg("actions"))
         .def(
+            "play_update_focal_preferences",
+            &park::ParkEnv::play_update_focal_preferences,
+            py::arg("focal"),
+            "Update focal preference weights / must-dos mid-day without resetting location or history.")
+        .def(
+            "play_focal_state",
+            &park::ParkEnv::play_focal_state,
+            "Focal PartyState as int: Walking=1, InQueue=2, OnRide=4, Evacuating=8, Exited=16.")
+        .def(
+            "play_focal_ride_history",
+            [](const park::ParkEnv& env) {
+                const auto hist = env.play_focal_ride_history();
+                py::array_t<int16_t> arr(park::kNumRides);
+                std::memcpy(arr.mutable_data(), hist.data(), park::kNumRides * sizeof(int16_t));
+                return arr;
+            },
+            "Per-ride completion counts for the focal guest.")
+        .def(
             "play_recording",
             &park::ParkEnv::play_recording,
             py::return_value_policy::reference_internal)
