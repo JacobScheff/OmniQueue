@@ -305,6 +305,12 @@ public:
     PlayStepResult play_advance();
     void play_apply_human_action(int action);
     void play_apply_ppo_actions(const std::vector<int>& actions);
+    /** Mid-day preference / must-do update for the focal guest (keeps location & history). */
+    void play_update_focal_preferences(const FocalPartyConfig& focal);
+    /** Focal PartyState as int (Walking=1, InQueue=2, OnRide=4, Evacuating=8, Exited=16). */
+    int play_focal_state() const;
+    /** Per-ride completion counts for the focal guest (length NUM_RIDES). */
+    std::array<int16_t, kNumRides> play_focal_ride_history() const;
     const DayRecording& play_recording() const;
     FocalPartyStats play_focal_stats() const;
     int play_now_sec() const;
