@@ -205,6 +205,8 @@ class WatchApp:
         self.queue_pause_latched = False
         self._edit_rect = None
         self._edit_row_h = 0
+        self.prefs_dropdown_open = False
+        self._prefs_dropdown_btn = None
 
     def _checkpoint_path(self) -> str:
         return (self.checkpoint or "").strip()
@@ -248,6 +250,7 @@ class WatchApp:
                 marks_scope="focal",
             )
             self.queue_pause_latched = False
+            self.prefs_dropdown_open = False
             self.mode = "watch"
             self._grow_frontier(initial=True)
         except Exception as exc:  # noqa: BLE001
@@ -342,12 +345,17 @@ class WatchApp:
         )
         self.timeline.paused = True
         run = self.driver.to_watch_run(label="watch")
+        # Keep summary only — do not retain the full day recording in history.
+        run.recording = None
         self.store.add(run)
         self.status_msg = "Day complete — " + format_focal_line(run.focal)
         self.mode = "results"
 
     def apply_pref_edits(self) -> None:
         if self.driver is None or not self.timeline.can_edit_prefs():
+            return
+        if not self.prefs_dropdown_open:
+            self.prefs_dropdown_open = True
             return
         self.driver.update_preferences(
             self.profile.preference_weights, self.profile.must_dos
@@ -416,7 +424,7 @@ class WatchApp:
 
         # Results
         btn_back_setup = pygame.Rect(pad, win_h - _s(50), _s(160), _s(36))
-        hist_list = pygame.Rect(pad, _s(60), win_w - pad * 2, win_h - _s(130))
+        hist_list = pygame.Rect(pad, _s(72), win_w - pad * 2, win_h - _s(140))
 
         park_surface = _build_park_surface(pygame)
 
@@ -581,17 +589,19 @@ class WatchApp:
                     if g.get("dest") is not None:
                         dx, dy = _xy(*g["dest"])
                         pygame.draw.line(
-                            screen, FOCAL_GLOW, (gx, gy), (dx, dy), max(1, _s(2))
+                            screen, FOCAL_GLOW, (gx, gy), (dx, dy), max(2, _s(3))
                         )
-                    pulse = abs(math.sin(pygame.time.get_ticks() / 220.0)) * 7
-                    pygame.draw.circle(screen, FOCAL_GLOW, (gx, gy), _s(16 + pulse))
-                    pygame.draw.circle(screen, ACCENT, (gx, gy), _s(11))
+                    pulse = abs(math.sin(pygame.time.get_ticks() / 200.0)) * 10
+                    # Large high-contrast marker so it stays visible over crowd dots.
+                    pygame.draw.circle(screen, (255, 220, 80), (gx, gy), _s(22 + pulse))
+                    pygame.draw.circle(screen, FOCAL_GLOW, (gx, gy), _s(18 + pulse * 0.5))
+                    pygame.draw.circle(screen, ACCENT, (gx, gy), _s(14))
                     pygame.draw.circle(
-                        screen, (20, 20, 20), (gx, gy), _s(16 + pulse), max(1, _s(2))
+                        screen, (20, 20, 20), (gx, gy), _s(22 + pulse), max(2, _s(3))
                     )
-                    pygame.draw.circle(screen, (255, 255, 255), (gx, gy), _s(4))
+                    pygame.draw.circle(screen, (255, 255, 255), (gx, gy), _s(5))
                     you = bold.render("FOCAL", True, (20, 20, 20), ACCENT)
-                    screen.blit(you, (gx + _s(16), gy - _s(14)))
+                    screen.blit(you, (gx + _s(20), gy - _s(16)))
 
             # Control bar
             pygame.draw.rect(screen, PANEL, (0, PARK_HEIGHT, PARK_WIDTH, CONTROL_HEIGHT))
@@ -674,17 +684,28 @@ class WatchApp:
             )
             list_top = _s(64)
             row_h = _s(26)
-            # Leave room for decision probs (+ optional pref editor) at the bottom.
-            probs_reserve = _s(250)
-            edit_block = (_s(34) + _s(160)) if can_edit else _s(28)
-            list_h = max(_s(180), win_h - list_top - probs_reserve - edit_block - _s(12))
+            probs_reserve = _s(230)
+            dropdown_h = _s(34)
+            can_open_prefs = can_edit
+            if not can_open_prefs:
+                self.prefs_dropdown_open = False
+            edit_h = _s(280) if (can_open_prefs and self.prefs_dropdown_open) else 0
+            list_h = max(
+                _s(120),
+                win_h - list_top - probs_reserve - dropdown_h - edit_h - _s(16),
+            )
             list_rect = pygame.Rect(sidebar_x + _s(8), list_top, sidebar_w - _s(16), list_h)
             pygame.draw.rect(screen, ROW_BG, list_rect, border_radius=_s(4))
+            # Clip so ride rows never paint outside the list box.
+            prev_clip = screen.get_clip()
+            screen.set_clip(list_rect)
             start = int(self.ride_scroll // row_h)
             visible = list_rect.h // row_h + 1
             for i in range(start, min(len(order), start + visible)):
                 rid = order[i]
                 y = list_rect.y + (i - start) * row_h
+                if y + row_h < list_rect.y or y > list_rect.bottom:
+                    continue
                 n = counts[rid]
                 md = bool(self.profile.must_dos[rid])
                 if n > 0:
@@ -705,29 +726,45 @@ class WatchApp:
                     cnt,
                     (list_rect.right - cnt.get_width() - _s(8), y + (row_h - cnt.get_height()) // 2),
                 )
+            screen.set_clip(prev_clip)
 
-            y_cursor = list_rect.bottom + _s(10)
-            if can_edit:
-                screen.blit(
-                    bold.render("Edit prefs (at frontier)", True, ACCENT),
-                    (sidebar_x + _s(12), y_cursor),
-                )
-                y_cursor += _s(24)
-                edit_h = _s(160)
+            y_cursor = list_rect.bottom + _s(8)
+            # Prefs dropdown toggle (only interactive at the live frontier while paused).
+            drop_label = (
+                ("▲ Edit prefs" if self.prefs_dropdown_open else "▼ Edit prefs")
+                if can_open_prefs
+                else "Edit prefs (pause at frontier)"
+            )
+            drop_btn = pygame.Rect(sidebar_x + _s(8), y_cursor, sidebar_w - _s(16), dropdown_h)
+            self._prefs_dropdown_btn = drop_btn
+            draw_button(
+                drop_btn,
+                drop_label,
+                BTN2 if can_open_prefs else (70, 70, 75),
+            )
+            y_cursor = drop_btn.bottom + _s(6)
+
+            if can_open_prefs and self.prefs_dropdown_open:
                 edit_rect = pygame.Rect(
                     sidebar_x + _s(8), y_cursor, sidebar_w - _s(16), edit_h
                 )
                 pygame.draw.rect(screen, ROW_BG, edit_rect, border_radius=_s(4))
                 erow = _s(WATCH_EDIT_ROW_H)
                 estart = int(self.pref_scroll // erow)
-                evis = edit_rect.h // erow
+                evis = max(1, edit_rect.h // erow)
+                edit_clip = screen.get_clip()
+                screen.set_clip(edit_rect)
                 for i in range(estart, min(len(self.sorted_pref_ids), estart + evis)):
                     rid = self.sorted_pref_ids[i]
                     ey = edit_rect.y + (i - estart) * erow
                     md = bool(self.profile.must_dos[rid])
                     w = float(self.profile.preference_weights[rid])
                     screen.blit(
-                        small.render(config.RIDES[rid]["name"][:16], True, MUST_AMBER if md else TEXT),
+                        small.render(
+                            config.RIDES[rid]["name"][:16],
+                            True,
+                            MUST_AMBER if md else TEXT,
+                        ),
                         (edit_rect.x + _s(4), ey + (erow - small.get_height()) // 2),
                     )
                     draw_weight_slider(watch_edit_track_rect(edit_rect, ey, erow), w)
@@ -737,15 +774,11 @@ class WatchApp:
                         watch_edit_must_rect(edit_rect, ey, erow),
                         border_radius=_s(4),
                     )
+                screen.set_clip(edit_clip)
                 y_cursor = edit_rect.bottom + _s(8)
                 self._edit_rect = edit_rect
                 self._edit_row_h = erow
             else:
-                screen.blit(
-                    small.render("Scrubbing past — prefs locked", True, MUTED),
-                    (sidebar_x + _s(12), y_cursor),
-                )
-                y_cursor += _s(28)
                 self._edit_rect = None
                 self._edit_row_h = _s(WATCH_EDIT_ROW_H)
 
@@ -798,7 +831,11 @@ class WatchApp:
 
         def draw_results() -> None:
             screen.fill(PANEL)
-            screen.blit(title_f.render("Watch runs (this launch)", True, TEXT), (pad, _s(16)))
+            screen.blit(title_f.render("Watch runs (this launch only)", True, TEXT), (pad, _s(16)))
+            screen.blit(
+                small.render("Cleared when the program exits — nothing is written to disk.", True, MUTED),
+                (pad, _s(44)),
+            )
             draw_button(btn_back_setup, "Back to setup", BTN)
             pygame.draw.rect(screen, ROW_BG, hist_list, border_radius=_s(5))
             y = hist_list.y + _s(8) - self.history_scroll
@@ -838,7 +875,9 @@ class WatchApp:
                     )
                 return
 
-            if not self.timeline.can_edit_prefs() or self._edit_rect is None:
+            if not self.timeline.can_edit_prefs() or not self.prefs_dropdown_open:
+                return
+            if self._edit_rect is None:
                 return
             edit_rect = self._edit_rect
             erow = self._edit_row_h or _s(WATCH_EDIT_ROW_H)
@@ -917,9 +956,16 @@ class WatchApp:
                             )
                         elif btn_apply.collidepoint(mx, my):
                             self.apply_pref_edits()
+                        elif (
+                            self._prefs_dropdown_btn is not None
+                            and self._prefs_dropdown_btn.collidepoint(mx, my)
+                        ):
+                            if self.timeline.can_edit_prefs():
+                                self.prefs_dropdown_open = not self.prefs_dropdown_open
                         elif btn_setup_w.collidepoint(mx, my):
                             self.mode = "setup"
                             self.driver = None
+                            self.prefs_dropdown_open = False
                         elif slider.collidepoint(mx, my) or (
                             abs(my - slider.centery) <= _s(14)
                             and slider.x <= mx <= slider.right

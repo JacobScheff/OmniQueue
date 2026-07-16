@@ -202,9 +202,19 @@ def party_state_at(
         party = party_by_id.get(party_id)
     else:
         party = next((p for p in state.parties if int(p.party_id) == party_id), None)
+    # Live play/watch recordings only fill ``parties`` at day finalize. Walks are
+    # available earlier — treat a missing PartyInfo as spawn_sec=0 so the focal
+    # marker still tracks mid-day.
     if party is None:
-        return None
-    if sec < float(party.spawn_sec):
+        if party_id not in state.walks_by_party and sec > 0:
+            # No info and no walks yet: still allow party 0 at the entrance.
+            if party_id != 0:
+                return None
+        spawn_sec = 0.0
+    else:
+        spawn_sec = float(party.spawn_sec)
+
+    if sec < spawn_sec:
         return {"status": "Not arrived", "pos": None}
 
     idxs = state.walks_by_party.get(party_id, [])

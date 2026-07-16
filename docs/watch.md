@@ -6,7 +6,7 @@
 
 A **new** interactive program (separate from `play.py` and `visualize.py`) where you **watch** one **size-1 focal guest routed always by PPO** through a full-population park day. Background guests use the **heuristic** or the **same PPO checkpoint** (UI toggle). The day always runs **park open → close** (no enter/leave pickers).
 
-Sessions store runs **in memory only** for the process lifetime.
+Sessions store runs **in memory only** for the process lifetime (cleared on exit; nothing is written to disk).
 
 ## Run
 
@@ -51,10 +51,10 @@ If you see `ParkEnv has no attribute 'play_focal_state'`, the extension is stale
    - **×N** focal completion counts at the playhead
    - **Green** name once completed ≥ 1
    - **Amber** name for outstanding must-dos (until completed)
-4. **Timeline:** Play/Pause, scrub **backward** freely, forward by playing. Optional **Skip** jumps to the next focal PPO decision (or queue entry).
-5. **Decision marks** on the timeline (toggle **Focal** vs **All** = focal + crowd PPO). Click a mark to inspect the masked softmax distribution in the sidebar.
-6. **Preference edits** are allowed only when **paused at the recorded frontier** (cannot rewrite the past). Click **Apply prefs** to push weights/must-dos into the live sim for **future** decisions.
-7. When the focal guest **enters a queue**, playback **auto-pauses** at the frontier so you can adjust prefs before resuming.
+4. **Edit prefs** is a dropdown under the ride list. Closed by default (list fully expanded). Opening it shrinks the ride list and expands the preference editor. Editable only when paused at the live frontier.
+5. **Timeline:** Play/Pause, scrub **backward** freely, forward by playing. Optional **Skip** jumps to the next focal PPO decision (or queue entry).
+6. **Decision marks** on the timeline (toggle **Focal** vs **All** = focal + crowd PPO). Click a mark to inspect the masked softmax distribution in the sidebar.
+7. When the focal guest **enters a queue**, playback **auto-pauses** at the frontier so you can open Edit prefs before resuming.
 
 ## Mid-day preference API
 
