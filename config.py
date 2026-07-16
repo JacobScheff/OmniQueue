@@ -221,13 +221,13 @@ MAX_COORDINATOR_GUESTS = 34
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
 PPO_SAVE_EVERY = 500_000          # save checkpoint every N routing steps
-PPO_LEARNING_RATE = 1e-6
+PPO_LEARNING_RATE = 3e-5
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
 PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
 PPO_NUM_MINIBATCHES = 8           # PPO minibatch count per update
-PPO_UPDATE_EPOCHS = 1             # PPO epochs per day
-PPO_CLIP_COEF = 0.1               # PPO clipping epsilon
+PPO_UPDATE_EPOCHS = 3             # PPO epochs per day
+PPO_CLIP_COEF = 0.15              # PPO clipping epsilon
 PPO_ENT_COEF = 0.001              # entropy bonus coefficient
 PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
@@ -235,7 +235,7 @@ PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
 PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
 # C++ may return up to this many pending parties; the policy chunks them into
 # groups of MAX_COORDINATOR_GUESTS for the neural forward.
-PPO_INFERENCE_BATCH_SIZE = 256
+PPO_INFERENCE_BATCH_SIZE = 1024
 # Waves packed into one neural forward / optimizer step during PPO update.
 # Keep this small on laptop dGPUs: one large minibatch was retaining a giant
 # autograd graph (~30k transitions) and freezing the display every few seconds.
