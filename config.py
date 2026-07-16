@@ -245,16 +245,27 @@ PPO_UPDATE_YIELD_SEC = 0.05
 PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 
 # PPO reward shaping (mirrored in park_sim.hpp)
-# Dense wait variance: every routing step gets
-#   -PPO_WAIT_VAR_STEP_COEF * current_wait_variance / 1e6
-# (metrics samples every 300s are KPIs only; they no longer gate the reward).
-# Preference (secondary): on RideComplete, pending += scale * preference[ride]
-#   (+ must-do bonus); flushed on that party's next routing step.
-# Terminal: -avg_wait_variance/1000 - unfulfilled_must_do_penalty * remaining.
-PPO_WAIT_VAR_STEP_COEF = 0.002
-PPO_PREF_REWARD_SCALE = 0.01
-PPO_MUST_DO_COMPLETION_BONUS = 0.005
-PPO_UNFULFILLED_MUST_DO_PENALTY = 0.002
+# Objective: preferred + must-do rides done quickly per party (guest-weighted).
+# Wait variance is KPI/logging only — not in the training reward.
+#
+# On RideComplete (pending, flushed on that party's next routing step):
+#   time_factor = max(0, 1 - PPO_TIME_DECAY * (now - spawn) / DAY_SECONDS)
+#   bonus = (PPO_PREF_REWARD_SCALE * preference[ride]
+#            + PPO_MUST_DO_COMPLETION_BONUS if must-do) * time_factor
+#   if PPO_WEIGHT_BY_PARTY_SIZE: bonus *= party_size
+# Every routing step (party-local):
+#   -PPO_MUST_DO_URGENCY_COEF * remaining_must_dos
+#   -PPO_PREF_URGENCY_COEF * remaining_pref_mass  (prefs for rides with history==0)
+# Terminal:
+#   -PPO_UNFULFILLED_MUST_DO_PENALTY * (remaining / max(1, assigned))
+#   + flush remaining pending bonuses
+PPO_PREF_REWARD_SCALE = 0.05
+PPO_MUST_DO_COMPLETION_BONUS = 0.15
+PPO_TIME_DECAY = 0.75
+PPO_MUST_DO_URGENCY_COEF = 2e-5
+PPO_PREF_URGENCY_COEF = 1e-5
+PPO_WEIGHT_BY_PARTY_SIZE = True
+PPO_UNFULFILLED_MUST_DO_PENALTY = 2.0
 
 
 def ride_node_id(ride_id: int) -> int:

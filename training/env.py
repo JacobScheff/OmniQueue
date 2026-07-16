@@ -44,5 +44,8 @@ class ParkRoutingEnv(gym.Env):
                 "rides_completed": result.metrics.rides_completed,
                 "avg_wait_variance": result.metrics.avg_wait_variance(),
                 "rides_per_party": result.metrics.rides_per_party(),
+                "must_do_completion_rate": result.metrics.must_do_completion_rate(),
+                "avg_preference_score_per_guest": result.metrics.avg_preference_score_per_guest(),
+                "avg_must_do_latency_sec": result.metrics.avg_must_do_latency_sec(),
             }
         return obs, float(result.reward), terminated, truncated, info

@@ -57,7 +57,7 @@ Typical throughput is **~0.2s per full park day** (~50k guests) on modern hardwa
 - `ParkEnv` exposes `reset` / `step` / `exchange_batch` for PPO rollouts (batched policy inference from Python).
 - **Interactive / shadow play:** `ParkEnv.reset_play` + `play_advance` hybrid routing (focal human/heuristic/PPO, crowd heuristic or PPO), and `run_play_day` for heuristic crowd+focal with a custom focal profile. See `docs/interactive-play.md`.
 - **Watch mid-day prefs:** `ParkEnv.play_update_focal_preferences` updates the focal guest’s preference weights / must-dos without resetting location or ride history; `play_focal_state` / `play_focal_ride_history` expose live focal status. See `docs/watch.md`.
-- **Reward contract:** each routing step gets a **dense** wait-variance penalty (`-PPO_WAIT_VAR_STEP_COEF × var/1e6`), plus any **pending preference / must-do bonus** for the party being routed (earned at the previous `RideComplete`). Episode end adds `-avg_wait_variance/1000`, an unfulfilled must-do penalty, and any leftover pending preference. See `docs/training.md`.
+- **Reward contract:** each routing step applies a **dense party-local urgency** cost on remaining must-dos / unfinished preference mass, plus any **pending preference / must-do bonus** for the party being routed (earned at the previous `RideComplete`, time-decayed and optionally × `party_size`). Episode end adds a normalized unfulfilled must-do penalty and leftover pending preference. Wait variance is **not** rewarded. See `docs/training.md`.
 
 ## Notes
 

@@ -15,6 +15,11 @@ class DayMetrics:
     wait_variance_samples: list[float] = field(default_factory=list)
     mean_wait_samples: list[float] = field(default_factory=list)
     wall_time_sec: float = 0.0
+    must_dos_assigned: int = 0
+    must_dos_completed: int = 0
+    preference_score_sum: float = 0.0
+    must_do_latency_sum_sec: float = 0.0
+    must_do_latency_count: int = 0
 
     @property
     def rides_per_party(self) -> float:
@@ -37,3 +42,21 @@ class DayMetrics:
         if not self.mean_wait_samples:
             return 0.0
         return sum(self.mean_wait_samples) / len(self.mean_wait_samples)
+
+    @property
+    def must_do_completion_rate(self) -> float:
+        if self.must_dos_assigned <= 0:
+            return 1.0
+        return self.must_dos_completed / self.must_dos_assigned
+
+    @property
+    def avg_preference_score_per_guest(self) -> float:
+        if self.total_guests <= 0:
+            return 0.0
+        return self.preference_score_sum / self.total_guests
+
+    @property
+    def avg_must_do_latency_sec(self) -> float:
+        if self.must_do_latency_count <= 0:
+            return 0.0
+        return self.must_do_latency_sum_sec / self.must_do_latency_count

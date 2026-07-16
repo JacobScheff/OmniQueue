@@ -37,9 +37,14 @@ def main() -> None:
             steps += 1
             if terminated or truncated:
                 metrics = info.get("metrics", {})
+                must_rate = metrics.get("must_do_completion_rate", float("nan"))
+                pref = metrics.get("avg_preference_score_per_guest", float("nan"))
+                latency_min = float(metrics.get("avg_must_do_latency_sec", 0.0) or 0.0) / 60.0
                 print(
                     f"episode={ep + 1} steps={steps} reward={total_reward:.3f} "
                     f"rides={metrics.get('rides_completed', '?')} "
+                    f"must_do={must_rate:.3f} pref/guest={pref:.4f} "
+                    f"must_do_latency={latency_min:.1f}m "
                     f"wait_var={metrics.get('avg_wait_variance', 0):.1f}"
                 )
                 break
