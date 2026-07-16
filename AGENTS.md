@@ -65,6 +65,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | [training.md](docs/training.md) | `model.py`, `training/` | BC + PPO training and checkpoints |
 | [visualization.md](docs/visualization.md) | `visualize.py`, `record_day` | Pygame park-day replay |
 | [interactive-play.md](docs/interactive-play.md) | `play.py`, `play/` | Human-vs-AI interactive day, compare, benchmark |
+| [pref-mustdo-reward-plan.md](docs/pref-mustdo-reward-plan.md) | PPO / `ParkEnv` | Design plan: preference + must-do latency objective (ignore wait variance) |
 | [watch.md](docs/watch.md) | `watch.py`, `watch/` | PPO-focal watcher, timeline marks, mid-day prefs |
 
 ## Phase Roadmap
