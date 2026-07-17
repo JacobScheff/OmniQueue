@@ -1,12 +1,19 @@
+#include "iostream"
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
+#include <random>
 
 using namespace std;
 
+struct Street;
+
 struct Intersection {
     public:
-        Intersection(int id) : id(id) {}
+        Intersection(int x, int y) : x(x), y(y) {}
 
-        int id;
+        int x;
+        int y;
 
         vector<Street*> streets;
 };
@@ -21,29 +28,68 @@ struct Street {
 
 struct City {
     public:
-        City(int m, int n) {
-            for (int i = 0; i < m; i++) {
-                for (int j = 0; j < n; j++) {
-                    intersections.push_back(new Intersection(i * n + j));
+        City(int width, int height, int numIntersections, int seed = 42)
+            : width(width), height(height), numIntersections(numIntersections) {
+                int avgStreetsPerIntersection = 4;
+
+                std::default_random_engine generator(seed);
+                std::normal_distribution<double> distribution{avgStreetsPerIntersection, 1.0};
+
+                for (int i = 0; i < numIntersections; ++i) {
+                    int x = rand() % width;
+                    int y = rand() % height;
+                    intersections.push_back(new Intersection(x, y));
                 }
+
+                for (int i = 0; i < numIntersections; ++i) {
+                    int numStreets = int(distribution(generator));
+                    numStreets = max(1, numStreets);
+
+                    int currStreets = 0;
+                    if (intersectionToStreets.find(intersections[i]) == intersectionToStreets.end()) {
+                        intersectionToStreets[intersections[i]] = vector<Street*>();
+                    } else {
+                        currStreets = intersectionToStreets[intersections[i]].size();
+                    }
+
+                    int streetsToCreate = numStreets - currStreets;
+                    if (streetsToCreate <= 0) continue;
+
+                    // Sort intersections by distance to the current intersection
+                    vector<Intersection*> sortedIntersections = intersections;
+                    sort(sortedIntersections.begin(), sortedIntersections.end(), [i](Intersection* a, Intersection* b) {
+                        return sqrt(pow(a->x - intersections[i]->x, 2) + pow(a->y - intersections[i]->y, 2)) < sqrt(pow(b->x - intersections[i]->x, 2) + pow(b->y - intersections[i]->y, 2));
+                    });
+
+                    int k = 1; // Skip the current intersection
+                    for (int j = 0; j < numStreets - currStreets; ++j) {
+                        // Create new street between intersections[i] and the closest intersection that is not connected to it
+                        Intersection* targetIntersection = sortedIntersections[k];
+
+                        // Check if street from intersections[i] to targetIntersection or targetIntersection to intersections[i] already exists
+                        if (std::find(intersectionToStreets[intersections[i]].begin(), intersectionToStreets[intersections[i]].end(), Street(intersections[i], targetIntersection)) != intersectionToStreets[intersections[i]].end()) {
+                            continue;
+                        }
+
+                        if (std::find(intersectionToStreets[targetIntersection].begin(), intersectionToStreets[targetIntersection].end(), Street(targetIntersection, intersections[i])) != intersectionToStreets[targetIntersection].end()) {
+                            continue;
+                        }
+
+                        Street newStreet(intersections[i], targetIntersection);
+
+                        streets.insert(newStreet);
+                        intersectionToStreets[intersections[i]].push_back(newStreet);
+                        intersectionToStreets[targetIntersection].push_back(newStreet);
+                    }
+                }
+                
             }
 
-            // Add streets between intersections (horizontal and vertical)
-            for (int i = 0; i < m; i++) {
-                for (int j = 0; j < n - 1; j++) {
-                    streets.push_back(new Street(intersections[i * n + j], intersections[i * n + j + 1]));
-                }
-            }
-            for (int i = 0; i < m - 1; i++) {
-                for (int j = 0; j < n; j++) {
-                    streets.push_back(new Street(intersections[i * n + j], intersections[(i + 1) * n + j]));
-                }
-            }
-        };
+        int width;
+        int height;
+        int numIntersections;
 
-        void addStreet(Street* street);
-
-    private:
         vector<Intersection*> intersections;
-        vector<Street*> streets;
+        unordered_map<Intersection*, vector<Street>> intersectionToStreets;
+        unordered_set<Street> streets;
 };
