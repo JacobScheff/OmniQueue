@@ -1,15 +1,15 @@
 """Companion runtime settings — edit this file instead of using env vars.
 
-Paths may be absolute or relative to the process working directory.
-If MODEL_PATH does not exist, a random stub checkpoint is written there on first run.
+Restart the server after changing anything here (settings are read at startup).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-# Trained PPO checkpoint (.pt). Point this at your weights.
-MODEL_PATH = Path(__file__).resolve().parent / "model" / "ppo_live.pt"
+# Trained PPO checkpoint (.pt). Must be a real training save, not a stub.
+# This file lives next to settings.py, so this resolves to companion/model/<name>.pt
+MODEL_PATH = Path(__file__).resolve().parent / "model" / "ppo_step_2543143.pt"
 
 # Torch device for inference ("cpu" or "cuda").
 DEVICE = "cpu"

@@ -16,35 +16,60 @@ from Park.training.features import NUM_ACTIONS
 
 logger = logging.getLogger(__name__)
 
+# Dedicated path for auto-generated random weights — never overwrite MODEL_PATH.
+_STUB_PATH = Path(__file__).resolve().parents[1] / "model" / "_stub_random.pt"
+
 
 class Recommender:
     def __init__(self, checkpoint: Path | str | None = None, device: str | None = None) -> None:
         self.device = torch.device(device or settings.DEVICE)
-        path = self._resolve_checkpoint(checkpoint)
+        explicit = checkpoint is not None
+        path = Path(checkpoint) if explicit else Path(settings.MODEL_PATH)
         self.checkpoint_path = path
-        self.model, self.step, self.meta = self._load_or_create(path)
+        self.model, self.step, self.meta = self._load(path, allow_write_stub=explicit)
         self.model.eval()
         self.is_stub = bool(self.meta.get("stub"))
+        if self.is_stub:
+            logger.warning(
+                "Using STUB model (%s, step=%s). Replace companion/settings.py MODEL_PATH "
+                "with a real training checkpoint and restart the server.",
+                self.checkpoint_path,
+                self.step,
+            )
+        else:
+            logger.info(
+                "Loaded PPO checkpoint %s (step=%s)",
+                self.checkpoint_path,
+                self.step,
+            )
 
-    @staticmethod
-    def _resolve_checkpoint(explicit: Path | str | None) -> Path:
-        if explicit is not None:
-            return Path(explicit)
-        configured = Path(settings.MODEL_PATH)
-        if configured.is_file():
-            return configured
-        # Fall back to configured path (stub will be created there)
-        return configured
-
-    def _load_or_create(self, path: Path):
+    def _load(self, path: Path, *, allow_write_stub: bool):
         if path.is_file():
-            logger.info("Loading companion model from %s", path)
+            model, step, meta = load_checkpoint(path, self.device)
+            if meta.get("stub"):
+                logger.warning(
+                    "%s is a stub checkpoint (extra.stub=true, step=%s). "
+                    "Delete it and copy your real .pt to MODEL_PATH, then restart.",
+                    path,
+                    step,
+                )
+            return model, step, meta
+
+        # Never write a stub over the configured MODEL_PATH — that previously
+        # left users with a fake file named like their real checkpoint.
+        stub_path = path if allow_write_stub else _STUB_PATH
+        if not allow_write_stub:
+            logger.warning(
+                "MODEL_PATH %s not found — loading disposable stub at %s. "
+                "Copy your trained .pt to MODEL_PATH and restart.",
+                path,
+                stub_path,
+            )
+        return self._load_or_create_stub(stub_path)
+
+    def _load_or_create_stub(self, path: Path):
+        if path.is_file():
             return load_checkpoint(path, self.device)
-        logger.warning(
-            "No PPO checkpoint at %s — creating random stub weights. "
-            "Set companion.settings.MODEL_PATH to your trained .pt file.",
-            path,
-        )
         path.parent.mkdir(parents=True, exist_ok=True)
         model = default_model(self.device)
         save_checkpoint(path, model, optimizer=None, step=0, extra={"stub": True})
