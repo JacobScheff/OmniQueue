@@ -7,12 +7,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Trained PPO checkpoint (.pt). Must be a real training save, not a stub.
-# This file lives next to settings.py, so this resolves to companion/model/<name>.pt
+# Trained PPO checkpoint (.pt). Point this at your weights.
 MODEL_PATH = Path(__file__).resolve().parent / "model" / "ppo_step_2543143.pt"
 
 # Torch device for inference ("cpu" or "cuda").
-DEVICE = "cpu"
+DEVICE = "cuda"
 
 # How long to cache ThemeParks.wiki live waits (seconds).
 WAIT_CACHE_TTL_SEC = 45.0
