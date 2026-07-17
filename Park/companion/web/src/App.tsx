@@ -466,19 +466,9 @@ export default function App() {
                         min={0}
                         max={catalog.weight_slider_max}
                         value={edit.preference_weights[ride.id]}
-                        onInput={(e) => {
-                          setPrefWeight(ride.id, Number((e.target as HTMLInputElement).value));
-                        }}
                         onChange={(e) => {
-                          // `change` fires on release for range inputs — reorder only then.
-                          const value = Number(e.target.value);
-                          setPrefWeight(ride.id, value);
-                          const weights = [
-                            ...(draftRef.current?.preference_weights ??
-                              edit.preference_weights),
-                          ];
-                          weights[ride.id] = value;
-                          reorderPrefsAfterSlide(weights);
+                          // React fires onChange continuously while dragging a range.
+                          setPrefWeight(ride.id, Number(e.target.value));
                         }}
                         onPointerUp={(e) => {
                           const value = Number((e.target as HTMLInputElement).value);
@@ -490,6 +480,18 @@ export default function App() {
                           reorderPrefsAfterSlide(weights);
                         }}
                         onKeyUp={(e) => {
+                          if (
+                            e.key !== "ArrowLeft" &&
+                            e.key !== "ArrowRight" &&
+                            e.key !== "ArrowUp" &&
+                            e.key !== "ArrowDown" &&
+                            e.key !== "Home" &&
+                            e.key !== "End" &&
+                            e.key !== "PageUp" &&
+                            e.key !== "PageDown"
+                          ) {
+                            return;
+                          }
                           const value = Number((e.target as HTMLInputElement).value);
                           const weights = [
                             ...(draftRef.current?.preference_weights ??
