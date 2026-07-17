@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type Catalog,
   type RecommendResponse,
+  type RideInfo,
   type UserState,
   type WaitRow,
   fetchCatalog,
@@ -40,6 +41,17 @@ function cloneState(state: UserState): UserState {
   };
 }
 
+function sortRidesByWeight(rides: RideInfo[], weights: number[]): RideInfo[] {
+  return [...rides].sort((a, b) => {
+    const d = weights[b.id] - weights[a.id];
+    return d !== 0 ? d : a.id - b.id;
+  });
+}
+
+function sortIdsByWeight(rides: RideInfo[], weights: number[]): number[] {
+  return sortRidesByWeight(rides, weights).map((r) => r.id);
+}
+
 export default function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [bundle, setBundle] = useState<StoredBundle | null>(null);
@@ -49,7 +61,14 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [draft, setDraft] = useState<UserState | null>(null);
+  /** Stable pref-row order while sliding; only refreshes on slider release. */
+  const [editOrder, setEditOrder] = useState<number[]>([]);
   const [showAllDist, setShowAllDist] = useState(false);
+
+  const prefRowRefs = useRef(new Map<number, HTMLDivElement>());
+  const prefFlipFrom = useRef(new Map<number, number>());
+  const draftRef = useRef<UserState | null>(null);
+  draftRef.current = draft;
 
   useEffect(() => {
     let cancelled = false;
@@ -99,21 +118,54 @@ export default function App() {
     };
   }, [bundle]);
 
+  useLayoutEffect(() => {
+    const from = prefFlipFrom.current;
+    if (from.size === 0) return;
+    for (const [id, el] of prefRowRefs.current) {
+      const prevTop = from.get(id);
+      if (prevTop == null) continue;
+      const nextTop = el.getBoundingClientRect().top;
+      const dy = prevTop - nextTop;
+      if (Math.abs(dy) < 0.5) continue;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${dy}px)`;
+      void el.offsetHeight;
+      el.style.transition = "transform 320ms cubic-bezier(0.22, 1, 0.36, 1)";
+      el.style.transform = "translateY(0)";
+      const clear = () => {
+        el.style.transition = "";
+        el.style.transform = "";
+        el.removeEventListener("transitionend", clear);
+      };
+      el.addEventListener("transitionend", clear);
+    }
+    prefFlipFrom.current = new Map();
+  }, [editOrder]);
+
   const waitById = useMemo(() => {
     const map = new Map<number, WaitRow>();
     for (const w of waits) map.set(w.ride_id, w);
     return map;
   }, [waits]);
 
-  const sortedRides = useMemo(() => {
+  const rideById = useMemo(() => {
+    const map = new Map<number, RideInfo>();
+    if (!catalog) return map;
+    for (const r of catalog.rides) map.set(r.id, r);
+    return map;
+  }, [catalog]);
+
+  // Home list: committed prefs only (don't jump while editing).
+  const homeRides = useMemo(() => {
     if (!catalog || !bundle) return [];
-    const weights = (draft ?? bundle.state).preference_weights;
-    return [...catalog.rides].sort((a, b) => weights[b.id] - weights[a.id]);
-  }, [catalog, bundle, draft]);
+    return sortRidesByWeight(catalog.rides, bundle.state.preference_weights);
+  }, [catalog, bundle]);
 
   const openEditor = () => {
-    if (!bundle) return;
-    setDraft(cloneState(bundle.state));
+    if (!bundle || !catalog) return;
+    const next = cloneState(bundle.state);
+    setDraft(next);
+    setEditOrder(sortIdsByWeight(catalog.rides, next.preference_weights));
     setEditOpen(true);
   };
 
@@ -122,6 +174,36 @@ export default function App() {
     setBundle(pushEdit(bundle, draft));
     setEditOpen(false);
     setDraft(null);
+    setEditOrder([]);
+  };
+
+  const setPrefWeight = (rideId: number, value: number) => {
+    setDraft((d) => {
+      if (!d) return d;
+      const preference_weights = [...d.preference_weights];
+      preference_weights[rideId] = value;
+      return { ...d, preference_weights };
+    });
+  };
+
+  const reorderPrefsAfterSlide = (weights?: number[]) => {
+    if (!catalog) return;
+    const prefs = weights ?? draftRef.current?.preference_weights;
+    if (!prefs) return;
+    const nextOrder = sortIdsByWeight(catalog.rides, prefs);
+    setEditOrder((prev) => {
+      const same =
+        nextOrder.length === prev.length && nextOrder.every((id, i) => id === prev[i]);
+      if (same) return prev;
+
+      const tops = new Map<number, number>();
+      for (const id of prev) {
+        const el = prefRowRefs.current.get(id);
+        if (el) tops.set(id, el.getBoundingClientRect().top);
+      }
+      prefFlipFrom.current = tops;
+      return nextOrder;
+    });
   };
 
   const refresh = async () => {
@@ -153,6 +235,9 @@ export default function App() {
   const dist = result?.distribution ?? [];
   const visibleDist = showAllDist ? dist : dist.filter((d) => d.legal).slice(0, 8);
   const stub = result?.model.stub;
+  const editRides = editOrder
+    .map((id) => rideById.get(id))
+    .filter((r): r is RideInfo => r != null);
 
   return (
     <div className="app">
@@ -232,7 +317,7 @@ export default function App() {
       <section className="section">
         <h2>Rides</h2>
         <ul className="ride-list">
-          {sortedRides.map((ride) => {
+          {homeRides.map((ride) => {
             const live = waitById.get(ride.id);
             const done = state.history[ride.id] > 0;
             const must = state.must_dos[ride.id] > 0 && !done;
@@ -355,80 +440,112 @@ export default function App() {
 
             <section className="section">
               <h2>Preferences & completions</h2>
-              {sortedRides.map((ride) => (
-                <div className="pref-row" key={ride.id}>
-                  <div className="pref-top">
-                    <strong>{ride.name}</strong>
-                    <span className="ride-meta">
-                      {waitLabel(
-                        waitById.get(ride.id)?.wait_min,
-                        waitById.get(ride.id)?.open,
-                        waitById.get(ride.id)?.status,
-                      )}
-                    </span>
-                  </div>
-                  <div className="pref-controls">
-                    <input
-                      type="range"
-                      min={0}
-                      max={catalog.weight_slider_max}
-                      value={edit.preference_weights[ride.id]}
-                      onChange={(e) => {
-                        const value = Number(e.target.value);
-                        setDraft((d) => {
-                          if (!d) return d;
-                          const preference_weights = [...d.preference_weights];
-                          preference_weights[ride.id] = value;
-                          return { ...d, preference_weights };
-                        });
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className={`must-btn${edit.must_dos[ride.id] ? " on" : ""}`}
-                      onClick={() =>
-                        setDraft((d) => {
-                          if (!d) return d;
-                          const must_dos = [...d.must_dos];
-                          must_dos[ride.id] = must_dos[ride.id] ? 0 : 1;
-                          return { ...d, must_dos };
-                        })
-                      }
-                    >
-                      Must
-                    </button>
-                    <div className="stepper" aria-label={`Times ridden ${ride.name}`}>
+              <div className="pref-list">
+                {editRides.map((ride) => (
+                  <div
+                    className="pref-row"
+                    key={ride.id}
+                    ref={(el) => {
+                      if (el) prefRowRefs.current.set(ride.id, el);
+                      else prefRowRefs.current.delete(ride.id);
+                    }}
+                  >
+                    <div className="pref-top">
+                      <strong>{ride.name}</strong>
+                      <span className="ride-meta">
+                        {waitLabel(
+                          waitById.get(ride.id)?.wait_min,
+                          waitById.get(ride.id)?.open,
+                          waitById.get(ride.id)?.status,
+                        )}
+                      </span>
+                    </div>
+                    <div className="pref-controls">
+                      <input
+                        type="range"
+                        min={0}
+                        max={catalog.weight_slider_max}
+                        value={edit.preference_weights[ride.id]}
+                        onInput={(e) => {
+                          setPrefWeight(ride.id, Number((e.target as HTMLInputElement).value));
+                        }}
+                        onChange={(e) => {
+                          // `change` fires on release for range inputs — reorder only then.
+                          const value = Number(e.target.value);
+                          setPrefWeight(ride.id, value);
+                          const weights = [
+                            ...(draftRef.current?.preference_weights ??
+                              edit.preference_weights),
+                          ];
+                          weights[ride.id] = value;
+                          reorderPrefsAfterSlide(weights);
+                        }}
+                        onPointerUp={(e) => {
+                          const value = Number((e.target as HTMLInputElement).value);
+                          const weights = [
+                            ...(draftRef.current?.preference_weights ??
+                              edit.preference_weights),
+                          ];
+                          weights[ride.id] = value;
+                          reorderPrefsAfterSlide(weights);
+                        }}
+                        onKeyUp={(e) => {
+                          const value = Number((e.target as HTMLInputElement).value);
+                          const weights = [
+                            ...(draftRef.current?.preference_weights ??
+                              edit.preference_weights),
+                          ];
+                          weights[ride.id] = value;
+                          reorderPrefsAfterSlide(weights);
+                        }}
+                      />
                       <button
                         type="button"
+                        className={`must-btn${edit.must_dos[ride.id] ? " on" : ""}`}
                         onClick={() =>
                           setDraft((d) => {
                             if (!d) return d;
-                            const history = [...d.history];
-                            history[ride.id] = Math.max(0, history[ride.id] - 1);
-                            return { ...d, history };
+                            const must_dos = [...d.must_dos];
+                            must_dos[ride.id] = must_dos[ride.id] ? 0 : 1;
+                            return { ...d, must_dos };
                           })
                         }
                       >
-                        −
+                        Must
                       </button>
-                      <span>{edit.history[ride.id]}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setDraft((d) => {
-                            if (!d) return d;
-                            const history = [...d.history];
-                            history[ride.id] = Math.min(20, history[ride.id] + 1);
-                            return { ...d, history };
-                          })
-                        }
-                      >
-                        +
-                      </button>
+                      <div className="stepper" aria-label={`Times ridden ${ride.name}`}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDraft((d) => {
+                              if (!d) return d;
+                              const history = [...d.history];
+                              history[ride.id] = Math.max(0, history[ride.id] - 1);
+                              return { ...d, history };
+                            })
+                          }
+                        >
+                          −
+                        </button>
+                        <span>{edit.history[ride.id]}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDraft((d) => {
+                              if (!d) return d;
+                              const history = [...d.history];
+                              history[ride.id] = Math.min(20, history[ride.id] + 1);
+                              return { ...d, history };
+                            })
+                          }
+                        >
+                          +
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </section>
           </div>
         </div>
