@@ -1,6 +1,6 @@
 # Live park companion
 
-**Modules:** `companion/`, `companion/server/`, `companion/web/`
+**Modules:** `companion/`, `companion/server/`, `companion/web/`, `run_companion.py`
 
 ## Overview
 
@@ -8,17 +8,27 @@ Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.
 
 This does **not** run the C++ DES or Watch pygame UI. The simulator is unused at request time; only `ParkRouterModel`, walk times from `park_graph`, and `config.RIDES` are reused on the server.
 
+## Configure
+
+Edit `companion/settings.py`:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `MODEL_PATH` | `companion/model/ppo_live.pt` | PPO `.pt` checkpoint |
+| `DEVICE` | `"cpu"` | Torch device |
+| `WAIT_CACHE_TTL_SEC` | `45` | Live-wait cache lifetime |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address |
+| `RELOAD` | `False` | Uvicorn auto-reload (dev only) |
+
+If `MODEL_PATH` is missing, a random stub checkpoint is created there on first run so the UI can be exercised. Point it at your trained weights before trusting recommendations.
+
 ## Run (dev)
 
 ```bash
-# from repo root (parent of Park/) so `import Park...` resolves
-cd /path/to/workspace
 pip install -r Park/companion/requirements.txt
-pip install -e Park   # or existing omniqueue editable install
 
-# API (creates a random stub checkpoint on first run if none is provided)
-COMPANION_MODEL_PATH=checkpoints/ppo/ppo_final.pt \
-  python -m Park.companion.server
+# API — run_companion.py makes `import Park` work without PYTHONPATH
+python Park/run_companion.py
 
 # Frontend (separate terminal)
 cd Park/companion/web && npm install && npm run dev
@@ -30,7 +40,7 @@ Open `http://127.0.0.1:5173` (Vite proxies `/api` → `:8000`).
 
 ```bash
 cd Park/companion/web && npm ci && npm run build
-COMPANION_MODEL_PATH=/models/ppo_final.pt python -m Park.companion.server
+python Park/run_companion.py
 # serves API + web/dist on :8000
 ```
 
@@ -39,8 +49,7 @@ Docker:
 ```bash
 docker build -f Park/companion/Dockerfile -t omniqueue-companion .
 docker run --rm -p 8000:8000 \
-  -e COMPANION_MODEL_PATH=/app/model/ppo_final.pt \
-  -v /path/to/ppo_final.pt:/app/model/ppo_final.pt:ro \
+  -v /path/to/ppo_final.pt:/app/Park/companion/model/ppo_live.pt:ro \
   omniqueue-companion
 ```
 
@@ -71,16 +80,7 @@ Live features are built in `companion/server/obs.py` to match training (`FLAT_OB
 
 All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. The API is stateless per request.
 
-## Env vars
-
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `COMPANION_MODEL_PATH` | auto-discover / stub | PPO `.pt` checkpoint |
-| `COMPANION_DEVICE` | `cpu` | Torch device |
-| `COMPANION_WAIT_TTL` | `45` | Seconds to cache live waits |
-| `COMPANION_HOST` / `COMPANION_PORT` | `0.0.0.0` / `8000` | Bind address |
-
 ## Notes
 
 - Credit [ThemeParks.wiki](https://themeparks.wiki) for wait data; respect their rate guidance (companion caches ~45s).
-- A **stub** random checkpoint is created under `companion/model/ppo_live.pt` when no trained weights are found so the UI can be exercised offline. Replace it with your PPO run before trusting recommendations.
+- `run_companion.py` inserts the parent of `Park/` onto `sys.path` so you do not need to set `PYTHONPATH` (the editable wheel only installs `_park_sim`, not the Python package tree).

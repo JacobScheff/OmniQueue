@@ -24,10 +24,7 @@ RUN pip install --no-cache-dir \
 COPY Park/ /app/Park/
 COPY --from=web /web/dist /app/Park/companion/web/dist
 
-ENV PYTHONPATH=/app
-ENV COMPANION_HOST=0.0.0.0
-ENV COMPANION_PORT=8000
-ENV COMPANION_MODEL_PATH=/app/model/ppo_final.pt
-
+# Default model path matches companion/settings.py (override by editing settings
+# or mounting a file over /app/Park/companion/model/ppo_live.pt).
 EXPOSE 8000
-CMD ["python", "-m", "Park.companion.server"]
+CMD ["python", "/app/Park/run_companion.py"]

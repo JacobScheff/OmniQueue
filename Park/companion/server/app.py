@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from Park import config
+from Park.companion import settings
 from Park.companion.server.obs import (
     CompanionState,
     WEIGHT_SLIDER_MAX,
@@ -67,12 +67,8 @@ def create_app(
         allow_headers=["*"],
     )
 
-    app.state.recommender = recommender or Recommender(
-        device=os.environ.get("COMPANION_DEVICE", "cpu")
-    )
-    app.state.waits = waits or WaitTimeProvider(
-        cache_ttl_sec=float(os.environ.get("COMPANION_WAIT_TTL", "45"))
-    )
+    app.state.recommender = recommender or Recommender(device=settings.DEVICE)
+    app.state.waits = waits or WaitTimeProvider(cache_ttl_sec=settings.WAIT_CACHE_TTL_SEC)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

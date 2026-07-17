@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from Park.companion import settings
 from Park.companion.server.obs import ACTION_LABELS, action_label
 from Park.model import forward_with_mask, obs_flat_to_tensors
 from Park.training.checkpoint import default_model, load_checkpoint, save_checkpoint
@@ -16,17 +16,10 @@ from Park.training.features import NUM_ACTIONS
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_CANDIDATES = [
-    Path(os.environ["COMPANION_MODEL_PATH"]) if os.environ.get("COMPANION_MODEL_PATH") else None,
-    Path("checkpoints/ppo/ppo_final.pt"),
-    Path("Park/checkpoints/ppo/ppo_final.pt"),
-    Path(__file__).resolve().parents[1] / "model" / "ppo_live.pt",
-]
-
 
 class Recommender:
-    def __init__(self, checkpoint: Path | str | None = None, device: str = "cpu") -> None:
-        self.device = torch.device(device)
+    def __init__(self, checkpoint: Path | str | None = None, device: str | None = None) -> None:
+        self.device = torch.device(device or settings.DEVICE)
         path = self._resolve_checkpoint(checkpoint)
         self.checkpoint_path = path
         self.model, self.step, self.meta = self._load_or_create(path)
@@ -37,11 +30,11 @@ class Recommender:
     def _resolve_checkpoint(explicit: Path | str | None) -> Path:
         if explicit is not None:
             return Path(explicit)
-        for cand in DEFAULT_MODEL_CANDIDATES:
-            if cand is not None and cand.is_file():
-                return cand
-        # Fall back to companion stub path (created on first run)
-        return Path(__file__).resolve().parents[1] / "model" / "ppo_live.pt"
+        configured = Path(settings.MODEL_PATH)
+        if configured.is_file():
+            return configured
+        # Fall back to configured path (stub will be created there)
+        return configured
 
     def _load_or_create(self, path: Path):
         if path.is_file():
@@ -49,7 +42,7 @@ class Recommender:
             return load_checkpoint(path, self.device)
         logger.warning(
             "No PPO checkpoint at %s — creating random stub weights. "
-            "Replace with your trained model via COMPANION_MODEL_PATH.",
+            "Set companion.settings.MODEL_PATH to your trained .pt file.",
             path,
         )
         path.parent.mkdir(parents=True, exist_ok=True)

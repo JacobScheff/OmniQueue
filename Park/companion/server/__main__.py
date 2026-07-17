@@ -1,26 +1,25 @@
 """Run the companion API (and optional built SPA).
 
-Usage:
-    python -m Park.companion.server.app
-    # or:
-    uvicorn Park.companion.server.app:app --host 0.0.0.0 --port 8000
+Prefer the path-safe launcher:
+    python Park/run_companion.py
+
+Or, with Park already importable:
+    python -m Park.companion.server
 """
 
 from __future__ import annotations
 
-import os
-
 import uvicorn
+
+from Park.companion import settings
 
 
 def main() -> None:
-    host = os.environ.get("COMPANION_HOST", "0.0.0.0")
-    port = int(os.environ.get("COMPANION_PORT", "8000"))
     uvicorn.run(
         "Park.companion.server.app:app",
-        host=host,
-        port=port,
-        reload=os.environ.get("COMPANION_RELOAD", "").lower() in ("1", "true", "yes"),
+        host=settings.HOST,
+        port=int(settings.PORT),
+        reload=bool(settings.RELOAD),
     )
 
 
