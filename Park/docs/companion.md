@@ -14,13 +14,14 @@ Edit `companion/settings.py`:
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `MODEL_PATH` | `companion/model/ppo_live.pt` | PPO `.pt` checkpoint |
+| `MODELS` | `v1` → `ppo_step_2543143.pt`, `v2` → `ppo_v2.pt` | Named checkpoints (UI tags) |
+| `DEFAULT_MODEL_VERSION` | `"v2"` | Tag used when the client omits one |
 | `DEVICE` | `"cpu"` | Torch device |
 | `WAIT_CACHE_TTL_SEC` | `45` | Live-wait cache lifetime |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address |
 | `RELOAD` | `False` | Uvicorn auto-reload (dev only) |
 
-If `MODEL_PATH` is missing, a random stub checkpoint is created there on first run so the UI can be exercised. Point it at your trained weights before trusting recommendations.
+Place real `.pt` files under `companion/model/` for each tag. Missing files fall back to a disposable stub (banner warns you). Switch versions in the UI with the **V1 / V2** tags; `/api/recommend` accepts `model_version`.
 
 ## Run (dev)
 

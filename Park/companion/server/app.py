@@ -22,7 +22,7 @@ from Park.companion.server.obs import (
     now_sec_of_day,
     resolve_location_node_id,
 )
-from Park.companion.server.recommend import Recommender
+from Park.companion.server.recommend import ModelRegistry, Recommender
 from Park.companion.server.ride_map import hub_display_name
 from Park.companion.server.waits import WaitTimeProvider
 from Park.training.features import NUM_RIDES
@@ -42,6 +42,10 @@ class RecommendRequest(BaseModel):
         default=None, description="Local hour of arrival; default park open"
     )
     party_size: int = Field(default=2, ge=1, le=16)
+    model_version: str | None = Field(
+        default=None,
+        description="Model tag from settings.MODELS (e.g. v1, v2). Defaults to DEFAULT_MODEL_VERSION.",
+    )
     force_refresh_waits: bool = False
 
 
@@ -55,6 +59,7 @@ def _hour_to_sec_since_open(hour: float | None, *, default_sec: int) -> int:
 
 def create_app(
     *,
+    registry: ModelRegistry | None = None,
     recommender: Recommender | None = None,
     waits: WaitTimeProvider | None = None,
 ) -> FastAPI:
@@ -67,18 +72,42 @@ def create_app(
         allow_headers=["*"],
     )
 
-    app.state.recommender = recommender or Recommender(device=settings.DEVICE)
+    if registry is not None:
+        app.state.registry = registry
+    elif recommender is not None:
+        # Single-model test harness: wrap as a one-entry registry.
+        class _Single:
+            default_version = settings.DEFAULT_MODEL_VERSION
+
+            def __init__(self, rec: Recommender) -> None:
+                self._rec = rec
+
+            def versions(self) -> list[dict]:
+                info = self._rec.info()
+                vid = info.get("version") or self.default_version
+                return [{"id": vid, "label": str(vid).upper(), **info}]
+
+            def get(self, version: str | None = None) -> Recommender:
+                return self._rec
+
+        app.state.registry = _Single(recommender)
+    else:
+        app.state.registry = ModelRegistry(device=settings.DEVICE)
+
     app.state.waits = waits or WaitTimeProvider(cache_ttl_sec=settings.WAIT_CACHE_TTL_SEC)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         board = app.state.waits.get_board()
-        rec: Recommender = app.state.recommender
+        reg = app.state.registry
+        default = reg.get(reg.default_version)
         return {
             "ok": True,
             "model_loaded": True,
-            "model_path": str(rec.checkpoint_path),
-            "model_stub": rec.is_stub,
+            "default_model_version": reg.default_version,
+            "models": reg.versions(),
+            "model_path": str(default.checkpoint_path),
+            "model_stub": default.is_stub,
             "waits_fetched_at": board.fetched_at,
             "waits_error": board.error,
             "open_rides": sum(1 for r in board.rides if r.open),
@@ -96,7 +125,6 @@ def create_app(
                     "kind": "entrance" if hub_id == config.NODE_ENTRANCE else "hub",
                 }
             )
-        # Deduplicate entrance listed as hub:0
         seen = set()
         unique_hubs = []
         for h in hubs:
@@ -118,6 +146,7 @@ def create_app(
                     "duration_min": ride["duration_sec"] / 60.0,
                 }
             )
+        reg = app.state.registry
         return {
             "num_rides": NUM_RIDES,
             "weight_slider_max": WEIGHT_SLIDER_MAX,
@@ -126,6 +155,8 @@ def create_app(
             "day_end_hour": config.DAY_END_HOUR,
             "hubs": unique_hubs,
             "rides": rides,
+            "default_model_version": reg.default_version,
+            "models": reg.versions(),
         }
 
     @app.get("/api/waits")
@@ -156,11 +187,18 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        try:
+            rec = app.state.registry.get(body.model_version)
+        except KeyError as exc:
+            known = [v["id"] for v in app.state.registry.versions()]
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown model_version {body.model_version!r}; choose one of {known}",
+            ) from exc
+
         now_sec = now_sec_of_day()
         leave_sec = _hour_to_sec_since_open(body.leave_hour, default_sec=config.DAY_SECONDS)
-        spawn_sec = _hour_to_sec_since_open(
-            body.arrival_hour, default_sec=0
-        )
+        spawn_sec = _hour_to_sec_since_open(body.arrival_hour, default_sec=0)
 
         state = CompanionState(
             preference_weights=np.asarray(body.preference_weights, dtype=np.float32),
@@ -177,7 +215,7 @@ def create_app(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"obs build failed: {exc}") from exc
 
-        result = app.state.recommender.recommend(flat)
+        result = rec.recommend(flat)
         waits_by_id = {r.ride_id: r for r in board.rides}
         for row in result["distribution"]:
             if row["is_ride"]:

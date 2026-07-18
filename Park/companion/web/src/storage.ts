@@ -19,6 +19,7 @@ function cloneState(state: UserState): UserState {
     leave_hour: state.leave_hour,
     arrival_hour: state.arrival_hour,
     party_size: state.party_size,
+    model_version: state.model_version,
   };
 }
 
@@ -32,6 +33,7 @@ export function defaultUserState(catalog: Catalog): UserState {
     leave_hour: catalog.day_end_hour,
     arrival_hour: catalog.day_start_hour,
     party_size: 2,
+    model_version: catalog.default_model_version,
   };
 }
 
@@ -66,6 +68,11 @@ function normalizeState(state: UserState, n: number, catalog: Catalog): UserStat
     while (base.length < n) base.push(fill);
     return base;
   };
+  const known = new Set(catalog.models.map((m) => m.id));
+  const version =
+    state.model_version && known.has(state.model_version)
+      ? state.model_version
+      : catalog.default_model_version;
   return {
     preference_weights: pad(state.preference_weights, 1),
     must_dos: pad(state.must_dos, 0).map((v) => (v ? 1 : 0)),
@@ -74,6 +81,7 @@ function normalizeState(state: UserState, n: number, catalog: Catalog): UserStat
     leave_hour: state.leave_hour ?? catalog.day_end_hour,
     arrival_hour: state.arrival_hour ?? catalog.day_start_hour,
     party_size: Math.min(16, Math.max(1, state.party_size || 2)),
+    model_version: version,
   };
 }
 
@@ -84,14 +92,10 @@ export function saveBundle(bundle: StoredBundle): void {
     future: bundle.future.slice(-MAX_UNDO).map(cloneState),
   };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  // Keep a tiny mirror for debugging / migration
   localStorage.setItem(HISTORY_KEY, String(payload.past.length));
 }
 
-export function pushEdit(
-  bundle: StoredBundle,
-  next: UserState,
-): StoredBundle {
+export function pushEdit(bundle: StoredBundle, next: UserState): StoredBundle {
   return {
     state: cloneState(next),
     past: [...bundle.past, cloneState(bundle.state)].slice(-MAX_UNDO),

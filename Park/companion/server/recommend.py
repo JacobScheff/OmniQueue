@@ -1,4 +1,4 @@
-"""Load PPO checkpoint and run single-party live inference."""
+"""Load PPO checkpoints and run single-party live inference."""
 
 from __future__ import annotations
 
@@ -16,29 +16,43 @@ from Park.training.features import NUM_ACTIONS
 
 logger = logging.getLogger(__name__)
 
-# Dedicated path for auto-generated random weights — never overwrite MODEL_PATH.
+# Dedicated path for auto-generated random weights — never overwrite configured models.
 _STUB_PATH = Path(__file__).resolve().parents[1] / "model" / "_stub_random.pt"
 
 
 class Recommender:
-    def __init__(self, checkpoint: Path | str | None = None, device: str | None = None) -> None:
+    def __init__(
+        self,
+        checkpoint: Path | str | None = None,
+        device: str | None = None,
+        *,
+        version: str | None = None,
+    ) -> None:
         self.device = torch.device(device or settings.DEVICE)
+        self.version = version
         explicit = checkpoint is not None
-        path = Path(checkpoint) if explicit else Path(settings.MODEL_PATH)
+        if checkpoint is not None:
+            path = Path(checkpoint)
+        elif version is not None:
+            path = Path(settings.MODELS[version])
+        else:
+            path = Path(settings.MODELS[settings.DEFAULT_MODEL_VERSION])
         self.checkpoint_path = path
         self.model, self.step, self.meta = self._load(path, allow_write_stub=explicit)
         self.model.eval()
         self.is_stub = bool(self.meta.get("stub"))
+        label = f" [{version}]" if version else ""
         if self.is_stub:
             logger.warning(
-                "Using STUB model (%s, step=%s). Replace companion/settings.py MODEL_PATH "
-                "with a real training checkpoint and restart the server.",
+                "Using STUB model%s (%s, step=%s). Place a real .pt at this path and restart.",
+                label,
                 self.checkpoint_path,
                 self.step,
             )
         else:
             logger.info(
-                "Loaded PPO checkpoint %s (step=%s)",
+                "Loaded PPO checkpoint%s %s (step=%s)",
+                label,
                 self.checkpoint_path,
                 self.step,
             )
@@ -48,20 +62,16 @@ class Recommender:
             model, step, meta = load_checkpoint(path, self.device)
             if meta.get("stub"):
                 logger.warning(
-                    "%s is a stub checkpoint (extra.stub=true, step=%s). "
-                    "Delete it and copy your real .pt to MODEL_PATH, then restart.",
+                    "%s is a stub checkpoint (extra.stub=true, step=%s).",
                     path,
                     step,
                 )
             return model, step, meta
 
-        # Never write a stub over the configured MODEL_PATH — that previously
-        # left users with a fake file named like their real checkpoint.
         stub_path = path if allow_write_stub else _STUB_PATH
         if not allow_write_stub:
             logger.warning(
-                "MODEL_PATH %s not found — loading disposable stub at %s. "
-                "Copy your trained .pt to MODEL_PATH and restart.",
+                "Checkpoint %s not found — loading disposable stub at %s.",
                 path,
                 stub_path,
             )
@@ -74,6 +84,16 @@ class Recommender:
         model = default_model(self.device)
         save_checkpoint(path, model, optimizer=None, step=0, extra={"stub": True})
         return model, 0, {"stub": True}
+
+    def info(self) -> dict:
+        return {
+            "version": self.version,
+            "path": str(self.checkpoint_path),
+            "step": int(self.step),
+            "stub": self.is_stub,
+            "device": str(self.device),
+            "available": self.checkpoint_path.is_file() and not self.is_stub,
+        }
 
     @torch.no_grad()
     def recommend(self, obs_flat: np.ndarray) -> dict:
@@ -109,10 +129,39 @@ class Recommender:
                 "legal": bool(legal[action]),
             },
             "distribution": distribution,
-            "model": {
-                "path": str(self.checkpoint_path),
-                "step": int(self.step),
-                "stub": self.is_stub,
-                "device": str(self.device),
-            },
+            "model": self.info(),
         }
+
+
+class ModelRegistry:
+    """Keeps every configured model version warm in memory."""
+
+    def __init__(self, device: str | None = None) -> None:
+        self.device = device or settings.DEVICE
+        self.default_version = settings.DEFAULT_MODEL_VERSION
+        if self.default_version not in settings.MODELS:
+            raise ValueError(
+                f"DEFAULT_MODEL_VERSION={self.default_version!r} missing from MODELS"
+            )
+        self._by_version: dict[str, Recommender] = {}
+        for version in settings.MODELS:
+            self._by_version[version] = Recommender(
+                device=self.device,
+                version=version,
+            )
+
+    def versions(self) -> list[dict]:
+        return [
+            {
+                "id": version,
+                "label": version.upper(),
+                **self._by_version[version].info(),
+            }
+            for version in settings.MODELS
+        ]
+
+    def get(self, version: str | None = None) -> Recommender:
+        key = version or self.default_version
+        if key not in self._by_version:
+            raise KeyError(key)
+        return self._by_version[key]

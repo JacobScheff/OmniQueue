@@ -7,8 +7,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Trained PPO checkpoint (.pt). Point this at your weights.
-MODEL_PATH = Path(__file__).resolve().parent / "model" / "ppo_step_2543143.pt"
+_MODEL_DIR = Path(__file__).resolve().parent / "model"
+
+# Named PPO checkpoints. Add v3, v4, … the same way.
+# Tags shown in the UI come from these keys (v1, v2, …).
+MODELS: dict[str, Path] = {
+    "v1": _MODEL_DIR / "ppo_step_2543143.pt",
+    "v2": _MODEL_DIR / "ppo_v2.pt",
+}
+
+# Default tag when the client does not specify one.
+DEFAULT_MODEL_VERSION = "v2"
 
 # Torch device for inference ("cpu" or "cuda").
 DEVICE = "cuda"

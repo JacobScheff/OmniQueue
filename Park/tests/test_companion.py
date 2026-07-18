@@ -99,3 +99,19 @@ def test_recommender_stub_smoke(tmp_path):
     assert out["recommended"]["action_id"] in range(NUM_ACTIONS)
     assert len(out["distribution"]) == NUM_ACTIONS
     assert abs(sum(r["prob"] for r in out["distribution"]) - 1.0) < 1e-3
+
+
+def test_model_registry_versions(tmp_path, monkeypatch):
+    from Park.companion import settings
+    from Park.companion.server.recommend import ModelRegistry, Recommender
+
+    v1 = tmp_path / "v1.pt"
+    v2 = tmp_path / "v2.pt"
+    Recommender(checkpoint=v1, device="cpu")
+    Recommender(checkpoint=v2, device="cpu")
+    monkeypatch.setattr(settings, "MODELS", {"v1": v1, "v2": v2})
+    monkeypatch.setattr(settings, "DEFAULT_MODEL_VERSION", "v2")
+    reg = ModelRegistry(device="cpu")
+    assert [m["id"] for m in reg.versions()] == ["v1", "v2"]
+    assert reg.get(None).version == "v2"
+    assert reg.get("v1").checkpoint_path == v1

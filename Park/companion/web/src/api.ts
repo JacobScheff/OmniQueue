@@ -15,6 +15,17 @@ export type HubInfo = {
   kind: string;
 };
 
+export type ModelInfo = {
+  id: string;
+  label: string;
+  version: string | null;
+  path: string;
+  step: number;
+  stub: boolean;
+  device: string;
+  available: boolean;
+};
+
 export type Catalog = {
   num_rides: number;
   weight_slider_max: number;
@@ -23,6 +34,8 @@ export type Catalog = {
   day_end_hour: number;
   hubs: HubInfo[];
   rides: RideInfo[];
+  default_model_version: string;
+  models: ModelInfo[];
 };
 
 export type WaitRow = {
@@ -54,10 +67,12 @@ export type RecommendResponse = {
   };
   distribution: DistRow[];
   model: {
+    version: string | null;
     path: string;
     step: number;
     stub: boolean;
     device: string;
+    available: boolean;
   };
   meta: {
     warnings: string[];
@@ -78,6 +93,7 @@ export type UserState = {
   leave_hour: number | null;
   arrival_hour: number | null;
   party_size: number;
+  model_version: string;
 };
 
 async function getJson<T>(url: string): Promise<T> {
@@ -111,6 +127,7 @@ export async function postRecommend(
       leave_hour: state.leave_hour,
       arrival_hour: state.arrival_hour,
       party_size: state.party_size,
+      model_version: state.model_version,
       force_refresh_waits: forceRefreshWaits,
     }),
   });

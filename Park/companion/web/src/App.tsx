@@ -38,6 +38,7 @@ function cloneState(state: UserState): UserState {
     leave_hour: state.leave_hour,
     arrival_hour: state.arrival_hour,
     party_size: state.party_size,
+    model_version: state.model_version,
   };
 }
 
@@ -222,6 +223,16 @@ export default function App() {
     }
   };
 
+  const setModelVersion = (version: string) => {
+    setBundle((prev) => {
+      if (!prev || prev.state.model_version === version) return prev;
+      return {
+        ...prev,
+        state: { ...prev.state, model_version: version },
+      };
+    });
+  };
+
   if (!catalog || !bundle) {
     return (
       <div className="app">
@@ -235,6 +246,7 @@ export default function App() {
   const dist = result?.distribution ?? [];
   const visibleDist = showAllDist ? dist : dist.filter((d) => d.legal).slice(0, 8);
   const stub = result?.model.stub;
+  const activeModel = catalog.models.find((m) => m.id === state.model_version);
   const editRides = editOrder
     .map((id) => rideById.get(id))
     .filter((r): r is RideInfo => r != null);
@@ -248,6 +260,21 @@ export default function App() {
         </div>
       </header>
 
+      <div className="version-row" role="group" aria-label="Model version">
+        {catalog.models.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`version-tag${state.model_version === m.id ? " active" : ""}${m.stub ? " stubby" : ""}`}
+            onClick={() => setModelVersion(m.id)}
+            title={m.stub ? `${m.path} (stub)` : m.path}
+          >
+            {m.label}
+            {m.stub ? " · stub" : ""}
+          </button>
+        ))}
+      </div>
+
       <div className="pill-row">
         <span className="pill">{busy ? "Updating…" : "Live waits"}</span>
         {result && (
@@ -255,7 +282,13 @@ export default function App() {
             {result.meta.open_rides} open · avg {result.meta.mean_wait_min.toFixed(0)} min
           </span>
         )}
-        {stub && <span className="pill warn">Stub model — replace checkpoint</span>}
+        {activeModel && (
+          <span className="pill">
+            Model {activeModel.label}
+            {activeModel.step ? ` · step ${activeModel.step}` : ""}
+          </span>
+        )}
+        {stub && <span className="pill warn">Stub weights — replace checkpoint</span>}
         {result?.waits_error && <span className="pill bad">Wait feed issue</span>}
       </div>
 

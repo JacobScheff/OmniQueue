@@ -79,6 +79,37 @@ select {
   margin: 0.75rem 0 1rem;
 }
 
+.version-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.25rem 0 0.15rem;
+}
+
+.version-tag {
+  appearance: none;
+  border: 1px solid rgba(14, 61, 54, 0.28);
+  background: rgba(255, 252, 247, 0.75);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  min-height: 40px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.version-tag.active {
+  background: var(--accent);
+  color: #f7faf8;
+  border-color: var(--accent);
+}
+
+.version-tag.stubby:not(.active) {
+  color: var(--warn);
+  border-color: rgba(184, 107, 18, 0.45);
+}
+
 .pill {
   border: 1px solid var(--line);
   background: var(--panel);
