@@ -12,6 +12,12 @@ import bisect
 import math
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
+
+# Parent of the Park/ package dir must be on sys.path for `import Park.*`.
+_PARENT = Path(__file__).resolve().parent.parent
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
 
 import Park.config as config
 from Park.park_graph import get_park_graph

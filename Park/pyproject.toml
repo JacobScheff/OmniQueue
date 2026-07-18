@@ -29,3 +29,8 @@ editable.mode = "redirect"
 
 [tool.scikit-build.cmake.define]
 CMAKE_CXX_STANDARD = "17"
+
+[tool.pytest.ini_options]
+# Repo layout is <root>/Park/...; imports are `Park.*`, so parent of Park/ must be on path.
+pythonpath = [".."]
+testpaths = ["tests"]

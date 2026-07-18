@@ -17,7 +17,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+# Parent of the Park/ package dir must be on sys.path for `import Park.*`.
+_PARENT = ROOT.parent
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
 
 import Park.config as config  # noqa: E402
 
@@ -377,7 +380,6 @@ def main() -> None:
 
     if not os.environ.get("SKIP_SIMPLIFY"):
         # Light cleanup + ride nudges (Indiana / Rise / Buzz).
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
         from Park.tools.simplify_pathways import main as simplify_main
 
         simplify_main()
