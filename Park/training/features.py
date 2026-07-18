@@ -1,9 +1,15 @@
-"""Feature dimensions shared with the C++ simulator and ParkRouterModel."""
+"""Feature dimensions shared with the C++ simulator and ParkRouterModel.
+
+Constants are importable without torch (needed by the ONNX companion image).
+Torch is only required for the masking helpers used in training / torch inference.
+"""
 
 from __future__ import annotations
 
-import torch
-import torch.nn.functional as F
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 GUEST_FEAT_DIM = 46
 # 0..33 preferences, 34 remaining_pref_mass, 35..44 party state, 45 elapsed_since_spawn
@@ -49,6 +55,8 @@ def build_action_mask(
     - rides whose walk+wait+duration exceed remaining park time masked
     - idle masked after soft close; exit always allowed
     """
+    import torch
+
     if ride.dim() == 3:
         ride = ride.unsqueeze(1)
     if guest.dim() == 2:
@@ -90,6 +98,8 @@ def build_action_mask(
 
 def apply_action_mask(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """Set illegal action logits to a large negative value (finite, CE/Categorical-safe)."""
+    import torch
+
     # Avoid dtype.min: float32 min/2 still blows up softmax/CE; -1e9 is standard.
     return logits.masked_fill(~mask, torch.tensor(-1.0e9, device=logits.device, dtype=logits.dtype))
 
@@ -108,6 +118,8 @@ def masked_cross_entropy(
     Important: padded rows must not be scored. Masking all actions to -inf and then
     multiplying CE by 0 yields ``0 * inf = nan`` and poisons the epoch loss.
     """
+    import torch.nn.functional as F
+
     flat_logits = logits.reshape(-1, logits.size(-1))
     flat_actions = actions.reshape(-1)
     flat_mask = action_mask.reshape(-1, action_mask.size(-1))
