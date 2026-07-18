@@ -96,6 +96,14 @@ def create_app(
 
     app.state.waits = waits or WaitTimeProvider(cache_ttl_sec=settings.WAIT_CACHE_TTL_SEC)
 
+    # Warm walk matrix + wait board at boot so the first /api/recommend does not
+    # block on a multi-minute all-pairs pathway rebuild (Render free CPU).
+    if registry is None and recommender is None:
+        from Park.park_graph import get_park_graph
+
+        get_park_graph()
+        app.state.waits.get_board()
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         board = app.state.waits.get_board()
