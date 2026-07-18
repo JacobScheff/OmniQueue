@@ -109,3 +109,4 @@ All guest state (prefs, must-dos, completions, location, leave time, undo/redo s
 - `run_companion.py` inserts the parent of `Park/` onto `sys.path` so you do not need to set `PYTHONPATH` (the editable wheel only installs `_park_sim`, not the Python package tree).
 - Deploy image uses **onnxruntime** only (no PyTorch) so it fits Render’s free ~512 MB RAM tier.
 - `Park.training.features` keeps dimension constants importable without torch; torch masking helpers load torch lazily for training.
+- Walk times load from committed `data/walk_matrix.npz` (do not rely on gitignored `cache/` in deploy). Rebuild with `python -c "from Park.park_graph import get_park_graph, reset_park_graph; reset_park_graph(); get_park_graph(force_recompute=True)"` then copy `cache/walk_matrix.npz` → `data/walk_matrix.npz` if pathways/config change.

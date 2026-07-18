@@ -69,10 +69,10 @@ At startup / export, all-pairs shortest walk times between macro nodes are preco
 actual_sec = ceil(base_sec × BASE_WALKING_SPEED / party.effective_speed)
 ```
 
-Python caches that matrix in **`cache/walk_matrix.npz`** (gitignored). A SHA-256 fingerprint of `data/pathways.json` plus walk-config knobs (`BASE_WALKING_SPEED`, `WALK_PATH_MAX_VARIANTS`, `WALK_PATH_LENGTH_SLACK`, node id set) decides whether the cache is still valid:
+Python loads that matrix from **`cache/walk_matrix.npz`** (gitignored, writable) or, if missing, committed **`data/walk_matrix.npz`** (used by the companion Docker deploy). A SHA-256 fingerprint of `data/pathways.json` plus walk-config knobs (`BASE_WALKING_SPEED`, `WALK_PATH_MAX_VARIANTS`, `WALK_PATH_LENGTH_SLACK`, node id set) decides whether the file is still valid:
 
 - Cache hit → `walk variants: loaded from cache` (fast).
-- Miss / stale → recompute all OD pairs, then write the cache.
+- Miss / stale → recompute all OD pairs (~1 min on a laptop; much longer on tiny free hosts), then write `cache/walk_matrix.npz`.
 
 Visualization also persists walk **polylines** under **`cache/walk_polylines.npz`** (same fingerprint) so pygame replay does not re-run near-shortest path enumeration every launch.
 
@@ -80,10 +80,12 @@ Force a rebuild with either:
 
 ```bash
 rm -f cache/walk_matrix.npz
-python -c "from park_graph import get_park_graph; get_park_graph(force_recompute=True)"
+python -c "from Park.park_graph import get_park_graph, reset_park_graph; reset_park_graph(); get_park_graph(force_recompute=True)"
+# If pathways/config changed, refresh the committed deploy copy:
+cp cache/walk_matrix.npz data/walk_matrix.npz
 ```
 
-Native export still embeds the matrix into `graph_data.hpp` at compile time; the disk cache only speeds up Python (`visualize.py`, tests, `export_native_data.py`).
+Native export still embeds the matrix into `graph_data.hpp` at compile time; the disk cache only speeds up Python (`visualize.py`, tests, `export_native_data.py`, companion).
 
 ## Editing the Layout
 

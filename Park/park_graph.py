@@ -15,7 +15,10 @@ import Park.config as config
 from Park.pathways import PATHWAYS_PATH, load_pathways
 
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
+# Writable rebuild target (gitignored). Prefer this when present.
 WALK_MATRIX_CACHE_PATH = CACHE_DIR / "walk_matrix.npz"
+# Committed fallback for deploy images (cache/ is dockerignored / gitignored).
+WALK_MATRIX_DATA_PATH = Path(__file__).resolve().parent / "data" / "walk_matrix.npz"
 WALK_POLYLINES_CACHE_PATH = CACHE_DIR / "walk_polylines.npz"
 
 
@@ -55,10 +58,23 @@ def _walk_matrix_fingerprint(node_ids: list[int]) -> str:
 def _load_walk_matrix_cache(
     fingerprint: str, num_nodes: int, k_max: int
 ) -> tuple[list[list[int]], list[list[int]], list[list[list[int]]]] | None:
-    if not WALK_MATRIX_CACHE_PATH.is_file():
+    for path in (WALK_MATRIX_CACHE_PATH, WALK_MATRIX_DATA_PATH):
+        loaded = _try_load_walk_matrix_file(path, fingerprint, num_nodes, k_max)
+        if loaded is not None:
+            return loaded
+    return None
+
+
+def _try_load_walk_matrix_file(
+    path: Path,
+    fingerprint: str,
+    num_nodes: int,
+    k_max: int,
+) -> tuple[list[list[int]], list[list[int]], list[list[list[int]]]] | None:
+    if not path.is_file():
         return None
     try:
-        data = np.load(WALK_MATRIX_CACHE_PATH, allow_pickle=False)
+        data = np.load(path, allow_pickle=False)
         if str(data["fingerprint"]) != fingerprint:
             return None
         walk_time = data["walk_time_sec"]
