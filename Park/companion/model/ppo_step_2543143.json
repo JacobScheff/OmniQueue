@@ -1,0 +1,13 @@
+{
+  "step": 2543143,
+  "path": "/workspace/Park/companion/model/ppo_step_2543143.onnx",
+  "source_pt": "/workspace/Park/companion/model/ppo_step_2543143.pt",
+  "phase": "ppo",
+  "update": 6,
+  "days_done": 6,
+  "must_do_completion_rate": 0.9937818158386494,
+  "avg_preference_score_per_guest": 1.0775479762852893,
+  "avg_must_do_latency_sec": 3854.4463932566055,
+  "avg_wait_variance": 2227902.4585466874,
+  "rides_per_party": 25.43160621761658
+}

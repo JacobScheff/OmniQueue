@@ -1,33 +1,39 @@
 """Companion runtime settings — edit this file instead of using env vars.
 
 Restart the server after changing anything here (settings are read at startup).
+
+Environment overrides (for free hosts like Render):
+  PORT, HOST, COMPANION_DEVICE
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 _MODEL_DIR = Path(__file__).resolve().parent / "model"
 
-# Named PPO checkpoints. Add v3, v4, … the same way.
+# Named PPO checkpoints (ONNX for free CPU hosting; .pt kept as training sources).
 # Tags shown in the UI come from these keys (v1, v2, …).
 MODELS: dict[str, Path] = {
-    "v1": _MODEL_DIR / "ppo_step_2543143.pt",
-    "v2": _MODEL_DIR / "ppo_final.pt",
+    "v1": _MODEL_DIR / "ppo_step_2543143.onnx",
+    "v2": _MODEL_DIR / "ppo_final.onnx",
 }
 
 # Default tag when the client does not specify one.
 DEFAULT_MODEL_VERSION = "v2"
 
-# Torch device for inference ("cpu" or "cuda").
-DEVICE = "cuda"
+# Inference device hint ("cpu" or "cuda"). Free hosts are CPU-only.
+# ONNX Runtime always uses CPUExecutionProvider in the companion image.
+DEVICE = os.environ.get("COMPANION_DEVICE", "cpu")
 
 # How long to cache ThemeParks.wiki live waits (seconds).
 WAIT_CACHE_TTL_SEC = 45.0
 
 # Bind address for the API / static server.
-HOST = "0.0.0.0"
-PORT = 8000
+# PORT is overridden by most hosts (Render sets $PORT).
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8000"))
 
 # Set True only for local frontend iteration (uvicorn --reload).
 RELOAD = False
