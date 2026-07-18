@@ -17,11 +17,16 @@ The training scripts only accept the small number of **run-time parameters** tha
 
 ## Prerequisites
 
+From the `Park/` directory:
+
 ```bash
 pip install -e .
 ```
 
 Requires the C++ extension (`_park_sim`) and PyTorch.
+
+Training scripts bootstrap `sys.path` so `import Park.*` works when launched as
+`python training/ppo_train.py` (or `bc_train.py`) with cwd = `Park/`.
 
 ## Phase 2: Behavioral Cloning
 

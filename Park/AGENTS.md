@@ -79,10 +79,14 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 
 ## Build
 
+Run commands from this `Park/` directory (the folder that contains `config.py`).
+
 ```bash
 pip install -e .
 python tools/export_native_data.py   # after config/graph changes
 ```
+
+Imports use the `Park.*` package name. Entry scripts add the **parent** of this directory to `sys.path` automatically, so `python training/ppo_train.py ...` works when your cwd is `Park/`. For ad-hoc imports or pytest, the parent directory (e.g. `OmniQueue/`) must be on `PYTHONPATH` — `pyproject.toml` configures this for pytest.
 
 ## Cursor Cloud specific instructions
 

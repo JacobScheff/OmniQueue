@@ -4,7 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
+from pathlib import Path
+
+# Parent of the Park/ package dir must be on sys.path for `import Park.*`.
+_PARENT = Path(__file__).resolve().parent.parent
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
 
 from Park.simulator import native_backend_name, run_day
 

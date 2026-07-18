@@ -12,6 +12,11 @@ import argparse
 import sys
 from pathlib import Path
 
+# Parent of the Park/ package dir must be on sys.path for `import Park.*`.
+_PARENT = Path(__file__).resolve().parent.parent
+if str(_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PARENT))
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Interactive OmniQueue play mode")
