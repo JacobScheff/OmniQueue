@@ -68,7 +68,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | [interactive-play.md](docs/interactive-play.md) | `play.py`, `play/` | Human-vs-AI interactive day, compare, benchmark |
 | [pref-mustdo-reward-plan.md](docs/pref-mustdo-reward-plan.md) | PPO / `ParkEnv` | Design plan: preference + must-do latency objective (ignore wait variance) |
 | [watch.md](docs/watch.md) | `watch.py`, `watch/` | PPO-focal watcher, timeline marks, mid-day prefs |
-| [companion.md](docs/companion.md) | `companion/` | Live wait-time companion + PPO recommendations (web) |
+| [companion.md](docs/companion.md) | `companion/` | Live wait-time companion + ONNX recommendations (web; free Render deploy) |
 
 ## Phase Roadmap
 

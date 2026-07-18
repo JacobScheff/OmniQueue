@@ -1,0 +1,16 @@
+.git
+.cursor
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/.mypy_cache
+Park/build
+Park/cache
+Park/checkpoints
+Park/oldCheckpoints
+Park/**/node_modules
+Park/companion/web/dist
+Park/tests
+fleet
+**/.DS_Store
+*.egg-info
