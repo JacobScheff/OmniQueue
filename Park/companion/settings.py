@@ -13,7 +13,7 @@ _MODEL_DIR = Path(__file__).resolve().parent / "model"
 # Tags shown in the UI come from these keys (v1, v2, …).
 MODELS: dict[str, Path] = {
     "v1": _MODEL_DIR / "ppo_step_2543143.pt",
-    "v2": _MODEL_DIR / "ppo_v2.pt",
+    "v2": _MODEL_DIR / "ppo_final.pt",
 }
 
 # Default tag when the client does not specify one.
