@@ -108,3 +108,4 @@ All guest state (prefs, must-dos, completions, location, leave time, undo/redo s
 - Credit [ThemeParks.wiki](https://themeparks.wiki) for wait data; respect their rate guidance (companion caches ~45s).
 - `run_companion.py` inserts the parent of `Park/` onto `sys.path` so you do not need to set `PYTHONPATH` (the editable wheel only installs `_park_sim`, not the Python package tree).
 - Deploy image uses **onnxruntime** only (no PyTorch) so it fits Render’s free ~512 MB RAM tier.
+- `Park.training.features` keeps dimension constants importable without torch; torch masking helpers load torch lazily for training.
