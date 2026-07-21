@@ -2,7 +2,7 @@
 #include "City.hpp"
 
 int main() {
-    City city(100, 100, 50, 42);
+    City city(100, 100, 50);
     Visualization viz(city);
     viz.show();
     return 0;
