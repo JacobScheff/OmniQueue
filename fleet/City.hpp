@@ -59,22 +59,19 @@ inline bool onSegment(Position a, Position b, Position p) {
 // True if AB and CD cross or overlap in their interiors.
 // Meeting only at a shared endpoint is allowed.
 inline bool segmentsOverlap(Position a, Position b, Position c, Position d) {
-    const bool shareEndpoint =
-        a==c || a==d || b==c || b==d;
+    const bool shareEndpoint = a == c || a == d || b == c || b == d;
 
     const int o1 = orientation(a, b, c);
     const int o2 = orientation(a, b, d);
     const int o3 = orientation(c, d, a);
     const int o4 = orientation(c, d, b);
 
-    // General case: segments cross (or meet at a vertex).
     if (o1 != o2 && o3 != o4) {
         return !shareEndpoint;
     }
 
-    // Collinear: an endpoint lies in the interior of the other segment.
     auto interiorOn = [](Position p, Position s, Position t) {
-        if (p==s || p==t) return false;
+        if (p == s || p == t) return false;
         return orientation(s, t, p) == 0 && onSegment(s, t, p);
     };
 
@@ -88,64 +85,158 @@ inline bool streetsOverlap(const Street& a, const Street& b) {
     return segmentsOverlap(a.I1->pos, a.I2->pos, b.I1->pos, b.I2->pos);
 }
 
+inline long long dist2(Position a, Position b) {
+    const long long dx = static_cast<long long>(a.x) - b.x;
+    const long long dy = static_cast<long long>(a.y) - b.y;
+    return dx * dx + dy * dy;
+}
+
+// Evenly spaced-ish points via Poisson-disk rejection sampling.
+inline std::vector<Position> samplePoissonDisk(
+    int width, int height, int count, std::default_random_engine& rng) {
+    std::uniform_int_distribution<int> xDist(0, std::max(0, width - 1));
+    std::uniform_int_distribution<int> yDist(0, std::max(0, height - 1));
+
+    const double area = static_cast<double>(std::max(1, width)) * std::max(1, height);
+    const double minDist =
+        0.75 * std::sqrt(area / static_cast<double>(std::max(1, count)));
+    const long long minDist2 = static_cast<long long>(minDist * minDist);
+
+    std::vector<Position> points;
+    points.reserve(static_cast<size_t>(count));
+
+    const int maxAttempts = std::max(count * 60, 100);
+    for (int attempt = 0; attempt < maxAttempts && static_cast<int>(points.size()) < count;
+         ++attempt) {
+        Position candidate{xDist(rng), yDist(rng)};
+        bool ok = true;
+        for (const Position& existing : points) {
+            if (candidate == existing || dist2(candidate, existing) < minDist2) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            points.push_back(candidate);
+        }
+    }
+
+    // If the disk radius was too strict, fill remaining with unique random points.
+    int guard = 0;
+    while (static_cast<int>(points.size()) < count && guard++ < count * 200) {
+        Position candidate{xDist(rng), yDist(rng)};
+        bool unique = true;
+        for (const Position& existing : points) {
+            if (candidate == existing) {
+                unique = false;
+                break;
+            }
+        }
+        if (unique) {
+            points.push_back(candidate);
+        }
+    }
+
+    return points;
+}
+
 struct City {
     City(int width, int height, int numIntersections, int seed = 42)
         : width(width), height(height), numIntersections(numIntersections) {
-        int avgStreetsPerIntersection = 4;
+        const int avgStreetsPerIntersection = 4;
 
         std::default_random_engine generator(seed);
-        std::normal_distribution<double> streetDist{
-            static_cast<double>(avgStreetsPerIntersection), 1.0};
-        std::uniform_int_distribution<int> xDist(0, width - 1);
-        std::uniform_int_distribution<int> yDist(0, height - 1);
 
-        for (int i = 0; i < numIntersections; ++i) {
-            intersections.push_back(new Intersection(Position{xDist(generator), yDist(generator)}));
+        // 1) Place intersections with Poisson-disk sampling.
+        const std::vector<Position> positions =
+            samplePoissonDisk(width, height, numIntersections, generator);
+        this->numIntersections = static_cast<int>(positions.size());
+        for (const Position& pos : positions) {
+            intersections.push_back(new Intersection(pos));
         }
 
-        for (int i = 0; i < numIntersections; ++i) {
-            int numStreets = std::max(1, static_cast<int>(streetDist(generator)));
-            int currStreets = static_cast<int>(intersectionToStreets[intersections[i]].size());
-            int streetsToCreate = numStreets - currStreets;
-            if (streetsToCreate <= 0) continue;
+        const int n = static_cast<int>(intersections.size());
+        if (n <= 1) {
+            return;
+        }
 
-            std::vector<Intersection*> sortedIntersections = intersections;
-            std::sort(sortedIntersections.begin(), sortedIntersections.end(),
-                      [this, i](Intersection* a, Intersection* b) {
-                          auto dist2 = [this, i](Intersection* p) {
-                              double dx = p->pos.x - intersections[i]->pos.x;
-                              double dy = p->pos.y - intersections[i]->pos.y;
-                              return dx * dx + dy * dy;
-                          };
-                          return dist2(a) < dist2(b);
-                      });
+        // 2) Euclidean MST — connected and non-crossing.
+        struct EdgeCand {
+            int u;
+            int v;
+            long long d2;
+            bool operator<(const EdgeCand& other) const { return d2 < other.d2; }
+        };
 
-            int created = 0;
-            for (size_t k = 1; k < sortedIntersections.size() && created < streetsToCreate; ++k) {
-                Intersection* target = sortedIntersections[k];
-                Street candidate(intersections[i], target);
-
-                auto& fromStreets = intersectionToStreets[intersections[i]];
-                if (std::find(fromStreets.begin(), fromStreets.end(), candidate) != fromStreets.end()) {
-                    continue;
-                }
-
-                bool overlapsExisting = false;
-                for (const Street& existing : streets) {
-                    if (streetsOverlap(candidate, existing)) {
-                        overlapsExisting = true;
-                        break;
-                    }
-                }
-                if (overlapsExisting) {
-                    continue; // skip; try the next-closest intersection
-                }
-
-                streets.insert(candidate);
-                intersectionToStreets[intersections[i]].push_back(candidate);
-                intersectionToStreets[target].push_back(candidate);
-                ++created;
+        std::vector<EdgeCand> allPairs;
+        allPairs.reserve(static_cast<size_t>(n) * (n - 1) / 2);
+        for (int i = 0; i < n; ++i) {
+            for (int j = i + 1; j < n; ++j) {
+                allPairs.push_back(
+                    EdgeCand{i, j, dist2(intersections[i]->pos, intersections[j]->pos)});
             }
+        }
+        std::sort(allPairs.begin(), allPairs.end());
+
+        std::vector<int> parent(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) parent[static_cast<size_t>(i)] = i;
+        auto findRoot = [&](int x) {
+            while (parent[static_cast<size_t>(x)] != x) {
+                parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])];
+                x = parent[static_cast<size_t>(x)];
+            }
+            return x;
+        };
+        auto unite = [&](int a, int b) {
+            a = findRoot(a);
+            b = findRoot(b);
+            if (a == b) return false;
+            parent[static_cast<size_t>(a)] = b;
+            return true;
+        };
+
+        auto tryAddStreet = [&](int u, int v) -> bool {
+            Street candidate(intersections[static_cast<size_t>(u)],
+                             intersections[static_cast<size_t>(v)]);
+            if (streets.find(candidate) != streets.end()) {
+                return false;
+            }
+            for (const Street& existing : streets) {
+                if (streetsOverlap(candidate, existing)) {
+                    return false;
+                }
+            }
+            streets.insert(candidate);
+            intersectionToStreets[candidate.I1].push_back(candidate);
+            intersectionToStreets[candidate.I2].push_back(candidate);
+            return true;
+        };
+
+        int mstEdges = 0;
+        for (const EdgeCand& edge : allPairs) {
+            if (!unite(edge.u, edge.v)) {
+                continue;
+            }
+            // Euclidean MST edges never cross; add unconditionally for connectivity.
+            Street street(intersections[static_cast<size_t>(edge.u)],
+                          intersections[static_cast<size_t>(edge.v)]);
+            streets.insert(street);
+            intersectionToStreets[street.I1].push_back(street);
+            intersectionToStreets[street.I2].push_back(street);
+            ++mstEdges;
+            if (mstEdges == n - 1) {
+                break;
+            }
+        }
+
+        // 3) Add short non-crossing chords until average degree ~ target.
+        const int targetStreetCount =
+            std::max(n - 1, (n * avgStreetsPerIntersection) / 2);
+        for (const EdgeCand& edge : allPairs) {
+            if (static_cast<int>(streets.size()) >= targetStreetCount) {
+                break;
+            }
+            tryAddStreet(edge.u, edge.v);
         }
     }
 
