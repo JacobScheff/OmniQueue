@@ -1,165 +1,151 @@
 #ifndef VISUALIZATION_HPP
 #define VISUALIZATION_HPP
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include "City.hpp"
 
 class Visualization {
 public:
-    explicit Visualization(const City& city, int windowWidth = 800, int windowHeight = 800)
-        : city_(city), windowWidth_(windowWidth), windowHeight_(windowHeight) {}
+    explicit Visualization(const City& city, int imageWidth = 800, int imageHeight = 800)
+        : city_(city), imageWidth_(imageWidth), imageHeight_(imageHeight) {}
 
-    // Opens a window, draws intersections and streets, and blocks until closed.
-    void show() const {
-        WNDCLASSEXW wc{};
-        wc.cbSize = sizeof(wc);
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc = &Visualization::WndProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        wc.lpszClassName = kClassName;
-
-        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-            return;
-        }
-
-        const DWORD style = WS_OVERLAPPEDWINDOW;
-        RECT rect{0, 0, windowWidth_, windowHeight_};
-        AdjustWindowRect(&rect, style, FALSE);
-
-        HWND hwnd = CreateWindowExW(
-            0,
-            kClassName,
-            L"Fleet City Visualization",
-            style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-            nullptr,
-            nullptr,
-            GetModuleHandleW(nullptr),
-            const_cast<Visualization*>(this));
-
-        if (!hwnd) {
-            return;
-        }
-
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
-
-        MSG msg;
-        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+    // Renders intersections and streets to a BMP and opens it in the default viewer.
+    void show(const std::string& path = "city.bmp") const {
+        writeBmp(path);
+        std::string command = "cmd /c start \"\" \"" + path + "\"";
+        std::system(command.c_str());
     }
 
 private:
-    static constexpr const wchar_t* kClassName = L"FleetCityVisualization";
     static constexpr int kMargin = 24;
     static constexpr int kIntersectionRadius = 4;
 
     const City& city_;
-    int windowWidth_;
-    int windowHeight_;
+    int imageWidth_;
+    int imageHeight_;
 
-    void paint(HWND hwnd) const {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-
-        RECT client{};
-        GetClientRect(hwnd, &client);
-        const int drawW = std::max(1, static_cast<int>(client.right - client.left) - 2 * kMargin);
-        const int drawH = std::max(1, static_cast<int>(client.bottom - client.top) - 2 * kMargin);
-
-        HBRUSH bg = CreateSolidBrush(RGB(245, 245, 248));
-        FillRect(hdc, &client, bg);
-        DeleteObject(bg);
-
-        HPEN streetPen = CreatePen(PS_SOLID, 2, RGB(90, 110, 140));
-        HGDIOBJ oldPen = SelectObject(hdc, streetPen);
-
-        for (const Street& street : city_.streets) {
-            if (!street.I1 || !street.I2) continue;
-            int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-            mapPoint(street.I1->pos.x, street.I1->pos.y, drawW, drawH, x1, y1);
-            mapPoint(street.I2->pos.x, street.I2->pos.y, drawW, drawH, x2, y2);
-            MoveToEx(hdc, x1, y1, nullptr);
-            LineTo(hdc, x2, y2);
-        }
-
-        SelectObject(hdc, oldPen);
-        DeleteObject(streetPen);
-
-        HBRUSH nodeBrush = CreateSolidBrush(RGB(220, 70, 70));
-        HPEN nodePen = CreatePen(PS_SOLID, 1, RGB(120, 30, 30));
-        oldPen = SelectObject(hdc, nodePen);
-        HGDIOBJ oldBrush = SelectObject(hdc, nodeBrush);
-
-        for (const Intersection* intersection : city_.intersections) {
-            if (!intersection) continue;
-            int x = 0, y = 0;
-            mapPoint(intersection->pos.x, intersection->pos.y, drawW, drawH, x, y);
-            Ellipse(
-                hdc,
-                x - kIntersectionRadius,
-                y - kIntersectionRadius,
-                x + kIntersectionRadius,
-                y + kIntersectionRadius);
-        }
-
-        SelectObject(hdc, oldBrush);
-        SelectObject(hdc, oldPen);
-        DeleteObject(nodeBrush);
-        DeleteObject(nodePen);
-
-        std::wstring summary =
-            L"Intersections: " + std::to_wstring(city_.intersections.size()) +
-            L"   Streets: " + std::to_wstring(city_.streets.size());
-        SetBkMode(hdc, TRANSPARENT);
-        TextOutW(hdc, kMargin, 4, summary.c_str(), static_cast<int>(summary.size()));
-
-        EndPaint(hwnd, &ps);
-    }
-
-    void mapPoint(int cityX, int cityY, int drawW, int drawH, int& outX, int& outY) const {
+    void mapPoint(int cityX, int cityY, int& outX, int& outY) const {
+        const int drawW = std::max(1, imageWidth_ - 2 * kMargin);
+        const int drawH = std::max(1, imageHeight_ - 2 * kMargin);
         const double sx = city_.width > 1 ? static_cast<double>(cityX) / (city_.width - 1) : 0.5;
         const double sy = city_.height > 1 ? static_cast<double>(cityY) / (city_.height - 1) : 0.5;
         outX = kMargin + static_cast<int>(sx * drawW);
         outY = kMargin + static_cast<int>(sy * drawH);
     }
 
-    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        Visualization* self = nullptr;
-        if (msg == WM_NCCREATE) {
-            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
-            self = static_cast<Visualization*>(cs->lpCreateParams);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-        } else {
-            self = reinterpret_cast<Visualization*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    static void putPixel(std::vector<uint8_t>& pixels, int w, int h, int x, int y,
+                         uint8_t r, uint8_t g, uint8_t b) {
+        if (x < 0 || y < 0 || x >= w || y >= h) return;
+        const size_t i = (static_cast<size_t>(y) * w + x) * 3;
+        pixels[i] = r;
+        pixels[i + 1] = g;
+        pixels[i + 2] = b;
+    }
+
+    static void drawLine(std::vector<uint8_t>& pixels, int w, int h,
+                         int x0, int y0, int x1, int y1,
+                         uint8_t r, uint8_t g, uint8_t b) {
+        int dx = std::abs(x1 - x0);
+        int dy = -std::abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+        while (true) {
+            putPixel(pixels, w, h, x0, y0, r, g, b);
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) {
+                err += dy;
+                x0 += sx;
+            }
+            if (e2 <= dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    static void fillCircle(std::vector<uint8_t>& pixels, int w, int h,
+                           int cx, int cy, int radius,
+                           uint8_t r, uint8_t g, uint8_t b) {
+        const int r2 = radius * radius;
+        for (int y = -radius; y <= radius; ++y) {
+            for (int x = -radius; x <= radius; ++x) {
+                if (x * x + y * y <= r2) {
+                    putPixel(pixels, w, h, cx + x, cy + y, r, g, b);
+                }
+            }
+        }
+    }
+
+    void writeBmp(const std::string& path) const {
+        const int w = imageWidth_;
+        const int h = imageHeight_;
+        std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 3, 245);
+
+        for (const Street& street : city_.streets) {
+            if (!street.I1 || !street.I2) continue;
+            int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            mapPoint(street.I1->pos.x, street.I1->pos.y, x0, y0);
+            mapPoint(street.I2->pos.x, street.I2->pos.y, x1, y1);
+            drawLine(pixels, w, h, x0, y0, x1, y1, 90, 110, 140);
         }
 
-        switch (msg) {
-            case WM_PAINT:
-                if (self) self->paint(hwnd);
-                return 0;
-            case WM_DESTROY:
-                PostQuitMessage(0);
-                return 0;
-            default:
-                return DefWindowProcW(hwnd, msg, wParam, lParam);
+        for (const Intersection* intersection : city_.intersections) {
+            if (!intersection) continue;
+            int x = 0, y = 0;
+            mapPoint(intersection->pos.x, intersection->pos.y, x, y);
+            fillCircle(pixels, w, h, x, y, kIntersectionRadius, 220, 70, 70);
+        }
+
+        const int rowStride = ((w * 3 + 3) / 4) * 4;
+        const uint32_t pixelBytes = static_cast<uint32_t>(rowStride) * h;
+        const uint32_t fileSize = 54 + pixelBytes;
+
+        std::ofstream out(path, std::ios::binary);
+        auto write16 = [&](uint16_t v) {
+            out.put(static_cast<char>(v & 0xFF));
+            out.put(static_cast<char>((v >> 8) & 0xFF));
+        };
+        auto write32 = [&](uint32_t v) {
+            out.put(static_cast<char>(v & 0xFF));
+            out.put(static_cast<char>((v >> 8) & 0xFF));
+            out.put(static_cast<char>((v >> 16) & 0xFF));
+            out.put(static_cast<char>((v >> 24) & 0xFF));
+        };
+
+        out.put('B');
+        out.put('M');
+        write32(fileSize);
+        write32(0);
+        write32(54);
+        write32(40);
+        write32(static_cast<uint32_t>(w));
+        write32(static_cast<uint32_t>(h));
+        write16(1);
+        write16(24);
+        write32(0);
+        write32(pixelBytes);
+        write32(2835);
+        write32(2835);
+        write32(0);
+        write32(0);
+
+        std::vector<char> row(static_cast<size_t>(rowStride), 0);
+        for (int y = h - 1; y >= 0; --y) {
+            for (int x = 0; x < w; ++x) {
+                const size_t i = (static_cast<size_t>(y) * w + x) * 3;
+                row[static_cast<size_t>(x) * 3] = static_cast<char>(pixels[i + 2]);
+                row[static_cast<size_t>(x) * 3 + 1] = static_cast<char>(pixels[i + 1]);
+                row[static_cast<size_t>(x) * 3 + 2] = static_cast<char>(pixels[i]);
+            }
+            out.write(row.data(), rowStride);
         }
     }
 };

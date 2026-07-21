@@ -43,6 +43,51 @@ struct hash<Street> {
 };
 }
 
+inline int orientation(Position a, Position b, Position c) {
+    const long long v =
+        1LL * (b.y - a.y) * (c.x - b.x) - 1LL * (b.x - a.x) * (c.y - b.y);
+    if (v > 0) return 1;
+    if (v < 0) return -1;
+    return 0;
+}
+
+inline bool onSegment(Position a, Position b, Position p) {
+    return p.x >= std::min(a.x, b.x) && p.x <= std::max(a.x, b.x) &&
+           p.y >= std::min(a.y, b.y) && p.y <= std::max(a.y, b.y);
+}
+
+// True if AB and CD cross or overlap in their interiors.
+// Meeting only at a shared endpoint is allowed.
+inline bool segmentsOverlap(Position a, Position b, Position c, Position d) {
+    const bool shareEndpoint =
+        a==c || a==d || b==c || b==d;
+
+    const int o1 = orientation(a, b, c);
+    const int o2 = orientation(a, b, d);
+    const int o3 = orientation(c, d, a);
+    const int o4 = orientation(c, d, b);
+
+    // General case: segments cross (or meet at a vertex).
+    if (o1 != o2 && o3 != o4) {
+        return !shareEndpoint;
+    }
+
+    // Collinear: an endpoint lies in the interior of the other segment.
+    auto interiorOn = [](Position p, Position s, Position t) {
+        if (p==s || p==t) return false;
+        return orientation(s, t, p) == 0 && onSegment(s, t, p);
+    };
+
+    return interiorOn(c, a, b) || interiorOn(d, a, b) ||
+           interiorOn(a, c, d) || interiorOn(b, c, d);
+}
+
+inline bool streetsOverlap(const Street& a, const Street& b) {
+    if (!a.I1 || !a.I2 || !b.I1 || !b.I2) return false;
+    if (a == b) return true;
+    return segmentsOverlap(a.I1->pos, a.I2->pos, b.I1->pos, b.I2->pos);
+}
+
 struct City {
     City(int width, int height, int numIntersections, int seed = 42)
         : width(width), height(height), numIntersections(numIntersections) {
@@ -83,6 +128,17 @@ struct City {
                 auto& fromStreets = intersectionToStreets[intersections[i]];
                 if (std::find(fromStreets.begin(), fromStreets.end(), candidate) != fromStreets.end()) {
                     continue;
+                }
+
+                bool overlapsExisting = false;
+                for (const Street& existing : streets) {
+                    if (streetsOverlap(candidate, existing)) {
+                        overlapsExisting = true;
+                        break;
+                    }
+                }
+                if (overlapsExisting) {
+                    continue; // skip; try the next-closest intersection
                 }
 
                 streets.insert(candidate);
