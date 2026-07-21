@@ -1,6 +1,12 @@
+#include "City.hpp"
+
 class Request {
     public:
-        Request();
+        Request(Intersection* start, Intersection* destination, int time) : start(start), destination(destination), requestedAtTime(time) {}
 
     private:
+        Intersection* start;
+        Intersection* destination;
+
+        int requestedAtTime;
 };

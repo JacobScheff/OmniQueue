@@ -1,95 +1,114 @@
-#include "iostream"
-#include <vector>
+#ifndef CITY_HPP
+#define CITY_HPP
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <random>
 #include <unordered_map>
 #include <unordered_set>
-#include <random>
+#include <utility>
+#include <vector>
 
-using namespace std;
+#include "Position.hpp"
 
 struct Street;
 
 struct Intersection {
-    public:
-        Intersection(int x, int y) : x(x), y(y) {}
+    Intersection(Position pos) : pos(pos) {}
 
-        int x;
-        int y;
-
-        vector<Street*> streets;
+    Position pos;
 };
 
 struct Street {
-    public:
-        Street(Intersection* I1, Intersection* I2) : I1(I1), I2(I2) {}
+    Street(Intersection* I1, Intersection* I2) : I1(I1), I2(I2) {}
 
-        Intersection* I1;
-        Intersection* I2;
+    Intersection* I1;
+    Intersection* I2;
+
+    bool operator==(const Street& other) const {
+        return (I1 == other.I1 && I2 == other.I2) || (I1 == other.I2 && I2 == other.I1);
+    }
 };
+
+namespace std {
+template <>
+struct hash<Street> {
+    size_t operator()(const Street& s) const {
+        auto a = reinterpret_cast<uintptr_t>(s.I1);
+        auto b = reinterpret_cast<uintptr_t>(s.I2);
+        if (a > b) std::swap(a, b);
+        return std::hash<uintptr_t>()(a) ^ (std::hash<uintptr_t>()(b) << 1);
+    }
+};
+}
 
 struct City {
-    public:
-        City(int width, int height, int numIntersections, int seed = 42)
-            : width(width), height(height), numIntersections(numIntersections) {
-                int avgStreetsPerIntersection = 4;
+    City(int width, int height, int numIntersections, int seed = 42)
+        : width(width), height(height), numIntersections(numIntersections) {
+        int avgStreetsPerIntersection = 4;
 
-                std::default_random_engine generator(seed);
-                std::normal_distribution<double> distribution{avgStreetsPerIntersection, 1.0};
+        std::default_random_engine generator(seed);
+        std::normal_distribution<double> streetDist{
+            static_cast<double>(avgStreetsPerIntersection), 1.0};
+        std::uniform_int_distribution<int> xDist(0, width - 1);
+        std::uniform_int_distribution<int> yDist(0, height - 1);
 
-                for (int i = 0; i < numIntersections; ++i) {
-                    int x = rand() % width;
-                    int y = rand() % height;
-                    intersections.push_back(new Intersection(x, y));
+        for (int i = 0; i < numIntersections; ++i) {
+            intersections.push_back(new Intersection(Position{xDist(generator), yDist(generator)}));
+        }
+
+        for (int i = 0; i < numIntersections; ++i) {
+            int numStreets = std::max(1, static_cast<int>(streetDist(generator)));
+            int currStreets = static_cast<int>(intersectionToStreets[intersections[i]].size());
+            int streetsToCreate = numStreets - currStreets;
+            if (streetsToCreate <= 0) continue;
+
+            std::vector<Intersection*> sortedIntersections = intersections;
+            std::sort(sortedIntersections.begin(), sortedIntersections.end(),
+                      [this, i](Intersection* a, Intersection* b) {
+                          auto dist2 = [this, i](Intersection* p) {
+                              double dx = p->pos.x - intersections[i]->pos.x;
+                              double dy = p->pos.y - intersections[i]->pos.y;
+                              return dx * dx + dy * dy;
+                          };
+                          return dist2(a) < dist2(b);
+                      });
+
+            int created = 0;
+            for (size_t k = 1; k < sortedIntersections.size() && created < streetsToCreate; ++k) {
+                Intersection* target = sortedIntersections[k];
+                Street candidate(intersections[i], target);
+
+                auto& fromStreets = intersectionToStreets[intersections[i]];
+                if (std::find(fromStreets.begin(), fromStreets.end(), candidate) != fromStreets.end()) {
+                    continue;
                 }
 
-                for (int i = 0; i < numIntersections; ++i) {
-                    int numStreets = int(distribution(generator));
-                    numStreets = max(1, numStreets);
-
-                    int currStreets = 0;
-                    if (intersectionToStreets.find(intersections[i]) == intersectionToStreets.end()) {
-                        intersectionToStreets[intersections[i]] = vector<Street*>();
-                    } else {
-                        currStreets = intersectionToStreets[intersections[i]].size();
-                    }
-
-                    int streetsToCreate = numStreets - currStreets;
-                    if (streetsToCreate <= 0) continue;
-
-                    // Sort intersections by distance to the current intersection
-                    vector<Intersection*> sortedIntersections = intersections;
-                    sort(sortedIntersections.begin(), sortedIntersections.end(), [i](Intersection* a, Intersection* b) {
-                        return sqrt(pow(a->x - intersections[i]->x, 2) + pow(a->y - intersections[i]->y, 2)) < sqrt(pow(b->x - intersections[i]->x, 2) + pow(b->y - intersections[i]->y, 2));
-                    });
-
-                    int k = 1; // Skip the current intersection
-                    for (int j = 0; j < numStreets - currStreets; ++j) {
-                        // Create new street between intersections[i] and the closest intersection that is not connected to it
-                        Intersection* targetIntersection = sortedIntersections[k];
-
-                        // Check if street from intersections[i] to targetIntersection or targetIntersection to intersections[i] already exists
-                        if (std::find(intersectionToStreets[intersections[i]].begin(), intersectionToStreets[intersections[i]].end(), Street(intersections[i], targetIntersection)) != intersectionToStreets[intersections[i]].end()) {
-                            continue;
-                        }
-
-                        if (std::find(intersectionToStreets[targetIntersection].begin(), intersectionToStreets[targetIntersection].end(), Street(targetIntersection, intersections[i])) != intersectionToStreets[targetIntersection].end()) {
-                            continue;
-                        }
-
-                        Street newStreet(intersections[i], targetIntersection);
-
-                        streets.insert(newStreet);
-                        intersectionToStreets[intersections[i]].push_back(newStreet);
-                        intersectionToStreets[targetIntersection].push_back(newStreet);
-                    }
-                }
-                
+                streets.insert(candidate);
+                intersectionToStreets[intersections[i]].push_back(candidate);
+                intersectionToStreets[target].push_back(candidate);
+                ++created;
             }
+        }
+    }
 
-        int width;
-        int height;
-        int numIntersections;
+    ~City() {
+        for (Intersection* intersection : intersections) {
+            delete intersection;
+        }
+    }
 
-        vector<Intersection*> intersections;
-        unordered_map<Intersection*, vector<Street>> intersectionToStreets;
-        unordered_set<Street> streets;
+    City(const City&) = delete;
+    City& operator=(const City&) = delete;
+
+    int width;
+    int height;
+    int numIntersections;
+
+    std::vector<Intersection*> intersections;
+    std::unordered_map<Intersection*, std::vector<Street>> intersectionToStreets;
+    std::unordered_set<Street> streets;
 };
+
+#endif
