@@ -1,3 +1,6 @@
+#ifndef POSITION_HPP
+#define POSITION_HPP
+
 struct Position {
     int x;
     int y;
@@ -29,3 +32,5 @@ struct Position {
         return !(*this < other);
     }
 };
+
+#endif

@@ -263,16 +263,33 @@ struct City {
     std::unordered_set<Street> streets;
 
     std::vector<std::vector<int>> distanceMatrix;
+    std::unordered_map<Intersection*, int> indexOf;
+
+    static constexpr int kUnreachable = std::numeric_limits<int>::max();
+
+    int distance(int u, int v) const {
+        return distanceMatrix[static_cast<size_t>(u)][static_cast<size_t>(v)];
+    }
+
+    bool reachable(int u, int v) const {
+        return distance(u, v) < kUnreachable;
+    }
+
+    // Travel time in seconds at constant speed (distance units per second).
+    int travelTime(int u, int v, double speed = 1.0) const {
+        const int d = distance(u, v);
+        if (d >= kUnreachable) return kUnreachable;
+        if (speed <= 0.0) return kUnreachable;
+        return std::max(1, static_cast<int>(std::lround(static_cast<double>(d) / speed)));
+    }
 
     private:
-        static constexpr int kUnreachable = std::numeric_limits<int>::max();
-
         void constructDistanceMatrix() {
             const int n = static_cast<int>(intersections.size());
             distanceMatrix.assign(static_cast<size_t>(n),
                                   std::vector<int>(static_cast<size_t>(n), kUnreachable));
 
-            std::unordered_map<Intersection*, int> indexOf;
+            indexOf.clear();
             indexOf.reserve(static_cast<size_t>(n));
             for (int i = 0; i < n; ++i) {
                 indexOf[intersections[static_cast<size_t>(i)]] = i;
