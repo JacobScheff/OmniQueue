@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <queue>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
@@ -238,6 +240,9 @@ struct City {
             }
             tryAddStreet(edge.u, edge.v);
         }
+
+        // Construct the distance matrix
+        constructDistanceMatrix();
     }
 
     ~City() {
@@ -256,6 +261,67 @@ struct City {
     std::vector<Intersection*> intersections;
     std::unordered_map<Intersection*, std::vector<Street>> intersectionToStreets;
     std::unordered_set<Street> streets;
+
+    std::vector<std::vector<int>> distanceMatrix;
+
+    private:
+        static constexpr int kUnreachable = std::numeric_limits<int>::max();
+
+        void constructDistanceMatrix() {
+            const int n = static_cast<int>(intersections.size());
+            distanceMatrix.assign(static_cast<size_t>(n),
+                                  std::vector<int>(static_cast<size_t>(n), kUnreachable));
+
+            std::unordered_map<Intersection*, int> indexOf;
+            indexOf.reserve(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) {
+                indexOf[intersections[static_cast<size_t>(i)]] = i;
+            }
+
+            // Adjacency list; street weight = rounded Euclidean length.
+            std::vector<std::vector<std::pair<int, int>>> adj(static_cast<size_t>(n));
+            for (const Street& street : streets) {
+                const int u = indexOf[street.I1];
+                const int v = indexOf[street.I2];
+                const int w = std::max(
+                    1, static_cast<int>(std::lround(
+                           std::sqrt(static_cast<double>(dist2(street.I1->pos, street.I2->pos))))));
+                adj[static_cast<size_t>(u)].push_back({v, w});
+                adj[static_cast<size_t>(v)].push_back({u, w});
+            }
+
+            // Multi-source Dijkstra: every intersection is seeded as a source in
+            // one shared heap; entries carry (dist, source, node) so each source's
+            // search settles independently.
+            struct Entry {
+                int dist;
+                int source;
+                int node;
+                bool operator>(const Entry& other) const { return dist > other.dist; }
+            };
+            std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> heap;
+
+            for (int s = 0; s < n; ++s) {
+                distanceMatrix[static_cast<size_t>(s)][static_cast<size_t>(s)] = 0;
+                heap.push(Entry{0, s, s});
+            }
+
+            while (!heap.empty()) {
+                const Entry top = heap.top();
+                heap.pop();
+                auto& distFromSource = distanceMatrix[static_cast<size_t>(top.source)];
+                if (top.dist > distFromSource[static_cast<size_t>(top.node)]) {
+                    continue;  // Stale entry.
+                }
+                for (const auto& [next, weight] : adj[static_cast<size_t>(top.node)]) {
+                    const int candidate = top.dist + weight;
+                    if (candidate < distFromSource[static_cast<size_t>(next)]) {
+                        distFromSource[static_cast<size_t>(next)] = candidate;
+                        heap.push(Entry{candidate, top.source, next});
+                    }
+                }
+            }
+        }
 };
 
 #endif
