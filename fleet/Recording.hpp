@@ -55,7 +55,7 @@ struct RecordConfig {
     int cityWidth = 1200;
     int cityHeight = 1200;
     int numIntersections = 80;
-    int numVehicles = 25;
+    int numVehicles = 30;
     int numRequests = 3840;
     int horizonSec = 86400;
     double vehicleSpeed = 2.0;

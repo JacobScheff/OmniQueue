@@ -64,6 +64,7 @@ class PPOConfig:
     num_requests: int = config.PPO_NUM_REQUESTS
     num_intersections: int = config.PPO_NUM_INTERSECTIONS
     horizon_sec: int = config.PPO_HORIZON_SEC
+    checkpoint: str | None = None
 
 
 @dataclass
@@ -314,6 +315,72 @@ def _ppo_update(
     return last
 
 
+def _fleet_config_dict(cfg: PPOConfig) -> dict:
+    return {
+        "num_envs": cfg.num_envs,
+        "num_vehicles": cfg.num_vehicles,
+        "num_requests": cfg.num_requests,
+        "num_intersections": cfg.num_intersections,
+        "horizon_sec": cfg.horizon_sec,
+    }
+
+
+def _apply_saved_fleet_config(cfg: PPOConfig, saved: dict) -> None:
+    """Restore env scale from checkpoint so resumed runs match prior training."""
+    if "num_vehicles" in saved:
+        cfg.num_vehicles = int(saved["num_vehicles"])
+    if "num_requests" in saved:
+        cfg.num_requests = int(saved["num_requests"])
+    if "num_intersections" in saved:
+        cfg.num_intersections = int(saved["num_intersections"])
+    if "horizon_sec" in saved:
+        cfg.horizon_sec = int(saved["horizon_sec"])
+
+
+def _checkpoint_payload(
+    agent: Agent,
+    optimizer: optim.Optimizer,
+    *,
+    update: int,
+    global_steps: int,
+    cfg: PPOConfig,
+) -> dict:
+    return {
+        "model": agent.model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "update": update,
+        "global_steps": global_steps,
+        "config": _fleet_config_dict(cfg),
+    }
+
+
+def _load_training_checkpoint(
+    path: Path,
+    agent: Agent,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, int, dict]:
+    """Load model (+ optimizer if present). Returns (start_update, global_steps, saved_cfg)."""
+    if not path.is_file():
+        raise FileNotFoundError(f"PPO checkpoint not found: {path}")
+
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    if "model" not in ckpt:
+        raise KeyError(f"Checkpoint missing 'model' state_dict: {path}")
+
+    agent.model.load_state_dict(ckpt["model"])
+    if "optimizer" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer"])
+        _log(f"loaded optimizer state from {path}")
+    else:
+        _log(f"checkpoint has no optimizer state; continuing with fresh Adam")
+
+    start_update = int(ckpt.get("update", 0))
+    global_steps = int(ckpt.get("global_steps", 0))
+    saved_cfg = ckpt.get("config") or {}
+    return start_update, global_steps, saved_cfg
+
+
 def train(cfg: PPOConfig) -> None:
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -323,11 +390,25 @@ def train(cfg: PPOConfig) -> None:
     agent = Agent().to(device)
     optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
 
+    start_update = 0
+    global_steps = 0
+    if cfg.checkpoint:
+        start_update, global_steps, saved_cfg = _load_training_checkpoint(
+            Path(cfg.checkpoint), agent, optimizer, device
+        )
+        _apply_saved_fleet_config(cfg, saved_cfg)
+        _log(
+            f"resumed from {cfg.checkpoint} "
+            f"(update={start_update}, global_steps={global_steps})"
+        )
+
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    end_update = start_update + cfg.total_updates
 
     _log(
-        f"PPO start: updates={cfg.total_updates} envs={cfg.num_envs} device={device} "
+        f"PPO start: updates={start_update}->{end_update} (+{cfg.total_updates}) "
+        f"envs={cfg.num_envs} device={device} "
         f"fleet={cfg.num_vehicles}v/{cfg.num_requests}r "
         f"graph={cfg.num_intersections}n horizon={cfg.horizon_sec}s"
     )
@@ -336,10 +417,9 @@ def train(cfg: PPOConfig) -> None:
         f"python FLAT_OBS_DIM={config.FLAT_OBS_DIM} NUM_ACTIONS={_fleet_sim.NUM_ACTIONS}"
     )
 
-    global_steps = 0
-    for update in range(cfg.total_updates):
+    for update in range(start_update, end_update):
         if cfg.anneal_lr:
-            frac = 1.0 - update / max(1, cfg.total_updates)
+            frac = 1.0 - update / max(1, end_update)
             for pg in optimizer.param_groups:
                 pg["lr"] = cfg.learning_rate * frac
 
@@ -347,10 +427,11 @@ def train(cfg: PPOConfig) -> None:
         batch = _collect_parallel(agent, cfg, device, seed)
         stats = _ppo_update(agent, optimizer, batch, cfg)
         global_steps += batch.total_steps
+        finished = update + 1
 
-        if cfg.log_every > 0 and (update + 1) % cfg.log_every == 0:
+        if cfg.log_every > 0 and finished % cfg.log_every == 0:
             _log(
-                f"up={update + 1}/{cfg.total_updates} "
+                f"up={finished}/{end_update} "
                 f"steps/env={batch.mean_steps:.0f} total_steps={batch.total_steps} "
                 f"return={batch.mean_return:.2f} "
                 f"completed={batch.mean_completed:.1f} "
@@ -361,27 +442,31 @@ def train(cfg: PPOConfig) -> None:
                 f"rollout={batch.rollout_sec:.1f}s"
             )
 
-        if cfg.save_every > 0 and (update + 1) % cfg.save_every == 0:
-            path = save_dir / f"ppo_up{update + 1}.pt"
+        if cfg.save_every > 0 and finished % cfg.save_every == 0:
+            path = save_dir / f"ppo_up{finished}.pt"
             torch.save(
-                {
-                    "model": agent.model.state_dict(),
-                    "update": update + 1,
-                    "global_steps": global_steps,
-                    "config": {
-                        "num_envs": cfg.num_envs,
-                        "num_vehicles": cfg.num_vehicles,
-                        "num_requests": cfg.num_requests,
-                        "num_intersections": cfg.num_intersections,
-                        "horizon_sec": cfg.horizon_sec,
-                    },
-                },
+                _checkpoint_payload(
+                    agent,
+                    optimizer,
+                    update=finished,
+                    global_steps=global_steps,
+                    cfg=cfg,
+                ),
                 path,
             )
             _log(f"saved {path}")
 
     final = save_dir / "ppo_final.pt"
-    torch.save({"model": agent.model.state_dict(), "update": cfg.total_updates}, final)
+    torch.save(
+        _checkpoint_payload(
+            agent,
+            optimizer,
+            update=end_update,
+            global_steps=global_steps,
+            cfg=cfg,
+        ),
+        final,
+    )
     _log(f"done. saved {final} (total decision steps={global_steps})")
 
 
@@ -394,7 +479,12 @@ def parse_args() -> PPOConfig:
         default=None,
         help="Alias for --updates (kept for CLI compatibility).",
     )
-    p.add_argument("--updates", type=int, default=20)
+    p.add_argument(
+        "--updates",
+        type=int,
+        default=20,
+        help="Number of PPO updates to run (additional when resuming).",
+    )
     p.add_argument("--num-envs", type=int, default=config.PPO_NUM_ENVS)
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--num-vehicles", type=int, default=config.PPO_NUM_VEHICLES)
@@ -403,6 +493,14 @@ def parse_args() -> PPOConfig:
     p.add_argument("--horizon-sec", type=int, default=config.PPO_HORIZON_SEC)
     p.add_argument("--lr", type=float, default=config.PPO_LEARNING_RATE)
     p.add_argument("--save-dir", type=str, default=config.PPO_SAVE_DIR)
+    p.add_argument(
+        "--checkpoint",
+        "--resume",
+        type=str,
+        default=None,
+        dest="checkpoint",
+        help="Load a prior checkpoint and continue training from its update count.",
+    )
     args = p.parse_args()
     updates = args.episodes if args.episodes is not None else args.updates
     return PPOConfig(
@@ -416,6 +514,7 @@ def parse_args() -> PPOConfig:
         num_intersections=args.num_intersections,
         horizon_sec=args.horizon_sec,
         save_dir=args.save_dir,
+        checkpoint=args.checkpoint,
     )
 
 

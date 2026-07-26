@@ -7,7 +7,7 @@ int main() {
     City city(/*width=*/1000, /*height=*/1000, /*numIntersections=*/80, /*seed=*/42);
 
     SimConfig cfg;
-    cfg.numVehicles = 25;
+    cfg.numVehicles = 30;
     cfg.numRequests = 300;
     cfg.horizonSec = 3600;
     cfg.vehicleSpeed = 2.0;

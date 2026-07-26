@@ -20,7 +20,9 @@
 struct SimConfig {
     int numVehicles = 20;
     int horizonSec = 3600;          // one-hour shift
-    int numRequests = 160;          // total demand over the horizon
+    int numRequests = 120;          // total demand over the spawn window
+    // No new requests in the final N seconds so in-flight rides can finish.
+    int requestSpawnCutoffSec = 900;
     double vehicleSpeed = 1.0;      // distance units / second
     int vehicleCapacity = 1;
     int seed = 42;
@@ -116,8 +118,11 @@ public:
         }
         busySince_.assign(vehicles_.size(), -1);
 
-        // Pre-schedule request spawns uniformly across the horizon.
-        std::uniform_int_distribution<int> timeDist(0, std::max(0, config_.horizonSec - 1));
+        // Pre-schedule request spawns uniformly, leaving a tail with no new
+        // demand so pickups/dropoffs can finish before the horizon.
+        const int spawnEnd = std::max(
+            0, config_.horizonSec - std::max(0, config_.requestSpawnCutoffSec) - 1);
+        std::uniform_int_distribution<int> timeDist(0, spawnEnd);
         std::vector<int> spawnTimes;
         spawnTimes.reserve(static_cast<size_t>(config_.numRequests));
         for (int i = 0; i < config_.numRequests; ++i) {

@@ -50,8 +50,8 @@ struct EnvConfig {
     int cityWidth = 1200;
     int cityHeight = 1200;
     int numIntersections = 80;
-    int numVehicles = 25;
-    int numRequests = 160;
+    int numVehicles = 30;
+    int numRequests = 120;
     int horizonSec = 3600;
     double vehicleSpeed = 2.0;
     int vehicleCapacity = 1;
@@ -189,7 +189,8 @@ private:
     std::unique_ptr<City> city_;
     std::unique_ptr<Simulation> sim_;
     int currentVehicleId_ = -1;
-    // Vehicles that chose STAY at the current sim time; skipped until time moves.    std::vector<int> stayedVehicleIds_;
+    // Vehicles that chose STAY at the current sim time; skipped until time moves.
+    std::vector<int> stayedVehicleIds_;
     int stayedAtTime_ = -1;
 
     bool recordEnabled_ = false;

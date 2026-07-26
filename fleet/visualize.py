@@ -401,8 +401,8 @@ def run_visualizer(
     speed: float = 60.0,
     sample_interval: int = 60,
     horizon_sec: int = 3600,
-    num_vehicles: int = 25,
-    num_requests: int = 160,
+    num_vehicles: int = 30,
+    num_requests: int = 120,
     num_intersections: int = 80,
     city_width: int | None = None,
     city_height: int | None = None,
@@ -829,8 +829,8 @@ def main(argv: list[str] | None = None) -> int:
         default=3600,
         help="Episode length if not stored in checkpoint config",
     )
-    parser.add_argument("--num-vehicles", type=int, default=25)
-    parser.add_argument("--num-requests", type=int, default=160)
+    parser.add_argument("--num-vehicles", type=int, default=30)
+    parser.add_argument("--num-requests", type=int, default=120)
     parser.add_argument("--num-intersections", type=int, default=80)
     parser.add_argument("--city-width", type=int, default=None)
     parser.add_argument("--city-height", type=int, default=None)
