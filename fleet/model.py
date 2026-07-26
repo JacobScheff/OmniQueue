@@ -2,9 +2,11 @@
 
 Vehicles are coordinated with a transformer (guests → vehicles). Actions are a
 masked pointer over padded request slots plus STAY/IDLE — not a softmax over
-intersections. Optional mean-aggregation GNN encodes the street graph into
+intersections. Optional Graph Transformer encodes the street graph into
 fixed-width node embeddings used for vehicle/request locations.
 """
+
+from __future__ import annotations
 
 import math
 
@@ -14,22 +16,75 @@ import torch.nn as nn
 import fleet.config as config
 
 
-# Graph Transformer (intersection + street network)
+def _shortest_path_hops(A: torch.Tensor, max_spd: int) -> torch.Tensor:
+    """All-pairs unweighted hop distances via Floyd–Warshall.
+
+    Uses connectivity (A > 0), ignoring edge weights. Unreachable pairs are
+    clamped to ``max_spd`` so they share the farthest spatial-bias bucket.
+    """
+    n = A.size(-1)
+    unreachable = max_spd + 1
+    dist = torch.full(A.shape, unreachable, device=A.device, dtype=torch.long)
+    dist = dist.masked_fill(A > 0, 1)
+    idx = torch.arange(n, device=A.device)
+    dist[..., idx, idx] = 0
+
+    for k in range(n):
+        via = dist[..., :, k].unsqueeze(-1) + dist[..., k, :].unsqueeze(-2)
+        dist = torch.minimum(dist, via)
+    return dist.clamp(max=max_spd)
+
+
+def _laplacian_pe(A: torch.Tensor, k: int, training: bool) -> torch.Tensor:
+    """Smallest non-trivial Laplacian eigenvectors; shape (..., n, k).
+
+    Uses a symmetrized adjacency so ``eigh`` is well-defined on directed street
+    graphs. Skips the trivial (≈0) eigenmode. Randomly flips eigenvector signs
+    during training (standard LapPE augmentation).
+    """
+    # Symmetrize for an undirected combinatorial Laplacian.
+    A_sym = torch.maximum(A, A.transpose(-2, -1)).to(dtype=torch.float32)
+    deg = A_sym.sum(dim=-1)
+    L = torch.diag_embed(deg) - A_sym
+
+    # Batched eigh: eigenvalues ascending, columns = eigenvectors.
+    _, evecs = torch.linalg.eigh(L)
+    n = A_sym.size(-1)
+    take = min(k, max(n - 1, 0))
+
+    pe = evecs.new_zeros(*evecs.shape[:-1], k)
+    if take > 0:
+        pe[..., :, :take] = evecs[..., :, 1 : 1 + take]
+        if training:
+            signs = (
+                torch.empty(
+                    *pe.shape[:-2],
+                    1,
+                    k,
+                    device=pe.device,
+                    dtype=pe.dtype,
+                )
+                .bernoulli_(0.5)
+                .mul_(2)
+                .sub_(1)
+            )
+            pe = pe * signs
+    return pe
+
+
 class GraphTransformerLayer(nn.Module):
-    def __init__(self):
+    """One full-attention + FFN block over graph nodes with spatial/edge biases."""
+
+    def __init__(self, d_model: int | None = None, n_heads: int | None = None):
         super().__init__()
-        d_model = config.D_MODEL
-        n_heads = config.NUM_ATTN_HEADS
+        d_model = d_model if d_model is not None else config.D_MODEL
+        n_heads = n_heads if n_heads is not None else config.NUM_ATTN_HEADS
         assert d_model % n_heads == 0
 
         self.num_heads = n_heads
         self.d_head = d_model // n_heads
         self.max_spd = config.MAX_SHORTEST_PATH_DIST
 
-        self.node_feature_expansion = nn.Linear(config.INTERSECTION_DYNAMIC_FEAT_DIM, d_model)
-        self.laplacian_pe_proj = nn.Linear(config.LAPLACIAN_PE_DIM, d_model)
-
-        # Full attention (Q/K/V) + output projection
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
@@ -37,6 +92,8 @@ class GraphTransformerLayer(nn.Module):
 
         # B_φ(i,j): learned per-head bias indexed by shortest-path hop distance
         self.spatial_bias = nn.Embedding(self.max_spd + 1, n_heads)
+        # Binary edge presence bias (0 = no edge, 1 = edge)
+        self.edge_bias = nn.Embedding(2, n_heads)
 
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -46,22 +103,13 @@ class GraphTransformerLayer(nn.Module):
             nn.Linear(4 * d_model, d_model),
         )
 
-    def _shortest_path_hops(self, A: torch.Tensor) -> torch.Tensor:
-        """All-pairs hop distances via Floyd–Warshall; unreachable clamped to max_spd."""
-        n = A.size(-1)
-        unreachable = self.max_spd + 1
-        dist = torch.full(A.shape, unreachable, device=A.device, dtype=torch.long)
-        dist = dist.masked_fill(A > 0, 1)
-        idx = torch.arange(n, device=A.device)
-        dist[..., idx, idx] = 0
-
-        for k in range(n):
-            via = dist[..., :, k].unsqueeze(-1) + dist[..., k, :].unsqueeze(-2)
-            dist = torch.minimum(dist, via)
-        return dist.clamp(max=self.max_spd)
-
-    def _attend(self, x: torch.Tensor, streets: torch.Tensor) -> torch.Tensor:
-        """All-to-all attention with shortest-path and edge biases."""
+    def _attend(
+        self,
+        x: torch.Tensor,
+        spd: torch.Tensor,
+        streets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Attn(i,j) = Softmax(Q_i K_j^T / √d + B_φ(i,j) + edge_bias) V_j."""
         *batch, n, _ = x.shape
         h, d_h = self.num_heads, self.d_head
 
@@ -69,46 +117,71 @@ class GraphTransformerLayer(nn.Module):
         k = self.k_proj(x).view(*batch, n, h, d_h).movedim(-2, -3)
         v = self.v_proj(x).view(*batch, n, h, d_h).movedim(-2, -3)
 
-        # QK^T / sqrt(d)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_h)
-
-        # + B_φ(i,j) from shortest-path distance
-        spd = self._shortest_path_hops(streets)
         scores = scores + self.spatial_bias(spd).movedim(-1, -3)
+
+        edge = (streets > 0).long()
+        scores = scores + self.edge_bias(edge).movedim(-1, -3)
 
         attn = torch.softmax(scores, dim=-1)
         out = torch.matmul(attn, v)
         out = out.movedim(-3, -2).contiguous().view(*batch, n, h * d_h)
         return self.out_proj(out)
 
-    def forward(self, intersections, streets):
-        # Expand intersection features to d_model
-        intersections = self.node_feature_expansion(intersections)
-
-        # --- Structural Encodings --- #
-
-        # Graph Laplacian = D - A, where D is the degree matrix and A is the adjacency matrix
-        A = streets
-        D = torch.diag_embed(A.sum(dim=-1))
-        L = D - A
-
-        # Compute the Laplacian positional encodings (top-k eigenvectors)
-        # eigenvectors: [..., n, k] — row i is node i's k-dim structural coordinates
-        _, eigenvectors = torch.lobpcg(L, k=config.LAPLACIAN_PE_DIM, largest=True)
-
-        # Assign coordinates: SE_i = (u_1[i], ..., u_k[i]); project to d_model and inject
-        structural_encoding = self.laplacian_pe_proj(eigenvectors)
-        x = intersections + structural_encoding
-
-        # --- Full Attention with Edge Biases --- #
-        # Attn(i,j) = Softmax(Q_i K_j^T / sqrt(d) + B_φ(i,j) + edge_bias) V_j
-        x = self.norm1(x + self._attend(x, streets))
-
-        # --- FFN (shared across nodes) + second residual / LayerNorm --- #
+    def forward(
+        self,
+        x: torch.Tensor,
+        spd: torch.Tensor,
+        streets: torch.Tensor,
+    ) -> torch.Tensor:
+        x = self.norm1(x + self._attend(x, spd, streets))
         x = self.norm2(x + self.ffn(x))
         return x
 
-# Vehicle ↔ vehicle self-attention (wave coordinator)
+
+class GraphEncoder(nn.Module):
+    """Street-graph encoder: LapPE once, SPD once, then ``NUM_GNN_LAYERS`` blocks."""
+
+    def __init__(
+        self,
+        d_model: int | None = None,
+        n_heads: int | None = None,
+        num_layers: int | None = None,
+    ):
+        super().__init__()
+        d_model = d_model if d_model is not None else config.D_MODEL
+        n_heads = n_heads if n_heads is not None else config.NUM_ATTN_HEADS
+        num_layers = num_layers if num_layers is not None else config.NUM_GNN_LAYERS
+
+        self.max_spd = config.MAX_SHORTEST_PATH_DIST
+        self.pe_dim = config.LAPLACIAN_PE_DIM
+
+        self.node_feature_expansion = nn.Linear(
+            config.INTERSECTION_DYNAMIC_FEAT_DIM, d_model
+        )
+        self.laplacian_pe_proj = nn.Linear(self.pe_dim, d_model)
+        self.layers = nn.ModuleList(
+            [GraphTransformerLayer(d_model, n_heads) for _ in range(num_layers)]
+        )
+
+    def forward(
+        self,
+        intersections: torch.Tensor,
+        streets: torch.Tensor,
+    ) -> torch.Tensor:
+        x = self.node_feature_expansion(intersections)
+
+        pe = _laplacian_pe(streets, self.pe_dim, training=self.training)
+        pe = pe.to(dtype=x.dtype)
+        x = x + self.laplacian_pe_proj(pe)
+
+        # Structural biases shared across all stacked layers.
+        spd = _shortest_path_hops(streets, self.max_spd)
+        for layer in self.layers:
+            x = layer(x, spd, streets)
+        return x
+
+
 class VehicleCoordinatorLayer(nn.Module):
     """One self-attention + FFN block over the free-vehicle axis."""
 
@@ -149,7 +222,9 @@ class VehicleCoordinatorLayer(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_h)
 
         if key_padding_mask is not None:
-            scores = scores.masked_fill(~key_padding_mask.unsqueeze(-2).unsqueeze(-2), float("-inf"))
+            scores = scores.masked_fill(
+                ~key_padding_mask.unsqueeze(-2).unsqueeze(-2), float("-inf")
+            )
 
         attn = torch.softmax(scores, dim=-1)
         attn = torch.nan_to_num(attn, nan=0.0)
@@ -166,7 +241,7 @@ class VehicleCoordinatorLayer(nn.Module):
         x = self.norm2(x + self.ffn(x))
         return x
 
-# Vehicle cross Request Attention
+
 class VehicleRequestCrossAttentionLayer(nn.Module):
     def __init__(self, d_model: int, num_heads: int, d_head: int):
         super().__init__()
@@ -198,14 +273,16 @@ class VehicleRequestCrossAttentionLayer(nn.Module):
         k = self.k_proj(k).view(*batch, n_kv, h, d_h).movedim(-2, -3)
         v = self.v_proj(v).view(*batch, n_kv, h, d_h).movedim(-2, -3)
 
-        # QK^T / sqrt(d)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_h)
 
         if key_padding_mask is not None:
-            # Broadcast over heads: (..., 1, 1, n_kv)
-            scores = scores.masked_fill(~key_padding_mask.unsqueeze(-2).unsqueeze(-2), float("-inf"))
+            scores = scores.masked_fill(
+                ~key_padding_mask.unsqueeze(-2).unsqueeze(-2), float("-inf")
+            )
 
         attn = torch.softmax(scores, dim=-1)
+        # All-padded keys → softmax(NaN); zero those rows out.
+        attn = torch.nan_to_num(attn, nan=0.0)
         out = torch.matmul(attn, v)
         out = out.movedim(-3, -2).contiguous().view(*batch, n_q, h * d_h)
         return self.out_proj(out)
@@ -216,7 +293,10 @@ class VehicleRequestCrossAttentionLayer(nn.Module):
         requests: torch.Tensor,
         request_padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self._attend(vehicle, requests, requests, key_padding_mask=request_padding_mask)
+        return self._attend(
+            vehicle, requests, requests, key_padding_mask=request_padding_mask
+        )
+
 
 class VehicleRouter(nn.Module):
     """Masked pointer actor-critic over request slots + STAY/IDLE.
@@ -239,11 +319,14 @@ class VehicleRouter(nn.Module):
         max_requests: int = config.MAX_REQUESTS,
         max_nodes: int = config.MAX_NODES,
         use_graph_encoder: bool = True,
+        num_gnn_layers: int = config.NUM_GNN_LAYERS,
     ):
         super().__init__()
 
         if d_model % num_heads != 0:
-            raise ValueError(f"d_model={d_model} must be divisible by num_heads={num_heads}")
+            raise ValueError(
+                f"d_model={d_model} must be divisible by num_heads={num_heads}"
+            )
 
         self.max_requests = max_requests
         self.num_actions = num_actions or (max_requests + config.NUM_SPECIAL_ACTIONS)
@@ -255,7 +338,11 @@ class VehicleRouter(nn.Module):
         d_head = d_model // num_heads
 
         # Location encodings: graph transformer and/or node-id fallback.
-        self.graph_encoder = GraphTransformerLayer() if use_graph_encoder else None
+        self.graph_encoder = (
+            GraphEncoder(d_model, num_heads, num_gnn_layers)
+            if use_graph_encoder
+            else None
+        )
         self.node_id_embed = nn.Embedding(max_nodes, d_model)
 
         self.vehicle_proj = nn.Sequential(
@@ -322,7 +409,9 @@ class VehicleRouter(nn.Module):
         if intersections is not None and intersections.dim() == 3:
             batch, num_nodes, _ = intersections.shape
             ids = torch.arange(num_nodes, device=device)
-            return self.node_id_embed(ids).to(dtype=dtype).unsqueeze(0).expand(batch, -1, -1)
+            return self.node_id_embed(ids).to(dtype=dtype).unsqueeze(0).expand(
+                batch, -1, -1
+            )
 
         ids = torch.arange(num_nodes_hint, device=device)
         return self.node_id_embed(ids).to(dtype=dtype)
@@ -369,7 +458,7 @@ class VehicleRouter(nn.Module):
         vehicle_padding_mask: (B, V) True = valid vehicle
         request_padding_mask: (B, R) True = valid request slot
         vehicle_node_index / request_origin_index / request_dest_index: long indices
-        intersections / streets: optional street graph for GraphTransformerLayer
+        intersections / streets: optional street graph for GraphEncoder
 
         Returns:
             logits: (B, V, num_actions) — request slots then STAY, IDLE
@@ -468,10 +557,17 @@ class VehicleRouter(nn.Module):
             self.d_model ** 0.5
         )
 
+        # Mask invalid / padded request slots so they cannot be sampled.
+        if request_padding_mask is not None:
+            attention_scores = attention_scores.masked_fill(
+                ~request_padding_mask.unsqueeze(1), float("-inf")
+            )
+
         # Pad request logit axis to max_requests so action indices stay stable.
         if num_requests < self.max_requests:
-            pad = attention_scores.new_zeros(
-                batch_size, num_vehicles, self.max_requests - num_requests
+            pad = attention_scores.new_full(
+                (batch_size, num_vehicles, self.max_requests - num_requests),
+                float("-inf"),
             )
             attention_scores = torch.cat([attention_scores, pad], dim=-1)
 
