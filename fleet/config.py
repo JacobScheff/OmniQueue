@@ -17,8 +17,10 @@ NUM_ACTIONS = MAX_REQUESTS + NUM_SPECIAL_ACTIONS
 # ---------------------------------------------------------------------------
 
 VEHICLE_DYNAMIC_FEAT_DIM = 8
-INTERSECTION_DYNAMIC_FEAT_DIM = 2 # Num waiting at intersection, total waiting time
+INTERSECTION_DYNAMIC_FEAT_DIM = 2  # Num waiting at intersection, total waiting time
 REQUEST_DYNAMIC_FEAT_DIM = 8
+PAIRWISE_DYNAMIC_FEAT_DIM = 4 # Pairwise vehicle ↔ request (drive time / dist / energy / reachable).
+ENV_DYNAMIC_FEAT_DIM = 4 # Global env: time-of-day, backlog, fleet SOC mean, free-vehicle fraction.
 
 # ---------------------------------------------------------------------------
 # Model architecture defaults
