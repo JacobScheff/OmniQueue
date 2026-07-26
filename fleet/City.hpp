@@ -211,6 +211,7 @@ struct City {
             streets.insert(candidate);
             intersectionToStreets[candidate.I1].push_back(candidate);
             intersectionToStreets[candidate.I2].push_back(candidate);
+            undirectedEdges.emplace_back(std::min(u, v), std::max(u, v));
             return true;
         };
 
@@ -225,6 +226,7 @@ struct City {
             streets.insert(street);
             intersectionToStreets[street.I1].push_back(street);
             intersectionToStreets[street.I2].push_back(street);
+            undirectedEdges.emplace_back(std::min(edge.u, edge.v), std::max(edge.u, edge.v));
             ++mstEdges;
             if (mstEdges == n - 1) {
                 break;
@@ -261,6 +263,7 @@ struct City {
     std::vector<Intersection*> intersections;
     std::unordered_map<Intersection*, std::vector<Street>> intersectionToStreets;
     std::unordered_set<Street> streets;
+    std::vector<std::pair<int, int>> undirectedEdges;
 
     std::vector<std::vector<int>> distanceMatrix;
     std::unordered_map<Intersection*, int> indexOf;
