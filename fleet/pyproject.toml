@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core>=0.5", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "omniqueue-fleet"
+version = "0.1.0"
+description = "EV / ride-hail fleet dispatch simulator and PPO training"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+viz = ["pygame>=2.5"]
+dev = ["pytest>=7.0"]
+
+[tool.scikit-build]
+wheel.packages = []
+wheel.install-dir = "."
+cmake.version = ">=3.15"
+build-dir = "build/{wheel_tag}"
+editable.mode = "redirect"
+
+[tool.scikit-build.cmake.define]
+CMAKE_CXX_STANDARD = "17"

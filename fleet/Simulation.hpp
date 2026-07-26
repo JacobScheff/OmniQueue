@@ -20,11 +20,14 @@
 struct SimConfig {
     int numVehicles = 20;
     int horizonSec = 3600;          // one-hour shift
-    int numRequests = 200;          // total demand over the horizon
+    int numRequests = 160;          // total demand over the horizon
     double vehicleSpeed = 1.0;      // distance units / second
     int vehicleCapacity = 1;
     int seed = 42;
     bool verbose = false;
+    // When false, dispatch pauses for an external policy (PPO) instead of the
+    // built-in greedy heuristic.
+    bool useHeuristic = true;
 };
 
 struct SimMetrics {
@@ -57,6 +60,8 @@ struct SimMetrics {
         return busyVehicleSec / denom;
     }
 };
+
+#include "Recording.hpp"
 
 enum class EventType : uint8_t {
     RequestSpawn = 0,
@@ -134,18 +139,69 @@ public:
             requests_.push_back(r);
             schedule(r.spawnTime, EventType::RequestSpawn, -1, r.id);
         }
+
+        if (recording_) {
+            initRecordingSkeleton();
+        }
+    }
+
+    void set_recording(DayRecording* out, int sample_interval_sec = 60) {
+        recording_ = out;
+        sampleInterval_ = std::max(1, sample_interval_sec);
+        nextSampleSec_ = 0;
+        if (recording_) {
+            initRecordingSkeleton();
+        }
     }
 
     SimMetrics run() {
-        while (!events_.empty()) {
-            const SimEvent ev = events_.top();
-            events_.pop();
-            if (ev.time > config_.horizonSec) break;
-            now_ = ev.time;
-            dispatchEvent(ev);
+        if (recording_) {
+            maybeRecordSamples();
         }
+        while (advanceOneEvent()) {
+        }
+        const SimMetrics m = finalizeHorizon();
+        finishRecording(m);
+        return m;
+    }
 
-        // Cancel leftovers that spawned but were not completed by horizon.
+    // Flush request/sample/metadata into the active DayRecording after finalize.
+    void finishRecording(const SimMetrics& m) {
+        if (!recording_) return;
+        syncRequestRecordsFinal();
+        const int savedNow = now_;
+        now_ = config_.horizonSec;
+        maybeRecordSamples();
+        if (recording_->samples.empty() ||
+            recording_->samples.back().sec < config_.horizonSec) {
+            recording_->samples.push_back(buildSample(config_.horizonSec));
+        }
+        now_ = savedNow;
+        recording_->metrics = m;
+        recording_->numVehicles = config_.numVehicles;
+        recording_->numRequests = config_.numRequests;
+        recording_->horizonSec = config_.horizonSec;
+        recording_->vehicleSpeed = config_.vehicleSpeed;
+        recording_->numIntersections = static_cast<int>(city_.intersections.size());
+    }
+
+    // Process the next event at or before horizon. Returns false when the
+    // episode can no longer advance (no events, or next event past horizon).
+    bool advanceOneEvent() {
+        if (events_.empty()) return false;
+        const SimEvent ev = events_.top();
+        if (ev.time > config_.horizonSec) return false;
+        events_.pop();
+        now_ = ev.time;
+        dispatchEvent(ev);
+        if (recording_) {
+            maybeRecordSamples();
+        }
+        return true;
+    }
+
+    // Cancel unfinished requests at horizon and settle busy vehicles.
+    SimMetrics finalizeHorizon() {
         for (Request& r : requests_) {
             if (r.spawnTime > config_.horizonSec) continue;
             if (r.status != RequestStatus::Pending && r.status != RequestStatus::Assigned &&
@@ -173,6 +229,54 @@ public:
     const std::vector<Request>& requests() const { return requests_; }
     const SimMetrics& metrics() const { return metrics_; }
     const SimConfig& config() const { return config_; }
+    bool eventsPending() const {
+        return !events_.empty() && events_.top().time <= config_.horizonSec;
+    }
+
+    // Assign free vehicle → open request (used by heuristic and policy).
+    void assignPickup(int vehicleId, int requestId) {
+        Vehicle& v = vehicles_[static_cast<size_t>(vehicleId)];
+        Request& r = requests_[static_cast<size_t>(requestId)];
+        if (!v.isFree() || !r.isOpen()) return;
+
+        v.assignedRequest = requestId;
+        r.assignedVehicle = vehicleId;
+        r.assignTime = now_;
+        r.status = RequestStatus::Assigned;
+        ++metrics_.assignments;
+        recordRequestAssign(requestId);
+
+        if (config_.verbose) {
+            std::cout << "[" << now_ << "] assign vehicle " << vehicleId
+                      << " -> request " << requestId
+                      << " dist=" << city_.distance(v.node, r.origin) << "\n";
+        }
+
+        if (v.node == r.origin) {
+            // Already at pickup — serve immediately via a zero-delay event.
+            schedule(now_, EventType::ArrivePickup, vehicleId, requestId);
+            v.status = VehicleStatus::EnRoutePickup;
+            v.fromNode = v.node;
+            v.toNode = v.node;
+            v.departTime = now_;
+            v.arriveTime = now_;
+            markBusy(v);
+            recordTrip(v, requestId, TripKind::Pickup);
+        } else {
+            beginTrip(v, r.origin, VehicleStatus::EnRoutePickup, EventType::ArrivePickup,
+                      requestId);
+        }
+    }
+
+    // Reposition an idle vehicle toward a destination node (IDLE action).
+    void assignIdle(int vehicleId, int destNode) {
+        Vehicle& v = vehicles_[static_cast<size_t>(vehicleId)];
+        if (!v.isFree()) return;
+        if (destNode < 0 || destNode >= static_cast<int>(city_.intersections.size())) return;
+        if (v.node == destNode) return;
+        if (!city_.reachable(v.node, destNode)) return;
+        beginTrip(v, destNode, VehicleStatus::EnRouteIdle, EventType::ArriveIdle, -1);
+    }
 
 private:
     City& city_;
@@ -188,6 +292,145 @@ private:
 
     // Per-vehicle busy accounting: time when current busy segment started (-1 if idle).
     std::vector<int> busySince_;
+
+    DayRecording* recording_ = nullptr;
+    int sampleInterval_ = 60;
+    int nextSampleSec_ = 0;
+
+    void initRecordingSkeleton() {
+        if (!recording_) return;
+        recording_->trips.clear();
+        recording_->samples.clear();
+        recording_->metrics = {};
+        recording_->vehicleStartNodes.clear();
+        recording_->vehicleStartNodes.reserve(vehicles_.size());
+        for (const Vehicle& v : vehicles_) {
+            recording_->vehicleStartNodes.push_back(v.node);
+        }
+        fillCityGeometry();
+        initRequestRecords();
+        nextSampleSec_ = 0;
+    }
+
+    void fillCityGeometry() {
+        if (!recording_) return;
+        CityGeometry& g = recording_->city;
+        g.width = city_.width;
+        g.height = city_.height;
+        g.nodes.clear();
+        g.nodes.reserve(city_.intersections.size());
+        for (const Intersection* inter : city_.intersections) {
+            g.nodes.emplace_back(inter->pos.x, inter->pos.y);
+        }
+        g.edges = city_.undirectedEdges;
+    }
+
+    void initRequestRecords() {
+        if (!recording_) return;
+        recording_->requests.clear();
+        recording_->requests.reserve(requests_.size());
+        for (const Request& r : requests_) {
+            RequestRecord rr;
+            rr.id = r.id;
+            rr.origin = r.origin;
+            rr.dest = r.destination;
+            rr.spawnSec = r.spawnTime;
+            rr.assignSec = r.assignTime;
+            rr.pickupSec = r.pickupTime;
+            rr.dropoffSec = r.dropoffTime;
+            rr.status = static_cast<uint8_t>(r.status);
+            recording_->requests.push_back(rr);
+        }
+    }
+
+    void syncRequestRecordsFinal() {
+        if (!recording_) return;
+        if (recording_->requests.size() != requests_.size()) {
+            initRequestRecords();
+            return;
+        }
+        for (size_t i = 0; i < requests_.size(); ++i) {
+            const Request& r = requests_[i];
+            RequestRecord& rr = recording_->requests[i];
+            rr.assignSec = r.assignTime;
+            rr.pickupSec = r.pickupTime;
+            rr.dropoffSec = r.dropoffTime;
+            rr.status = static_cast<uint8_t>(r.status);
+        }
+    }
+
+    RequestRecord* requestRecord(int requestId) {
+        if (!recording_ || requestId < 0 ||
+            requestId >= static_cast<int>(recording_->requests.size())) {
+            return nullptr;
+        }
+        return &recording_->requests[static_cast<size_t>(requestId)];
+    }
+
+    void recordRequestAssign(int requestId) {
+        if (RequestRecord* rr = requestRecord(requestId)) {
+            rr->assignSec = now_;
+            rr->status = static_cast<uint8_t>(RequestStatus::Assigned);
+        }
+    }
+
+    void recordTrip(const Vehicle& v, int requestId, TripKind kind) {
+        if (!recording_) return;
+        TripRecord t;
+        t.vehicleId = v.id;
+        t.fromNode = v.fromNode;
+        t.toNode = v.toNode;
+        t.startSec = v.departTime;
+        t.endSec = v.arriveTime;
+        t.requestId = requestId;
+        t.kind = kind;
+        recording_->trips.push_back(t);
+    }
+
+    static TripKind tripKindFromStatus(VehicleStatus status) {
+        switch (status) {
+            case VehicleStatus::EnRouteDropoff:
+                return TripKind::Dropoff;
+            case VehicleStatus::EnRouteIdle:
+                return TripKind::Idle;
+            case VehicleStatus::EnRoutePickup:
+            default:
+                return TripKind::Pickup;
+        }
+    }
+
+    MetricSample buildSample(int sec) const {
+        MetricSample s;
+        s.sec = sec;
+        int pending = 0;
+        for (const Request& r : requests_) {
+            if (r.status == RequestStatus::Pending) ++pending;
+        }
+        int freeCount = 0;
+        int busyCount = 0;
+        for (const Vehicle& v : vehicles_) {
+            if (v.isFree()) {
+                ++freeCount;
+            } else {
+                ++busyCount;
+            }
+        }
+        s.pending = pending;
+        s.freeVehicles = freeCount;
+        s.busyVehicles = busyCount;
+        s.completed = metrics_.requestsCompleted;
+        s.spawned = metrics_.requestsSpawned;
+        s.meanWait = static_cast<float>(metrics_.meanWait());
+        return s;
+    }
+
+    void maybeRecordSamples() {
+        if (!recording_ || sampleInterval_ <= 0) return;
+        while (nextSampleSec_ <= now_ && nextSampleSec_ <= config_.horizonSec) {
+            recording_->samples.push_back(buildSample(nextSampleSec_));
+            nextSampleSec_ += sampleInterval_;
+        }
+    }
 
     void schedule(int time, EventType type, int vehicleId, int requestId) {
         if (time < now_) time = now_;
@@ -224,6 +467,7 @@ private:
         v.status = status;
         markBusy(v);
         schedule(v.arriveTime, arriveType, v.id, requestId);
+        recordTrip(v, requestId, tripKindFromStatus(status));
     }
 
     void dispatchEvent(const SimEvent& ev) {
@@ -249,11 +493,14 @@ private:
         if (r.status != RequestStatus::Scheduled) return;
         r.status = RequestStatus::Pending;
         ++metrics_.requestsSpawned;
+        if (RequestRecord* rr = requestRecord(requestId)) {
+            rr->status = static_cast<uint8_t>(RequestStatus::Pending);
+        }
         if (config_.verbose) {
             std::cout << "[" << now_ << "] spawn request " << requestId
                       << " " << r.origin << "->" << r.destination << "\n";
         }
-        heuristicDispatch();
+        maybeDispatch();
     }
 
     void onArrivePickup(int vehicleId, int requestId) {
@@ -268,6 +515,10 @@ private:
         v.node = r.origin;
         r.status = RequestStatus::PickedUp;
         r.pickupTime = now_;
+        if (RequestRecord* rr = requestRecord(requestId)) {
+            rr->pickupSec = now_;
+            rr->status = static_cast<uint8_t>(RequestStatus::PickedUp);
+        }
         if (config_.verbose) {
             std::cout << "[" << now_ << "] vehicle " << vehicleId
                       << " pickup request " << requestId << "\n";
@@ -296,13 +547,17 @@ private:
         metrics_.requestsCompleted += 1;
         metrics_.waitSum += static_cast<double>(r.waitTime());
         metrics_.tripSum += static_cast<double>(r.tripTime());
+        if (RequestRecord* rr = requestRecord(requestId)) {
+            rr->dropoffSec = now_;
+            rr->status = static_cast<uint8_t>(RequestStatus::Completed);
+        }
 
         if (config_.verbose) {
             std::cout << "[" << now_ << "] vehicle " << vehicleId
                       << " dropoff request " << requestId
                       << " wait=" << r.waitTime() << "\n";
         }
-        heuristicDispatch();
+        maybeDispatch();
     }
 
     void onArriveIdle(int vehicleId) {
@@ -312,7 +567,14 @@ private:
         v.node = v.toNode;
         settleBusy(v);
         v.status = VehicleStatus::Idle;
-        heuristicDispatch();
+        maybeDispatch();
+    }
+
+    void maybeDispatch() {
+        if (config_.useHeuristic) {
+            heuristicDispatch();
+        }
+        // Policy mode: FleetEnv pauses at decision points; no auto-dispatch.
     }
 
     // Exclusive greedy dispatch: oldest pending request ← nearest free vehicle.
@@ -358,38 +620,6 @@ private:
 
             assignPickup(bestVehicle, reqId);
             vehicleTaken[static_cast<size_t>(bestVehicle)] = 1;
-        }
-    }
-
-    void assignPickup(int vehicleId, int requestId) {
-        Vehicle& v = vehicles_[static_cast<size_t>(vehicleId)];
-        Request& r = requests_[static_cast<size_t>(requestId)];
-        if (!v.isFree() || !r.isOpen()) return;
-
-        v.assignedRequest = requestId;
-        r.assignedVehicle = vehicleId;
-        r.assignTime = now_;
-        r.status = RequestStatus::Assigned;
-        ++metrics_.assignments;
-
-        if (config_.verbose) {
-            std::cout << "[" << now_ << "] assign vehicle " << vehicleId
-                      << " -> request " << requestId
-                      << " dist=" << city_.distance(v.node, r.origin) << "\n";
-        }
-
-        if (v.node == r.origin) {
-            // Already at pickup — serve immediately via a zero-delay event.
-            schedule(now_, EventType::ArrivePickup, vehicleId, requestId);
-            v.status = VehicleStatus::EnRoutePickup;
-            v.fromNode = v.node;
-            v.toNode = v.node;
-            v.departTime = now_;
-            v.arriveTime = now_;
-            markBusy(v);
-        } else {
-            beginTrip(v, r.origin, VehicleStatus::EnRoutePickup, EventType::ArrivePickup,
-                      requestId);
         }
     }
 };
@@ -455,6 +685,29 @@ inline void printMetrics(const SimMetrics& m, const SimConfig& cfg) {
               << "  - times a free vehicle was matched to a request\n"
               << "  Fleet busy time:         " << formatPercent(util)
               << "  - share of (vehicles x shift) spent driving or serving\n";
+}
+
+/** Run a seeded heuristic episode and return a scrubbable recording. */
+inline DayRecording record_day(uint64_t seed, RecordConfig cfg = {},
+                               int sample_interval_sec = 60) {
+    City city(cfg.cityWidth, cfg.cityHeight, cfg.numIntersections,
+              static_cast<int>(seed & 0x7fffffffULL));
+
+    SimConfig simCfg;
+    simCfg.numVehicles = cfg.numVehicles;
+    simCfg.numRequests = cfg.numRequests;
+    simCfg.horizonSec = cfg.horizonSec;
+    simCfg.vehicleSpeed = cfg.vehicleSpeed;
+    simCfg.vehicleCapacity = cfg.vehicleCapacity;
+    simCfg.seed = static_cast<int>(seed);
+    simCfg.useHeuristic = true;
+    simCfg.verbose = false;
+
+    Simulation sim(city, simCfg);
+    DayRecording recording;
+    sim.set_recording(&recording, sample_interval_sec);
+    sim.run();
+    return recording;
 }
 
 #endif

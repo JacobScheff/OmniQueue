@@ -491,8 +491,19 @@ class VehicleRouter(nn.Module):
         num_nodes_hint = config.MAX_NODES
         if intersections is not None:
             num_nodes_hint = intersections.size(-2)
-        elif vehicle_node_index is not None:
-            num_nodes_hint = int(vehicle_node_index.max().item()) + 1
+        else:
+            # Node-id fallback must cover every index we gather (vehicle +
+            # request o/d). Taking only vehicle max under-sizes the table.
+            maxima: list[int] = []
+            for idx in (
+                vehicle_node_index,
+                request_origin_index,
+                request_dest_index,
+            ):
+                if idx is not None and idx.numel() > 0:
+                    maxima.append(int(idx.max().item()) + 1)
+            if maxima:
+                num_nodes_hint = max(maxima)
 
         node_emb = self._node_embeddings(
             intersections, streets, num_nodes_hint, device, dtype
@@ -592,3 +603,74 @@ class VehicleRouter(nn.Module):
             values = values * vehicle_padding_mask.unsqueeze(-1).to(dtype=values.dtype)
 
         return logits, values
+
+
+def _flat_obs_slices() -> dict[str, slice]:
+    """Slice map for FleetEnv flat observations (must match FleetEnv.hpp)."""
+    cursor = 0
+
+    def take(n: int) -> slice:
+        nonlocal cursor
+        start = cursor
+        cursor += n
+        return slice(start, cursor)
+
+    return {
+        "vehicle": take(config.VEHICLE_DYNAMIC_FEAT_DIM),
+        "request": take(config.MAX_REQUESTS * config.REQUEST_DYNAMIC_FEAT_DIM),
+        "pairwise": take(config.MAX_REQUESTS * config.PAIRWISE_DYNAMIC_FEAT_DIM),
+        "env": take(config.ENV_DYNAMIC_FEAT_DIM),
+        "request_mask": take(config.MAX_REQUESTS),
+        "action_mask": take(config.NUM_ACTIONS),
+        "vehicle_node": take(1),
+        "request_origin": take(config.MAX_REQUESTS),
+        "request_dest": take(config.MAX_REQUESTS),
+    }
+
+
+_FLAT = _flat_obs_slices()
+
+
+def _obs_flat_to_tensors(obs_flat: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Unpack FleetEnv flat obs → VehicleRouter kwargs (batch of V=1)."""
+    if obs_flat.dim() == 1:
+        obs_flat = obs_flat.unsqueeze(0)
+    b = obs_flat.shape[0]
+    r = config.MAX_REQUESTS
+
+    return {
+        "vehicle_features": obs_flat[:, _FLAT["vehicle"]].view(
+            b, 1, config.VEHICLE_DYNAMIC_FEAT_DIM
+        ),
+        "request_features": obs_flat[:, _FLAT["request"]].view(
+            b, r, config.REQUEST_DYNAMIC_FEAT_DIM
+        ),
+        "pairwise_features": obs_flat[:, _FLAT["pairwise"]].view(
+            b, 1, r, config.PAIRWISE_DYNAMIC_FEAT_DIM
+        ),
+        "environment_features": obs_flat[:, _FLAT["env"]],
+        "vehicle_padding_mask": torch.ones(
+            b, 1, dtype=torch.bool, device=obs_flat.device
+        ),
+        "request_padding_mask": obs_flat[:, _FLAT["request_mask"]] > 0.5,
+        "vehicle_node_index": obs_flat[:, _FLAT["vehicle_node"]].long().view(b, 1),
+        "request_origin_index": obs_flat[:, _FLAT["request_origin"]].long(),
+        "request_dest_index": obs_flat[:, _FLAT["request_dest"]].long(),
+        "action_mask": (obs_flat[:, _FLAT["action_mask"]] > 0.5).unsqueeze(1),
+    }
+
+
+def forward_with_mask(
+    model: VehicleRouter,
+    obs_flat: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run VehicleRouter on flat FleetEnv obs with action masking.
+
+    Returns masked logits (B, V, A) and values (B, V, 1).
+    """
+    tensors = _obs_flat_to_tensors(obs_flat)
+    action_mask = tensors.pop("action_mask")
+    logits, values = model(**tensors)
+    # Model already masks padded request slots; also apply C++ legality mask.
+    logits = logits.masked_fill(~action_mask, -1e9)
+    return logits, values

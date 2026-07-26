@@ -1,3 +1,10 @@
-city.bmp
 main.exe
-pycache/
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+dist/
+checkpoints/
+_fleet_sim*.pyd
+_fleet_sim*.so
+*.bmp
