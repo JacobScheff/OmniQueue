@@ -108,6 +108,65 @@ class GraphTransformerLayer(nn.Module):
         x = self.norm2(x + self.ffn(x))
         return x
 
+# Vehicle ↔ vehicle self-attention (wave coordinator)
+class VehicleCoordinatorLayer(nn.Module):
+    """One self-attention + FFN block over the free-vehicle axis."""
+
+    def __init__(self, d_model: int, num_heads: int, d_head: int):
+        super().__init__()
+        self.num_heads = num_heads
+        self.d_head = d_head
+
+        self.q_proj = nn.Linear(d_model, num_heads * d_head)
+        self.k_proj = nn.Linear(d_model, num_heads * d_head)
+        self.v_proj = nn.Linear(d_model, num_heads * d_head)
+        self.out_proj = nn.Linear(num_heads * d_head, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, 4 * d_model),
+            nn.GELU(),
+            nn.Linear(4 * d_model, d_model),
+        )
+
+    def _attend(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Self-attention over vehicles.
+
+        key_padding_mask: (..., n) True = valid vehicle (False = pad).
+        """
+        *batch, n, _ = x.shape
+        h, d_h = self.num_heads, self.d_head
+
+        q = self.q_proj(x).view(*batch, n, h, d_h).movedim(-2, -3)
+        k = self.k_proj(x).view(*batch, n, h, d_h).movedim(-2, -3)
+        v = self.v_proj(x).view(*batch, n, h, d_h).movedim(-2, -3)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_h)
+
+        if key_padding_mask is not None:
+            scores = scores.masked_fill(~key_padding_mask.unsqueeze(-2).unsqueeze(-2), float("-inf"))
+
+        attn = torch.softmax(scores, dim=-1)
+        attn = torch.nan_to_num(attn, nan=0.0)
+        out = torch.matmul(attn, v)
+        out = out.movedim(-3, -2).contiguous().view(*batch, n, h * d_h)
+        return self.out_proj(out)
+
+    def forward(
+        self,
+        vehicles: torch.Tensor,
+        vehicle_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = self.norm1(vehicles + self._attend(vehicles, vehicle_padding_mask))
+        x = self.norm2(x + self.ffn(x))
+        return x
+
+# Vehicle cross Request Attention
 class VehicleRequestCrossAttentionLayer(nn.Module):
     def __init__(self, d_model: int, num_heads: int, d_head: int):
         super().__init__()
