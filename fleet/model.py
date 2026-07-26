@@ -107,3 +107,54 @@ class GraphTransformerLayer(nn.Module):
         # --- FFN (shared across nodes) + second residual / LayerNorm --- #
         x = self.norm2(x + self.ffn(x))
         return x
+
+class VehicleRequestCrossAttentionLayer(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_head: int):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_head = d_head
+
+        self.q_proj = nn.Linear(d_model, num_heads * d_head)
+        self.k_proj = nn.Linear(d_model, num_heads * d_head)
+        self.v_proj = nn.Linear(d_model, num_heads * d_head)
+        self.out_proj = nn.Linear(num_heads * d_head, d_model)
+
+    def _attend(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Cross-attention: queries attend over keys/values.
+
+        key_padding_mask: (..., n_kv) True = valid key (False = pad).
+        """
+        *batch, n_q, _ = q.shape
+        n_kv = k.shape[-2]
+        h, d_h = self.num_heads, self.d_head
+
+        q = self.q_proj(q).view(*batch, n_q, h, d_h).movedim(-2, -3)
+        k = self.k_proj(k).view(*batch, n_kv, h, d_h).movedim(-2, -3)
+        v = self.v_proj(v).view(*batch, n_kv, h, d_h).movedim(-2, -3)
+
+        # QK^T / sqrt(d)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_h)
+
+        if key_padding_mask is not None:
+            # Broadcast over heads: (..., 1, 1, n_kv)
+            scores = scores.masked_fill(~key_padding_mask.unsqueeze(-2).unsqueeze(-2), float("-inf"))
+
+        attn = torch.softmax(scores, dim=-1)
+        out = torch.matmul(attn, v)
+        out = out.movedim(-3, -2).contiguous().view(*batch, n_q, h * d_h)
+        return self.out_proj(out)
+
+    def forward(
+        self,
+        vehicle: torch.Tensor,
+        requests: torch.Tensor,
+        request_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self._attend(vehicle, requests, requests, key_padding_mask=request_padding_mask)
