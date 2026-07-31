@@ -52,6 +52,7 @@ def make_env_config(
     horizon_sec: int = 3600,
     vehicle_speed: float = 2.0,
     vehicle_capacity: int = 1,
+    avg_streets_per_intersection: int = 5,
 ):
     """Build a native ``EnvConfig`` (shared by PPO train / rollout)."""
     _fleet_sim = _require_native()
@@ -67,6 +68,7 @@ def make_env_config(
         horizon_sec=horizon_sec,
         vehicle_speed=vehicle_speed,
         vehicle_capacity=vehicle_capacity,
+        avg_streets_per_intersection=avg_streets_per_intersection,
     )
 
 
@@ -82,6 +84,7 @@ def record_day(
     horizon_sec: int = 86400,
     vehicle_speed: float = 2.0,
     vehicle_capacity: int = 1,
+    avg_streets_per_intersection: int = 5,
 ):
     """Simulate one heuristic fleet day/shift and return a ``DayRecording``."""
     _fleet_sim = _require_native()
@@ -95,6 +98,7 @@ def record_day(
         horizon_sec=horizon_sec,
         vehicle_speed=vehicle_speed,
         vehicle_capacity=vehicle_capacity,
+        avg_streets_per_intersection=avg_streets_per_intersection,
     )
     return _fleet_sim.record_day(seed, cfg, sample_interval_sec)
 
@@ -150,6 +154,12 @@ def record_day_ppo(
     num_requests = int(saved.get("num_requests", num_requests))
     num_intersections = int(saved.get("num_intersections", num_intersections))
     horizon_sec = int(saved.get("horizon_sec", horizon_sec))
+    avg_streets = int(
+        saved.get(
+            "avg_streets_per_intersection",
+            5,
+        )
+    )
 
     env = _fleet_sim.FleetEnv(
         seed,
@@ -162,6 +172,7 @@ def record_day_ppo(
             horizon_sec=horizon_sec,
             vehicle_speed=vehicle_speed,
             vehicle_capacity=vehicle_capacity,
+            avg_streets_per_intersection=avg_streets,
         ),
     )
     env.enable_recording(sample_interval_sec)

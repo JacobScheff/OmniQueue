@@ -143,9 +143,10 @@ inline std::vector<Position> samplePoissonDisk(
 }
 
 struct City {
-    City(int width, int height, int numIntersections, int seed = 42)
+    City(int width, int height, int numIntersections, int seed = 42,
+         int avgStreetsPerIntersection = 5)
         : width(width), height(height), numIntersections(numIntersections) {
-        const int avgStreetsPerIntersection = 5;
+        avgStreetsPerIntersection = std::max(2, std::min(12, avgStreetsPerIntersection));
 
         std::default_random_engine generator(seed);
 

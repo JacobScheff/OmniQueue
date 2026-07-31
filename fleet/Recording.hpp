@@ -60,6 +60,7 @@ struct RecordConfig {
     int horizonSec = 86400;
     double vehicleSpeed = 2.0;
     int vehicleCapacity = 1;
+    int avgStreetsPerIntersection = 5;
 };
 
 /** Full-day (or shift) recording consumed by the Pygame visualizer. */

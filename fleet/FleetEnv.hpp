@@ -55,6 +55,8 @@ struct EnvConfig {
     int horizonSec = 3600;
     double vehicleSpeed = 2.0;
     int vehicleCapacity = 1;
+    // Target average degree for city street generation (≈ 2 * streets / intersections).
+    int avgStreetsPerIntersection = 5;
 };
 
 inline float clampf(float x, float lo, float hi) {
@@ -200,7 +202,8 @@ private:
     void rebuild(uint64_t seed) {
         city_ = std::make_unique<City>(envConfig_.cityWidth, envConfig_.cityHeight,
                                        envConfig_.numIntersections,
-                                       static_cast<int>(seed & 0x7fffffffULL));
+                                       static_cast<int>(seed & 0x7fffffffULL),
+                                       envConfig_.avgStreetsPerIntersection);
         SimConfig cfg;
         cfg.numVehicles = envConfig_.numVehicles;
         cfg.numRequests = envConfig_.numRequests;

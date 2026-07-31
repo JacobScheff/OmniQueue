@@ -696,7 +696,8 @@ inline void printMetrics(const SimMetrics& m, const SimConfig& cfg) {
 inline DayRecording record_day(uint64_t seed, RecordConfig cfg = {},
                                int sample_interval_sec = 60) {
     City city(cfg.cityWidth, cfg.cityHeight, cfg.numIntersections,
-              static_cast<int>(seed & 0x7fffffffULL));
+              static_cast<int>(seed & 0x7fffffffULL),
+              cfg.avgStreetsPerIntersection);
 
     SimConfig simCfg;
     simCfg.numVehicles = cfg.numVehicles;

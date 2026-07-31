@@ -44,7 +44,9 @@ PYBIND11_MODULE(_fleet_sim, m) {
         .def_readwrite("num_requests", &fleet_env::EnvConfig::numRequests)
         .def_readwrite("horizon_sec", &fleet_env::EnvConfig::horizonSec)
         .def_readwrite("vehicle_speed", &fleet_env::EnvConfig::vehicleSpeed)
-        .def_readwrite("vehicle_capacity", &fleet_env::EnvConfig::vehicleCapacity);
+        .def_readwrite("vehicle_capacity", &fleet_env::EnvConfig::vehicleCapacity)
+        .def_readwrite("avg_streets_per_intersection",
+                       &fleet_env::EnvConfig::avgStreetsPerIntersection);
 
     py::class_<fleet_env::Observation>(m, "Observation")
         .def("flat", &observation_flat)
@@ -116,7 +118,9 @@ PYBIND11_MODULE(_fleet_sim, m) {
         .def_readwrite("num_requests", &RecordConfig::numRequests)
         .def_readwrite("horizon_sec", &RecordConfig::horizonSec)
         .def_readwrite("vehicle_speed", &RecordConfig::vehicleSpeed)
-        .def_readwrite("vehicle_capacity", &RecordConfig::vehicleCapacity);
+        .def_readwrite("vehicle_capacity", &RecordConfig::vehicleCapacity)
+        .def_readwrite("avg_streets_per_intersection",
+                       &RecordConfig::avgStreetsPerIntersection);
 
     py::class_<DayRecording>(m, "DayRecording")
         .def_readonly("city", &DayRecording::city)

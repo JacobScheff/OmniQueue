@@ -60,11 +60,54 @@ class PPOConfig:
     save_dir: str = config.PPO_SAVE_DIR
     save_every: int = config.PPO_SAVE_EVERY
     log_every: int = config.PPO_LOG_EVERY
-    num_vehicles: int = config.PPO_NUM_VEHICLES
     num_requests: int = config.PPO_NUM_REQUESTS
-    num_intersections: int = config.PPO_NUM_INTERSECTIONS
     horizon_sec: int = config.PPO_HORIZON_SEC
+    # Inclusive ranges sampled once per simulation-day / episode.
+    vehicles_range: tuple[int, int] = (
+        config.PPO_VEHICLES_MIN,
+        config.PPO_VEHICLES_MAX,
+    )
+    intersections_range: tuple[int, int] = (
+        config.PPO_INTERSECTIONS_MIN,
+        config.PPO_INTERSECTIONS_MAX,
+    )
+    avg_streets_range: tuple[int, int] = (
+        config.PPO_AVG_STREETS_MIN,
+        config.PPO_AVG_STREETS_MAX,
+    )
     checkpoint: str | None = None
+
+
+def _clamp_range(lo: int, hi: int, *, minimum: int = 1) -> tuple[int, int]:
+    lo = max(minimum, int(lo))
+    hi = max(lo, int(hi))
+    return lo, hi
+
+
+def _sample_int(rng: random.Random, lo_hi: tuple[int, int]) -> int:
+    lo, hi = _clamp_range(lo_hi[0], lo_hi[1])
+    return rng.randint(lo, hi)
+
+
+def _sample_env_scale(cfg: PPOConfig, rng: random.Random) -> dict[str, int]:
+    """Sample fleet / graph scale for one simulation-day episode."""
+    vehicles_range = _clamp_range(
+        cfg.vehicles_range[0],
+        min(cfg.vehicles_range[1], config.MAX_VEHICLES),
+    )
+    intersections_range = _clamp_range(
+        cfg.intersections_range[0],
+        min(cfg.intersections_range[1], config.MAX_NODES),
+    )
+    num_vehicles = _sample_int(rng, vehicles_range)
+    # Day-total demand (not concurrent): prefer num_vehicles * 2 > num_requests.
+    num_requests = min(cfg.num_requests, max(1, num_vehicles * 2 - 1))
+    return {
+        "num_vehicles": num_vehicles,
+        "num_intersections": _sample_int(rng, intersections_range),
+        "avg_streets_per_intersection": _sample_int(rng, cfg.avg_streets_range),
+        "num_requests": num_requests,
+    }
 
 
 @dataclass
@@ -103,14 +146,15 @@ class Agent(nn.Module):
         return action, dist.log_prob(action), dist.entropy(), values
 
 
-def _make_env(cfg: PPOConfig, seed: int) -> _fleet_sim.FleetEnv:
+def _make_env(cfg: PPOConfig, seed: int, scale: dict[str, int]) -> _fleet_sim.FleetEnv:
     return _fleet_sim.FleetEnv(
         seed,
         make_env_config(
-            num_intersections=cfg.num_intersections,
-            num_vehicles=cfg.num_vehicles,
-            num_requests=cfg.num_requests,
+            num_intersections=scale["num_intersections"],
+            num_vehicles=scale["num_vehicles"],
+            num_requests=scale["num_requests"],
             horizon_sec=cfg.horizon_sec,
+            avg_streets_per_intersection=scale["avg_streets_per_intersection"],
         ),
     )
 
@@ -149,7 +193,10 @@ def _collect_parallel(
 ) -> RolloutBatch:
     """Run ``num_envs`` episodes with batched policy forwards over live envs."""
     n_envs = max(1, cfg.num_envs)
-    envs = [_make_env(cfg, base_seed + i) for i in range(n_envs)]
+    # Distinct RNG per update so scale sampling is reproducible from cfg.seed.
+    scale_rng = random.Random(base_seed ^ 0xC0FFEE)
+    scales = [_sample_env_scale(cfg, scale_rng) for _ in range(n_envs)]
+    envs = [_make_env(cfg, base_seed + i, scales[i]) for i in range(n_envs)]
 
     obs_list: list[np.ndarray | None] = [None] * n_envs
     for i, env in enumerate(envs):
@@ -316,25 +363,40 @@ def _ppo_update(
 
 
 def _fleet_config_dict(cfg: PPOConfig) -> dict:
+    v_lo, v_hi = _clamp_range(*cfg.vehicles_range)
+    n_lo, n_hi = _clamp_range(*cfg.intersections_range)
+    s_lo, s_hi = _clamp_range(*cfg.avg_streets_range, minimum=2)
     return {
         "num_envs": cfg.num_envs,
-        "num_vehicles": cfg.num_vehicles,
         "num_requests": cfg.num_requests,
-        "num_intersections": cfg.num_intersections,
         "horizon_sec": cfg.horizon_sec,
+        "vehicles_range": [v_lo, v_hi],
+        "intersections_range": [n_lo, n_hi],
+        "avg_streets_range": [s_lo, s_hi],
+        # Midpoints kept for older rollout helpers that expect fixed scale.
+        "num_vehicles": (v_lo + v_hi) // 2,
+        "num_intersections": (n_lo + n_hi) // 2,
+        "avg_streets_per_intersection": (s_lo + s_hi) // 2,
     }
 
 
 def _apply_saved_fleet_config(cfg: PPOConfig, saved: dict) -> None:
-    """Restore env scale from checkpoint so resumed runs match prior training."""
-    if "num_vehicles" in saved:
-        cfg.num_vehicles = int(saved["num_vehicles"])
-    if "num_requests" in saved:
-        cfg.num_requests = int(saved["num_requests"])
-    if "num_intersections" in saved:
-        cfg.num_intersections = int(saved["num_intersections"])
-    if "horizon_sec" in saved:
-        cfg.horizon_sec = int(saved["horizon_sec"])
+    """Optionally restore env scale ranges from a checkpoint.
+
+    Only applies explicit ``*_range`` fields. Legacy fixed ``num_vehicles`` /
+    ``num_intersections`` are ignored so older checkpoints do not freeze the
+    new per-episode randomization. CLI / current defaults always win for
+    request baseline and horizon.
+    """
+    if "vehicles_range" in saved:
+        lo, hi = saved["vehicles_range"]
+        cfg.vehicles_range = _clamp_range(int(lo), int(hi))
+    if "intersections_range" in saved:
+        lo, hi = saved["intersections_range"]
+        cfg.intersections_range = _clamp_range(int(lo), int(hi))
+    if "avg_streets_range" in saved:
+        lo, hi = saved["avg_streets_range"]
+        cfg.avg_streets_range = _clamp_range(int(lo), int(hi), minimum=2)
 
 
 def _checkpoint_payload(
@@ -406,11 +468,16 @@ def train(cfg: PPOConfig) -> None:
     save_dir.mkdir(parents=True, exist_ok=True)
     end_update = start_update + cfg.total_updates
 
+    v_lo, v_hi = _clamp_range(*cfg.vehicles_range)
+    n_lo, n_hi = _clamp_range(*cfg.intersections_range)
+    s_lo, s_hi = _clamp_range(*cfg.avg_streets_range, minimum=2)
     _log(
         f"PPO start: updates={start_update}->{end_update} (+{cfg.total_updates}) "
         f"envs={cfg.num_envs} device={device} "
-        f"fleet={cfg.num_vehicles}v/{cfg.num_requests}r "
-        f"graph={cfg.num_intersections}n horizon={cfg.horizon_sec}s"
+        f"fleet={v_lo}-{v_hi}v "
+        f"day_requests=min({cfg.num_requests},2v-1) "
+        f"graph={n_lo}-{n_hi}n streets_deg={s_lo}-{s_hi} "
+        f"horizon={cfg.horizon_sec}s"
     )
     _log(
         f"native FLAT_OBS_DIM={_fleet_sim.FLAT_OBS_DIM} "
@@ -487,9 +554,35 @@ def parse_args() -> PPOConfig:
     )
     p.add_argument("--num-envs", type=int, default=config.PPO_NUM_ENVS)
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument("--num-vehicles", type=int, default=config.PPO_NUM_VEHICLES)
+    p.add_argument(
+        "--num-vehicles",
+        type=int,
+        default=None,
+        help="Fix vehicle count for every episode (disables vehicle randomization).",
+    )
+    p.add_argument("--vehicles-min", type=int, default=config.PPO_VEHICLES_MIN)
+    p.add_argument("--vehicles-max", type=int, default=config.PPO_VEHICLES_MAX)
     p.add_argument("--num-requests", type=int, default=config.PPO_NUM_REQUESTS)
-    p.add_argument("--num-intersections", type=int, default=config.PPO_NUM_INTERSECTIONS)
+    p.add_argument(
+        "--num-intersections",
+        type=int,
+        default=None,
+        help="Fix intersection count for every episode (disables graph-size randomization).",
+    )
+    p.add_argument(
+        "--intersections-min", type=int, default=config.PPO_INTERSECTIONS_MIN
+    )
+    p.add_argument(
+        "--intersections-max", type=int, default=config.PPO_INTERSECTIONS_MAX
+    )
+    p.add_argument(
+        "--avg-streets",
+        type=int,
+        default=None,
+        help="Fix avg streets/intersection (disables street-density randomization).",
+    )
+    p.add_argument("--avg-streets-min", type=int, default=config.PPO_AVG_STREETS_MIN)
+    p.add_argument("--avg-streets-max", type=int, default=config.PPO_AVG_STREETS_MAX)
     p.add_argument("--horizon-sec", type=int, default=config.PPO_HORIZON_SEC)
     p.add_argument("--lr", type=float, default=config.PPO_LEARNING_RATE)
     p.add_argument("--save-dir", type=str, default=config.PPO_SAVE_DIR)
@@ -503,16 +596,29 @@ def parse_args() -> PPOConfig:
     )
     args = p.parse_args()
     updates = args.episodes if args.episodes is not None else args.updates
+    if args.num_vehicles is not None:
+        vehicles_range = (args.num_vehicles, args.num_vehicles)
+    else:
+        vehicles_range = (args.vehicles_min, args.vehicles_max)
+    if args.num_intersections is not None:
+        intersections_range = (args.num_intersections, args.num_intersections)
+    else:
+        intersections_range = (args.intersections_min, args.intersections_max)
+    if args.avg_streets is not None:
+        avg_streets_range = (args.avg_streets, args.avg_streets)
+    else:
+        avg_streets_range = (args.avg_streets_min, args.avg_streets_max)
     return PPOConfig(
         seed=args.seed,
         total_updates=updates,
         num_envs=args.num_envs,
         device=args.device,
         learning_rate=args.lr,
-        num_vehicles=args.num_vehicles,
         num_requests=args.num_requests,
-        num_intersections=args.num_intersections,
         horizon_sec=args.horizon_sec,
+        vehicles_range=_clamp_range(*vehicles_range),
+        intersections_range=_clamp_range(*intersections_range),
+        avg_streets_range=_clamp_range(*avg_streets_range, minimum=2),
         save_dir=args.save_dir,
         checkpoint=args.checkpoint,
     )

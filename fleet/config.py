@@ -69,8 +69,17 @@ PPO_TARGET_KL = 0.02  # early-stop PPO epochs when approx KL exceeds this
 PPO_NUM_ENVS = 8
 PPO_LOG_EVERY = 1
 
-# Default sim scale (override via CLI)
+# Default sim scale (override via CLI). Training samples within these ranges
+# once per episode so the policy sees varied fleet / graph sizes.
 PPO_NUM_VEHICLES = 30
 PPO_NUM_REQUESTS = 120
 PPO_NUM_INTERSECTIONS = 80
+PPO_AVG_STREETS_PER_INTERSECTION = 5
 PPO_HORIZON_SEC = 3600
+
+PPO_VEHICLES_MIN = 15
+PPO_VEHICLES_MAX = 45
+PPO_INTERSECTIONS_MIN = 40
+PPO_INTERSECTIONS_MAX = 120
+PPO_AVG_STREETS_MIN = 3
+PPO_AVG_STREETS_MAX = 7
