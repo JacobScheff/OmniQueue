@@ -134,6 +134,8 @@ Export a wrapper that returns either:
 
 Prefer **greedy decode inside the wrapper** for companion simplicity; training stays in PyTorch with sampling.
 
+Export must trace a mid-day open-park path (non-zero `time_left`) and keep `picked` / decoder GRU updates as always-on tensor ops — data-dependent Python `if` around those updates is dropped by legacy `torch.onnx` tracing and yields K copies of the same ride.
+
 ---
 
 ## 5. Reward redesign (additive)

@@ -32,7 +32,7 @@ pip install torch onnx onnxruntime
 PYTHONPATH=. python Park/tools/export_companion_onnx.py
 ```
 
-Route models export ONNX outputs `route` (int64, length K) and `slot0_logits`. Older single-`logits` ONNX files still load; the API then returns a length-1 route from argmax.
+Route models export ONNX outputs `route` (int64, length K) and `slot0_logits`. Older single-`logits` ONNX files still load; the API then returns a length-1 route from argmax. Export uses a mid-day open-park example (non-zero `time_left`) so the autoregressive ride-update path is traced; the smoke check requires Torch/ORT route equality and no repeated rides.
 
 ## Run (dev)
 

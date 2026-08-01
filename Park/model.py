@@ -244,28 +244,23 @@ class ParkRouterModel(nn.Module):
                 stored = torch.where(active, action, torch.full_like(action, ROUTE_PAD))
             route_list.append(stored)
 
-            # Update active / picked / hidden for next slot
+            # Update active / picked / hidden for next slot.
+            # Always apply tensor updates (no `if is_ride.any()`): torch.onnx
+            # tracing freezes Python control flow from the example inputs, so a
+            # soft-close export path would omit picked/GRU updates and repeat
+            # the same ride for every slot at inference.
             is_ride = (action < self.num_rides) & active
-            if step == 0:
-                # Exit/idle → stop
-                continue_route = is_ride
-            else:
-                continue_route = is_ride
+            ride_actions = action.clamp(0, self.num_rides - 1)
+            picked = picked | (
+                torch.nn.functional.one_hot(ride_actions, self.num_rides).bool()
+                & is_ride.unsqueeze(-1)
+            )
+            emb = self.action_embed(action.clamp(0, self.num_actions - 1))
+            new_hidden = self.decoder_rnn(emb, hidden)
+            hidden = torch.where(is_ride.unsqueeze(-1), new_hidden, hidden)
 
-            if is_ride.any():
-                ride_actions = action.clamp(0, self.num_rides - 1)
-                picked = picked | (
-                    torch.nn.functional.one_hot(ride_actions, self.num_rides).bool()
-                    & is_ride.unsqueeze(-1)
-                )
-                emb = self.action_embed(action.clamp(0, self.num_actions - 1))
-                new_hidden = self.decoder_rnn(emb, hidden)
-                hidden = torch.where(is_ride.unsqueeze(-1), new_hidden, hidden)
-
-            active = continue_route
-            if step == 0:
-                # After slot 0, only ride commits continue
-                active = is_ride
+            # Exit/idle (or inactive) → stop; only ride commits continue.
+            active = is_ride
 
         routes_out = torch.stack(route_list, dim=1)
         if routes is not None:

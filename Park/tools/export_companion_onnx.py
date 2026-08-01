@@ -28,6 +28,7 @@ from Park.training.checkpoint import load_checkpoint
 from Park.training.features import (
     ENV_DYNAMIC_FEAT_DIM,
     GUEST_FEAT_DIM,
+    GUEST_FEAT_TIME_LEFT,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
 )
@@ -59,6 +60,11 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     wrapped.eval()
 
     guest = torch.zeros(1, GUEST_FEAT_DIM, dtype=torch.float32)
+    # Mid-day open park so slot-0 can pick a ride; soft-close (time_left=0)
+    # would make exit-only and drop the ride-update path from the ONNX graph
+    # under legacy torch.onnx tracing.
+    guest[..., GUEST_FEAT_TIME_LEFT] = 0.5
+    guest[..., :NUM_RIDES] = 1.0 / float(NUM_RIDES)
     ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32)
     # Open rides so the route decoder's empty-mask fallback is traced into ONNX.
     ride[..., 2] = 1.0
@@ -84,6 +90,8 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     rng = np.random.default_rng(0)
     g = rng.standard_normal((1, GUEST_FEAT_DIM), dtype=np.float32)
+    g[..., GUEST_FEAT_TIME_LEFT] = 0.5
+    g[..., :NUM_RIDES] = 1.0 / float(NUM_RIDES)
     r = rng.standard_normal((1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
     e = rng.standard_normal((1, ENV_DYNAMIC_FEAT_DIM), dtype=np.float32)
     # Open all rides so masks are non-degenerate for the smoke compare.
@@ -100,6 +108,8 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
         torch_logits = torch_logits.numpy()
     max_abs = float(np.max(np.abs(ort_logits - torch_logits)))
     route_match = bool(np.array_equal(ort_route, torch_route))
+    ort_rides = [int(x) for x in np.asarray(ort_route).reshape(-1).tolist() if int(x) >= 0]
+    unique_rides = len(ort_rides) == len(set(ort_rides))
     size_mb = onnx_path.stat().st_size / (1024 * 1024)
     meta = {
         "step": int(step),
@@ -115,10 +125,17 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     print(
         f"OK {pt_path.name} -> {onnx_path.name} "
         f"(step={step}, {size_mb:.1f} MiB, max_abs_delta={max_abs:.3e}, "
-        f"route_match={route_match}, stub={bool(extra.get('stub'))})"
+        f"route_match={route_match}, unique_rides={unique_rides}, "
+        f"stub={bool(extra.get('stub'))})"
     )
     if max_abs > 1e-4:
         raise SystemExit(f"ONNX mismatch too large for {pt_path}: {max_abs}")
+    if not route_match:
+        raise SystemExit(f"ONNX route decode mismatch for {pt_path}: {ort_route} vs {torch_route}")
+    if len(ort_rides) > 1 and not unique_rides:
+        raise SystemExit(
+            f"ONNX route repeats rides for open-park smoke ({pt_path}): {ort_rides}"
+        )
 
 
 def main() -> None:
