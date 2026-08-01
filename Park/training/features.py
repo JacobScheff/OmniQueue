@@ -22,6 +22,10 @@ FLAT_OBS_DIM = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM + ENV_DYNAMIC_
 
 # Model architecture defaults
 D_MODEL = 256
+ROUTE_K = 6  # default; overridden by config.PPO_ROUTE_K when available
+ROUTE_PAD = -1
+ACTION_EXIT = NUM_RIDES
+ACTION_IDLE = NUM_RIDES + 1
 
 DAY_SECONDS = 54000.0
 CLOSE_DRAIN_SEC = 3.0 * 3600.0
@@ -31,12 +35,24 @@ RIDE_FEAT_WAIT = 0
 RIDE_FEAT_OPEN = 2
 RIDE_FEAT_DURATION = 3
 RIDE_FEAT_WALK = 5
+RIDE_FEAT_HISTORY = 6
+RIDE_FEAT_MUST_DO = 7
 
 # Guest feature indices used for masking / diagnostics
 GUEST_FEAT_REMAINING_PREF_MASS = 34
 GUEST_FEAT_TIME_LEFT = 37
+GUEST_FEAT_MUST_DO_COUNT = 40
 GUEST_FEAT_AT_RIDE_NODE = 41
 GUEST_FEAT_ELAPSED_SINCE_SPAWN = 45
+
+
+def route_k() -> int:
+    try:
+        import Park.config as config
+
+        return int(getattr(config, "PPO_ROUTE_K", ROUTE_K))
+    except Exception:
+        return ROUTE_K
 
 
 def build_action_mask(
@@ -115,3 +131,117 @@ def masked_cross_entropy(
 
     masked_logits = apply_action_mask(logits, mask)
     return F.cross_entropy(masked_logits, actions)
+
+
+def build_tail_ride_mask(
+    ride: torch.Tensor,
+    picked: torch.Tensor,
+) -> torch.Tensor:
+    """Legal rides for route slots k>=1: open, unfinished, not already picked.
+
+    ride: (B, R, F), picked: (B, R) bool
+    returns (B, R) bool
+    """
+    import torch
+
+    open_ok = ride[..., RIDE_FEAT_OPEN] > 0.5
+    unfinished = ride[..., RIDE_FEAT_HISTORY] <= 0.5
+    return open_ok & unfinished & (~picked)
+
+
+def rewrite_prefs_must_dos(
+    guest: torch.Tensor,
+    ride: torch.Tensor,
+    *,
+    generator: torch.Generator | None = None,
+    must_do_boost: float = 10.0,
+    pref_eps: float = 1e-3,
+    max_must_dos: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Clone obs tensors with freshly sampled training-style prefs/must-dos.
+
+    Waits, walks, history, time, and location are left unchanged.
+    """
+    import torch
+
+    try:
+        import Park.config as config
+
+        must_do_boost = float(getattr(config, "MUST_DO_PREF_BOOST", must_do_boost))
+        pref_eps = float(getattr(config, "PREF_RAW_EPS", pref_eps))
+    except Exception:
+        pass
+
+    batch, num_rides, _ = ride.shape
+    device = guest.device
+    dtype = guest.dtype
+    new_guest = guest.clone()
+    new_ride = ride.clone()
+    history = ride[..., RIDE_FEAT_HISTORY] > 0.5
+
+    for b in range(batch):
+        raw = torch.empty(num_rides, device=device, dtype=dtype)
+        if generator is None:
+            raw.uniform_(pref_eps, 1.0)
+            n_must = int(torch.randint(0, max_must_dos + 1, (1,)).item())
+        else:
+            raw.uniform_(pref_eps, 1.0, generator=generator)
+            n_must = int(
+                torch.randint(0, max_must_dos + 1, (1,), generator=generator).item()
+            )
+        avail = (~history[b]).nonzero(as_tuple=False).flatten()
+        must_ids: list[int] = []
+        if avail.numel() > 0 and n_must > 0:
+            n_take = min(n_must, int(avail.numel()))
+            if generator is None:
+                perm = torch.randperm(avail.numel(), device=device)[:n_take]
+            else:
+                perm = torch.randperm(avail.numel(), device=device, generator=generator)[
+                    :n_take
+                ]
+            must_ids = [int(avail[i].item()) for i in perm.tolist()]
+            for mid in must_ids:
+                raw[mid] = raw[mid] * must_do_boost
+        prefs = raw / raw.sum().clamp(min=1e-8)
+        new_guest[b, :num_rides] = prefs
+        rem = (prefs * (~history[b]).to(dtype)).sum()
+        new_guest[b, GUEST_FEAT_REMAINING_PREF_MASS] = rem
+        new_guest[b, GUEST_FEAT_MUST_DO_COUNT] = float(len(must_ids)) / 5.0
+        new_ride[b, :, RIDE_FEAT_MUST_DO] = 0.0
+        for mid in must_ids:
+            new_ride[b, mid, RIDE_FEAT_MUST_DO] = 1.0
+    return new_guest, new_ride
+
+
+def top_must_do_or_pref(guest: torch.Tensor, ride: torch.Tensor) -> torch.Tensor:
+    """Per-batch top unfinished must-do, else top unfinished preference ride."""
+    import torch
+
+    batch, num_rides, _ = ride.shape
+    unfinished = ride[..., RIDE_FEAT_HISTORY] <= 0.5
+    must = (ride[..., RIDE_FEAT_MUST_DO] > 0.5) & unfinished
+    prefs = guest[:, :num_rides].clone()
+    prefs = prefs.masked_fill(~unfinished, -1.0)
+    out = torch.empty(batch, dtype=torch.long, device=guest.device)
+    for b in range(batch):
+        must_idx = must[b].nonzero(as_tuple=False).flatten()
+        if must_idx.numel() > 0:
+            scores = prefs[b, must_idx]
+            out[b] = must_idx[scores.argmax()]
+        else:
+            out[b] = prefs[b].argmax()
+    return out
+
+
+def js_divergence(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Jensen–Shannon divergence for rows of categorical probs. Returns (B,)."""
+    import torch
+
+    p = p.clamp(min=eps)
+    q = q.clamp(min=eps)
+    p = p / p.sum(dim=-1, keepdim=True)
+    q = q / q.sum(dim=-1, keepdim=True)
+    m = 0.5 * (p + q)
+    kl_pm = (p * (p.log() - m.log())).sum(dim=-1)
+    kl_qm = (q * (q.log() - m.log())).sum(dim=-1)
+    return 0.5 * kl_pm + 0.5 * kl_qm

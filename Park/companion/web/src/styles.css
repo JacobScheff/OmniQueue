@@ -173,6 +173,35 @@ select {
   color: var(--accent-2);
 }
 
+.route-list {
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.route-list li {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  gap: 0.55rem;
+  align-items: baseline;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.route-list li.next {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.route-slot {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

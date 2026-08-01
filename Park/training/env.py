@@ -7,7 +7,8 @@ import numpy as np
 from gymnasium import spaces
 
 import _park_sim
-from Park.training.features import FLAT_OBS_DIM, NUM_ACTIONS
+from Park.training.features import FLAT_OBS_DIM, NUM_ACTIONS, route_k
+from Park.training.route_reward import ROUTE_PAD, commit_action, pad_route
 
 
 class ParkRoutingEnv(gym.Env):
@@ -18,10 +19,15 @@ class ParkRoutingEnv(gym.Env):
         self._env = _park_sim.ParkEnv(seed)
         self._seed = seed
         self._num_focals = int(num_focals)
+        self._k = route_k()
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(FLAT_OBS_DIM,), dtype=np.float32
         )
+        # Commit action remains Discrete for gym callers; routes are MultiDiscrete.
         self.action_space = spaces.Discrete(NUM_ACTIONS)
+        self.route_space = spaces.MultiDiscrete(
+            [NUM_ACTIONS] + [NUM_ACTIONS] * (self._k - 1)
+        )
 
     def reset(self, *, seed: int | None = None, options=None):
         super().reset(seed=seed)
@@ -33,7 +39,6 @@ class ParkRoutingEnv(gym.Env):
         if options and "num_focals" in options:
             n_focals = int(options["num_focals"])
         self._env.reset_personal(self._seed, n_focals)
-        # First pending observation via empty exchange.
         result = self._env.exchange_batch([], 1)
         if result.n_obs <= 0:
             obs = np.zeros(FLAT_OBS_DIM, dtype=np.float32)
@@ -41,8 +46,16 @@ class ParkRoutingEnv(gym.Env):
             obs = np.asarray(result.obs, dtype=np.float32).reshape(FLAT_OBS_DIM)
         return obs, {}
 
-    def step(self, action: int):
-        result = self._env.exchange_batch([int(action)], 1)
+    def step(self, action):
+        """Accept a commit action int or a full route sequence; DES gets route[0]."""
+        if isinstance(action, (list, tuple, np.ndarray)):
+            route = pad_route(np.asarray(action, dtype=np.int64).tolist(), self._k)
+            commit = commit_action(route)
+        else:
+            commit = int(action)
+            route = pad_route([commit], self._k)
+
+        result = self._env.exchange_batch([commit], 1)
         obs = np.zeros(FLAT_OBS_DIM, dtype=np.float32)
         reward = 0.0
         if result.n_rewards > 0:
@@ -51,7 +64,7 @@ class ParkRoutingEnv(gym.Env):
             obs = np.asarray(result.obs, dtype=np.float32).reshape(-1, FLAT_OBS_DIM)[0]
         terminated = bool(result.episode_done)
         truncated = False
-        info = {}
+        info = {"route": route, "commit": commit, "route_pad": ROUTE_PAD}
         if terminated:
             personal = self._env.personal_stats()
             info["metrics"] = {

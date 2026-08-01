@@ -34,7 +34,7 @@ from Park.training.features import (
 
 
 class _CompanionExportWrapper(torch.nn.Module):
-    """Single-party companion forward: guest/ride/env → action logits."""
+    """Companion forward: guest/ride/env → (route[K], slot0_logits[A])."""
 
     def __init__(self, model: ParkRouterModel) -> None:
         super().__init__()
@@ -45,10 +45,11 @@ class _CompanionExportWrapper(torch.nn.Module):
         guest: torch.Tensor,
         ride: torch.Tensor,
         env: torch.Tensor,
-    ) -> torch.Tensor:
-        # guest: (1, GUEST), ride: (1, R, F), env: (1, E)
-        logits, _values = self.model(guest, ride, env)
-        return logits
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        out = self.model.forward_route(
+            guest, ride, env, routes=None, deterministic=True
+        )
+        return out.routes.to(dtype=torch.int64), out.slot0_logits
 
 
 def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
@@ -68,7 +69,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
             (guest, ride, env),
             str(onnx_path),
             input_names=["guest", "ride", "env"],
-            output_names=["logits"],
+            output_names=["route", "slot0_logits"],
             opset_version=opset,
             dynamo=False,
         )
@@ -82,19 +83,26 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     g = rng.standard_normal((1, GUEST_FEAT_DIM), dtype=np.float32)
     r = rng.standard_normal((1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
     e = rng.standard_normal((1, ENV_DYNAMIC_FEAT_DIM), dtype=np.float32)
-    ort_out = sess.run(None, {"guest": g, "ride": r, "env": e})[0]
+    # Open all rides so masks are non-degenerate for the smoke compare.
+    r[..., 2] = 1.0
+    r[..., 5] = 0.1
+    ort_route, ort_logits = sess.run(None, {"guest": g, "ride": r, "env": e})
     with torch.inference_mode():
-        torch_out = wrapped(
+        torch_route, torch_logits = wrapped(
             torch.from_numpy(g),
             torch.from_numpy(r),
             torch.from_numpy(e),
-        ).numpy()
-    max_abs = float(np.max(np.abs(ort_out - torch_out)))
+        )
+        torch_route = torch_route.numpy()
+        torch_logits = torch_logits.numpy()
+    max_abs = float(np.max(np.abs(ort_logits - torch_logits)))
+    route_match = bool(np.array_equal(ort_route, torch_route))
     size_mb = onnx_path.stat().st_size / (1024 * 1024)
     meta = {
         "step": int(step),
         "path": str(onnx_path),
         "source_pt": str(pt_path),
+        "arch_version": "route_v1",
         **{k: v for k, v in (extra or {}).items() if isinstance(v, (str, int, float, bool))},
     }
     onnx_path.with_suffix(".json").write_text(
@@ -103,7 +111,8 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     )
     print(
         f"OK {pt_path.name} → {onnx_path.name} "
-        f"(step={step}, {size_mb:.1f} MiB, max|Δ|={max_abs:.3e}, stub={bool(extra.get('stub'))})"
+        f"(step={step}, {size_mb:.1f} MiB, max|Δ|={max_abs:.3e}, "
+        f"route_match={route_match}, stub={bool(extra.get('stub'))})"
     )
     if max_abs > 1e-4:
         raise SystemExit(f"ONNX mismatch too large for {pt_path}: {max_abs}")

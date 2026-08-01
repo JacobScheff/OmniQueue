@@ -4,7 +4,7 @@
 
 ## Overview
 
-Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the next action and full masked probability distribution.
+Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the **committed next action**, a short **planned route** (`route[0..K-1]`), and the full masked slot-0 probability distribution.
 
 This does **not** run the C++ DES or Watch pygame UI. The simulator is unused at request time; only the exported ONNX policy, walk times from `park_graph`, and `config.RIDES` are reused on the server.
 
@@ -31,6 +31,8 @@ You do **not** need this for an ordinary deploy — ONNX files are already in th
 pip install torch onnx onnxruntime
 PYTHONPATH=. python Park/tools/export_companion_onnx.py
 ```
+
+Route models export ONNX outputs `route` (int64, length K) and `slot0_logits`. Older single-`logits` ONNX files still load; the API then returns a length-1 route from argmax.
 
 ## Run (dev)
 
@@ -83,7 +85,7 @@ Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX
 | GET | `/api/health` | Model + wait cache status |
 | GET | `/api/catalog` | Ride/hub list + default prefs |
 | GET | `/api/waits` | Cached live board (`?force=true`) |
-| POST | `/api/recommend` | Body: prefs, must-dos, history, location → distribution |
+| POST | `/api/recommend` | Body: prefs, must-dos, history, location → `recommended`, `route`, slot-0 `distribution` |
 
 ## Observation mapping
 

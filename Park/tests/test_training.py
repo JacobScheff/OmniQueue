@@ -140,7 +140,8 @@ def test_ppo_warm_start_keeps_optimizer_linked(tmp_path):
     ride_view[..., RIDE_FEAT_OPEN] = 1.0
     ride_view[..., RIDE_FEAT_WALK] = 0.1
 
-    _, logprob, _, value = agent.get_action_and_value(flat)
+    routes, logprob, _, value = agent.get_action_and_value(flat)
+    assert routes.ndim == 2 and routes.shape[0] == 8
     loss = -(logprob.mean() + value.mean())
     optimizer.zero_grad()
     loss.backward()

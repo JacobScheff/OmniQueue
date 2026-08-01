@@ -227,7 +227,7 @@ PPO_GAE_LAMBDA = 0.95             # GAE lambda
 PPO_NUM_MINIBATCHES = 8           # PPO minibatch count per update
 PPO_UPDATE_EPOCHS = 2             # PPO epochs per day
 PPO_CLIP_COEF = 0.1               # PPO clipping epsilon
-PPO_ENT_COEF = 0.01               # entropy bonus coefficient
+PPO_ENT_COEF = 0.03               # entropy bonus coefficient (early route slots weighted)
 PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
 PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
@@ -241,6 +241,21 @@ PPO_UPDATE_MB_SIZE = 256
 # Pause after each optimizer step so Windows can composite the desktop.
 PPO_UPDATE_YIELD_SEC = 0.05
 PPO_LOG_EVERY = 5_000             # rollout progress log interval (0 = disabled)
+
+# Multi-ride route output (see docs/route-plan-output-plan.md)
+PPO_ROUTE_K = 6
+PPO_ROUTE_CONSIST_COEF = 0.02
+PPO_ROUTE_CONSIST_WEIGHTS = (1.0, 0.5, 0.25, 0.1, 0.05)  # len K-1; new[i] vs old[i+1]
+PPO_ROUTE_PLANNED_WALK_COEF = 0.01
+PPO_ROUTE_REALIZED_WALK_COEF = 0.02
+PPO_ROUTE_WALK_NORM_SEC = 600.0
+# Entropy weights per route slot (early slots explore more)
+PPO_ROUTE_ENTROPY_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.15, 0.1)
+# Counterfactual preference KL (hinge on JS divergence of slot-0 dists)
+PPO_CF_COEF = 0.1
+PPO_CF_MARGIN = 0.15
+PPO_CF_FRAC = 0.25
+MODEL_ARCH_VERSION = "route_v1"
 
 # PPO reward shaping (mirrored in park_sim.hpp)
 # Objective: preferred + must-do rides done quickly per party (guest-weighted).
@@ -257,6 +272,10 @@ PPO_LOG_EVERY = 5_000             # rollout progress log interval (0 = disabled)
 # Terminal (focals only in personal mode):
 #   -PPO_UNFULFILLED_MUST_DO_PENALTY * (focal_remaining / max(1, focal_assigned))
 #   + flush remaining pending bonuses for learners
+# Python route shaping (added on top of C++ delta; see training/route_reward.py):
+#   + PPO_ROUTE_CONSIST_COEF * Σ w_i * 1[new[i]==old[i+1]]
+#   - PPO_ROUTE_PLANNED_WALK_COEF * mean_inter_ride_walk / WALK_NORM
+#   - PPO_ROUTE_REALIZED_WALK_COEF * walk_to_commit / WALK_NORM
 PPO_PREF_REWARD_SCALE = 0.05
 PPO_MUST_DO_COMPLETION_BONUS = 0.15
 PPO_TIME_DECAY = 0.75

@@ -67,6 +67,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | [visualization.md](docs/visualization.md) | `visualize.py`, `record_day` | Pygame park-day replay |
 | [interactive-play.md](docs/interactive-play.md) | `play.py`, `play/` | Human-vs-AI interactive day, compare, benchmark |
 | [pref-mustdo-reward-plan.md](docs/pref-mustdo-reward-plan.md) | PPO / `ParkEnv` | Design plan: preference + must-do latency objective (ignore wait variance) |
+| [route-plan-output-plan.md](docs/route-plan-output-plan.md) | `model.py`, PPO / companion | Design plan: K-ride route output, consistency/walk shaping, counterfactual pref KL |
 | [watch.md](docs/watch.md) | `watch.py`, `watch/` | PPO-focal watcher, timeline marks, mid-day prefs |
 | [companion.md](docs/companion.md) | `companion/` | Live wait-time companion + ONNX recommendations (web; free Render deploy) |
 

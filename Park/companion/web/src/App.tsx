@@ -302,6 +302,16 @@ export default function App() {
         {result && (
           <div className="rec-prob">{formatProb(result.recommended.prob)} confidence</div>
         )}
+        {result?.route && result.route.length > 1 && (
+          <ol className="route-list" aria-label="Planned route">
+            {result.route.map((stop) => (
+              <li key={`${stop.slot}-${stop.action_id}`} className={stop.slot === 0 ? "next" : ""}>
+                <span className="route-slot">{stop.slot === 0 ? "Now" : `Then`}</span>
+                <span className="route-label">{stop.label}</span>
+              </li>
+            ))}
+          </ol>
+        )}
         <div className="actions">
           <button className="btn" type="button" onClick={() => void refresh()} disabled={busy}>
             Refresh waits

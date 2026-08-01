@@ -58,6 +58,13 @@ export type DistRow = {
   open?: boolean;
 };
 
+export type RouteStop = {
+  action_id: number;
+  label: string;
+  slot: number;
+  is_ride: boolean;
+};
+
 export type RecommendResponse = {
   recommended: {
     action_id: number;
@@ -65,6 +72,7 @@ export type RecommendResponse = {
     prob: number;
     legal: boolean;
   };
+  route?: RouteStop[];
   distribution: DistRow[];
   model: {
     version: string | null;

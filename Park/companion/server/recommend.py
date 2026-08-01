@@ -126,6 +126,8 @@ class Recommender:
         self.checkpoint_path = path
         self._session = None
         self._torch_model = None
+        self._onnx_has_route = False
+        self._onnx_outputs: list[str] = []
         self.step = 0
         self.meta: dict = {}
         self.is_stub = False
@@ -177,17 +179,20 @@ class Recommender:
         self.is_stub = bool(self.meta.get("stub"))
         self._backend = "onnxruntime"
         self.checkpoint_path = path
+        outs = [o.name for o in self._session.get_outputs()]
+        self._onnx_outputs = outs
+        self._onnx_has_route = "route" in outs and "slot0_logits" in outs
 
     def _load_torch(self, path: Path) -> None:
         import torch
 
-        from Park.model import forward_with_mask, obs_flat_to_tensors
+        from Park.model import forward_route_with_mask, obs_flat_to_tensors
         from Park.training.checkpoint import load_checkpoint
 
         model, step, meta = load_checkpoint(path, self.device)
         model.eval()
         self._torch_model = model
-        self._torch_forward = forward_with_mask
+        self._torch_forward_route = forward_route_with_mask
         self._torch_split = obs_flat_to_tensors
         self._torch = torch
         self.step = int(step)
@@ -225,8 +230,10 @@ class Recommender:
                     self.model = m
 
                 def forward(self, guest, ride, env):
-                    logits, _values = self.model(guest, ride, env)
-                    return logits
+                    out = self.model.forward_route(
+                        guest, ride, env, routes=None, deterministic=True
+                    )
+                    return out.routes.to(dtype=torch.int64), out.slot0_logits
 
             guest = torch.zeros(1, GUEST_FEAT_DIM)
             ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
@@ -237,12 +244,20 @@ class Recommender:
                     (guest, ride, env),
                     str(path),
                     input_names=["guest", "ride", "env"],
-                    output_names=["logits"],
+                    output_names=["route", "slot0_logits"],
                     opset_version=17,
                     dynamo=False,
                 )
             path.with_suffix(".json").write_text(
-                json.dumps({"step": 0, "stub": True, "path": str(path)}, indent=2),
+                json.dumps(
+                    {
+                        "step": 0,
+                        "stub": True,
+                        "path": str(path),
+                        "arch_version": "route_v1",
+                    },
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
             self._load_onnx(path)
@@ -267,12 +282,23 @@ class Recommender:
     def recommend(self, obs_flat: np.ndarray) -> dict:
         guest, ride, env = _split_flat_obs(obs_flat)
         legal = build_action_mask_numpy(guest, ride, env)[0]
+        route_ids: list[int] = []
 
         if self._session is not None:
-            logits = self._session.run(
-                None, {"guest": guest, "ride": ride, "env": env}
-            )[0]
-            logits = np.asarray(logits, dtype=np.float32)[0].copy()
+            feeds = {"guest": guest, "ride": ride, "env": env}
+            if getattr(self, "_onnx_has_route", False):
+                route_out, logits = self._session.run(
+                    ["route", "slot0_logits"], feeds
+                )
+                route_ids = [
+                    int(x)
+                    for x in np.asarray(route_out).reshape(-1).tolist()
+                    if int(x) >= 0
+                ]
+                logits = np.asarray(logits, dtype=np.float32)[0].copy()
+            else:
+                logits = self._session.run(None, feeds)[0]
+                logits = np.asarray(logits, dtype=np.float32)[0].copy()
             logits[~legal] = -1.0e9
         elif self._torch_model is not None:
             torch = self._torch
@@ -283,14 +309,23 @@ class Recommender:
                     device=self.device,
                 ).unsqueeze(0)
                 g, r, e = self._torch_split(obs)
-                masked, _, m = self._torch_forward(self._torch_model, g, r, e)
-                logits = masked[0].cpu().numpy()
-                legal = m[0].cpu().numpy().astype(bool)
+                out = self._torch_forward_route(
+                    self._torch_model, g, r, e, routes=None, deterministic=True
+                )
+                logits = out.slot0_logits[0].cpu().numpy()
+                legal = out.slot0_mask[0].cpu().numpy().astype(bool)
+                route_ids = [
+                    int(x)
+                    for x in out.routes[0].cpu().numpy().tolist()
+                    if int(x) >= 0
+                ]
         else:
             raise RuntimeError("No model backend loaded")
 
         probs = _softmax(logits)
         action = int(probs.argmax())
+        if not route_ids:
+            route_ids = [action]
 
         distribution = []
         for i in range(NUM_ACTIONS):
@@ -305,6 +340,16 @@ class Recommender:
             )
         distribution.sort(key=lambda row: row["prob"], reverse=True)
 
+        route = [
+            {
+                "action_id": int(aid),
+                "label": action_label(int(aid)),
+                "slot": slot,
+                "is_ride": int(aid) < NUM_RIDES,
+            }
+            for slot, aid in enumerate(route_ids)
+        ]
+
         return {
             "recommended": {
                 "action_id": action,
@@ -312,6 +357,7 @@ class Recommender:
                 "prob": float(probs[action]),
                 "legal": bool(legal[action]),
             },
+            "route": route,
             "distribution": distribution,
             "model": self.info(),
         }

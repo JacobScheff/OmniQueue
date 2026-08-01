@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 3: PPO fine-tuning for a personal next-ride planner (N focals / day)."""
+"""Phase 3: PPO fine-tuning for a personal route planner (N focals / day)."""
 
 from __future__ import annotations
 
@@ -22,13 +22,23 @@ import torch.optim as optim
 
 import _park_sim
 import Park.config as config
-from Park.model import forward_with_mask, obs_flat_to_tensors
+from Park.model import forward_route_with_mask, forward_with_mask, obs_flat_to_tensors
 from Park.training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from Park.training.features import (
     FLAT_OBS_DIM,
     GUEST_FEAT_DIM,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
+    js_divergence,
+    rewrite_prefs_must_dos,
+    route_k,
+    top_must_do_or_pref,
+)
+from Park.training.route_reward import (
+    commit_action,
+    pad_route,
+    realized_walk_penalty,
+    route_shaping_delta,
 )
 
 
@@ -68,6 +78,12 @@ def _park_time_label(obs: np.ndarray) -> str:
     return f"{hours:02d}:{minutes:02d}"
 
 
+def _ride_feats_from_obs(obs_row: np.ndarray) -> np.ndarray:
+    g_end = GUEST_FEAT_DIM
+    r_end = g_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    return obs_row[g_end:r_end].reshape(NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+
+
 @dataclass
 class PPOConfig:
     seed: int = 42
@@ -94,12 +110,16 @@ class PPOConfig:
     save_dir: str = config.PPO_SAVE_DIR
     save_every: int = config.PPO_SAVE_EVERY
     log_every: int = config.PPO_LOG_EVERY
+    cf_coef: float = getattr(config, "PPO_CF_COEF", 0.1)
+    cf_margin: float = getattr(config, "PPO_CF_MARGIN", 0.15)
+    cf_frac: float = getattr(config, "PPO_CF_FRAC", 0.25)
+    route_k: int = getattr(config, "PPO_ROUTE_K", 6)
 
 
 @dataclass
 class EpisodeBatch:
     obs: torch.Tensor
-    actions: torch.Tensor
+    actions: torch.Tensor  # (N, K)
     logprobs: torch.Tensor
     advantages: torch.Tensor
     returns: torch.Tensor
@@ -113,6 +133,7 @@ class EpisodeBatch:
     avg_must_do_latency_sec: float
     rollout_sec: float
     n_focals: int
+    mean_route_shaping: float = 0.0
 
 
 @dataclass
@@ -122,6 +143,7 @@ class PPOStats:
     entropy: float
     approx_kl: float
     clipfrac: float
+    cf_loss: float
     update_sec: float
 
 
@@ -139,14 +161,19 @@ class Agent(nn.Module):
         self,
         obs: torch.Tensor,
         action: torch.Tensor | None = None,
+        *,
+        deterministic: bool = False,
     ):
         guest, ride, env = obs_flat_to_tensors(obs)
-        logits, value, _ = forward_with_mask(self.model, guest, ride, env)
-        value = value.flatten()
-        dist = torch.distributions.Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), value
+        out = forward_route_with_mask(
+            self.model,
+            guest,
+            ride,
+            env,
+            routes=action,
+            deterministic=deterministic,
+        )
+        return out.routes, out.log_prob, out.entropy, out.values.flatten()
 
 
 def _collect_episode(
@@ -161,9 +188,10 @@ def _collect_episode(
     """Run one personal-planner day: N focals + heuristic crowd."""
     env = _park_sim.ParkEnv(seed)
     env.reset_personal(seed, cfg.num_focals)
+    k = cfg.route_k
 
     obs_buf: list[np.ndarray] = []
-    action_buf: list[int] = []
+    action_buf: list[np.ndarray] = []
     logprob_buf: list[float] = []
     reward_buf: list[float] = []
     value_buf: list[float] = []
@@ -172,41 +200,53 @@ def _collect_episode(
 
     episode_return = 0.0
     routing_steps = 0
+    shaping_sum = 0.0
     rollout_t0 = time.perf_counter()
     last_log_step = 0
     prefix = " ".join(part for part in (day_label, env_label) if part)
 
     pending_actions: list[int] = []
     staged_obs: np.ndarray | None = None
-    staged_actions: np.ndarray | None = None
+    staged_routes: np.ndarray | None = None
     staged_logprobs: np.ndarray | None = None
     staged_values: np.ndarray | None = None
     staged_parties: np.ndarray | None = None
+    staged_emit_shaping: np.ndarray | None = None
+    staged_realized_walk: np.ndarray | None = None
+    prev_route: dict[int, np.ndarray] = {}
     result = None
 
     def _record_rewards(rewards_arr: np.ndarray, terminal: bool) -> None:
-        nonlocal routing_steps, episode_return, last_log_step
+        nonlocal routing_steps, episode_return, last_log_step, shaping_sum
         if (
             staged_obs is None
-            or staged_actions is None
+            or staged_routes is None
             or staged_logprobs is None
             or staged_values is None
             or staged_parties is None
+            or staged_emit_shaping is None
+            or staged_realized_walk is None
         ):
             raise RuntimeError("Rollout batch state missing staged transitions.")
 
         for i in range(len(rewards_arr)):
             obs_row = staged_obs[i]
             party_id = int(staged_parties[i])
+            route = staged_routes[i]
+            shape_extra = float(staged_emit_shaping[i]) - realized_walk_penalty(
+                float(staged_realized_walk[i])
+            )
+            reward = float(rewards_arr[i]) + shape_extra
+            shaping_sum += shape_extra
+
             obs_buf.append(obs_row.copy())
-            action_buf.append(int(staged_actions[i]))
+            action_buf.append(route.copy())
             logprob_buf.append(float(staged_logprobs[i]))
             value_buf.append(float(staged_values[i]))
-            reward_buf.append(float(rewards_arr[i]))
+            reward_buf.append(reward)
             party_buf.append(party_id)
-            episode_return += float(rewards_arr[i])
+            episode_return += reward
             routing_steps += 1
-            # End of day, or next transition belongs to a different focal.
             is_last = i == len(rewards_arr) - 1
             next_party = (
                 int(staged_parties[i + 1])
@@ -261,14 +301,32 @@ def _collect_episode(
 
         obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
         with torch.no_grad():
-            actions, logprobs, _, values = agent.get_action_and_value(obs_t)
+            routes_t, logprobs, _, values = agent.get_action_and_value(obs_t)
+
+        routes_np = routes_t.detach().cpu().numpy().astype(np.int64)
+        emit_shaping = np.zeros(routes_np.shape[0], dtype=np.float32)
+        realized_walk = np.zeros(routes_np.shape[0], dtype=np.float32)
+        for i in range(routes_np.shape[0]):
+            pid = int(parties_np[i])
+            route = pad_route(routes_np[i].tolist(), k)
+            routes_np[i] = route
+            ride_feats = _ride_feats_from_obs(obs_np[i])
+            emit, walk_sec = route_shaping_delta(route, prev_route.get(pid), ride_feats)
+            emit_shaping[i] = emit
+            realized_walk[i] = walk_sec
+            if commit_action(route) < NUM_RIDES:
+                prev_route[pid] = route.copy()
+            else:
+                prev_route.pop(pid, None)
 
         staged_obs = obs_np
-        staged_actions = actions.detach().cpu().numpy()
+        staged_routes = routes_np
         staged_logprobs = logprobs.detach().cpu().numpy()
         staged_values = values.detach().cpu().numpy()
         staged_parties = parties_np
-        pending_actions = [int(a) for a in staged_actions.tolist()]
+        staged_emit_shaping = emit_shaping
+        staged_realized_walk = realized_walk
+        pending_actions = [commit_action(routes_np[i]) for i in range(routes_np.shape[0])]
 
     if not obs_buf:
         raise RuntimeError("Episode collected zero routing steps.")
@@ -279,7 +337,6 @@ def _collect_episode(
     if not episode_done and staged_values is not None and len(staged_values) > 0:
         bootstrap_value = float(staged_values[0])
 
-    # Mark trajectory breaks when focal party_id changes across recorded rows.
     for i in range(len(done_buf) - 1):
         if party_buf[i] != party_buf[i + 1]:
             done_buf[i] = 1.0
@@ -297,7 +354,7 @@ def _collect_episode(
     )
 
     obs_t = torch.tensor(np.stack(obs_buf), dtype=torch.float32, device=device)
-    actions_t = torch.tensor(action_buf, dtype=torch.long, device=device)
+    actions_t = torch.tensor(np.stack(action_buf), dtype=torch.long, device=device)
     logprobs_t = torch.tensor(logprob_buf, dtype=torch.float32, device=device)
 
     n = obs_t.shape[0]
@@ -330,6 +387,7 @@ def _collect_episode(
         avg_must_do_latency_sec=0.0,
         rollout_sec=rollout_sec,
         n_focals=n_focals,
+        mean_route_shaping=shaping_sum / max(routing_steps, 1),
     )
 
 
@@ -358,6 +416,36 @@ def _compute_gae(
     return advantages, returns
 
 
+def _counterfactual_kl_loss(agent: Agent, obs: torch.Tensor, cfg: PPOConfig) -> torch.Tensor:
+    """Hinge JS between slot-0 dists under real vs resampled prefs (world fixed)."""
+    n = obs.shape[0]
+    m = max(1, int(round(n * float(cfg.cf_frac))))
+    idx = torch.randperm(n, device=obs.device)[:m]
+    obs_s = obs.index_select(0, idx)
+    guest, ride, env = obs_flat_to_tensors(obs_s)
+    logits_a, _, mask_a = forward_with_mask(agent.model, guest, ride, env)
+
+    guest_cf, ride_cf = rewrite_prefs_must_dos(guest, ride)
+    top_a = top_must_do_or_pref(guest, ride)
+    top_b = top_must_do_or_pref(guest_cf, ride_cf)
+    same = top_a == top_b
+    if bool(same.any()):
+        g2, r2 = rewrite_prefs_must_dos(guest[same], ride[same])
+        guest_cf = guest_cf.clone()
+        ride_cf = ride_cf.clone()
+        guest_cf[same] = g2
+        ride_cf[same] = r2
+
+    logits_b, _, mask_b = forward_with_mask(agent.model, guest_cf, ride_cf, env)
+
+    def _probs(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        masked = logits.masked_fill(~mask, -1.0e9)
+        return torch.softmax(masked, dim=-1)
+
+    js = js_divergence(_probs(logits_a, mask_a), _probs(logits_b, mask_b))
+    return torch.relu(float(cfg.cf_margin) - js).pow(2).mean()
+
+
 def _ppo_update(
     agent: Agent,
     optimizer: optim.Optimizer,
@@ -374,6 +462,7 @@ def _ppo_update(
     last_entropy = 0.0
     last_approx_kl = 0.0
     last_clipfrac = 0.0
+    last_cf_loss = 0.0
     update_t0 = time.perf_counter()
     steps_per_epoch = max(1, (n + mb_size - 1) // mb_size)
     total_mb = cfg.update_epochs * steps_per_epoch
@@ -400,7 +489,13 @@ def _ppo_update(
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
             v_loss = 0.5 * ((new_value - ret) ** 2).mean()
             entropy_loss = entropy.mean()
-            loss = pg_loss - cfg.ent_coef * entropy_loss + cfg.vf_coef * v_loss
+            cf_loss = _counterfactual_kl_loss(agent, obs, cfg)
+            loss = (
+                pg_loss
+                - cfg.ent_coef * entropy_loss
+                + cfg.vf_coef * v_loss
+                + float(cfg.cf_coef) * cf_loss
+            )
 
             optimizer.zero_grad()
             loss.backward()
@@ -416,6 +511,7 @@ def _ppo_update(
             last_entropy = float(entropy_loss.item())
             last_approx_kl = float(approx_kl.item())
             last_clipfrac = float(clipfrac.item())
+            last_cf_loss = float(cf_loss.item())
 
             mb_done += 1
             now = time.perf_counter()
@@ -439,6 +535,7 @@ def _ppo_update(
         entropy=last_entropy,
         approx_kl=last_approx_kl,
         clipfrac=last_clipfrac,
+        cf_loss=last_cf_loss,
         update_sec=time.perf_counter() - update_t0,
     )
 
@@ -458,8 +555,15 @@ def train(cfg: PPOConfig) -> None:
     init_extra: dict = {}
     if cfg.init_checkpoint:
         loaded_model, global_step, init_extra = load_checkpoint(cfg.init_checkpoint, device)
-        agent.model.load_state_dict(loaded_model.state_dict())
-        _log(f"Loaded init checkpoint: {cfg.init_checkpoint} (prior step={global_step})")
+        # Flexible encoder warm-start into the live agent (keeps Adam param identity).
+        from Park.training.checkpoint import _load_state_flexible
+
+        notes = _load_state_flexible(agent.model, loaded_model.state_dict())
+        note_txt = (" " + ", ".join(notes)) if notes else ""
+        _log(
+            f"Loaded init checkpoint: {cfg.init_checkpoint} "
+            f"(prior step={global_step}{note_txt})"
+        )
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -468,12 +572,12 @@ def train(cfg: PPOConfig) -> None:
     _log(f"Model parameters: {num_params:,}")
     _log(
         f"PPO personal mode: focals={cfg.num_focals}, target_days={cfg.total_days}, "
-        f"num_envs={cfg.num_envs}, subsample={cfg.subsample_size}, "
+        f"route_k={cfg.route_k}, num_envs={cfg.num_envs}, subsample={cfg.subsample_size}, "
         f"inference_batch={cfg.inference_batch_size}, update_mb={cfg.update_mb_size}"
     )
     _log(
         "Primary metrics (focals only): must_do rate, pref/guest; "
-        "wait_var is diagnostic only"
+        "wait_var is diagnostic only; CF hinge JS on slot-0"
     )
     if init_extra:
         _log(f"Init checkpoint metadata: {init_extra}")
@@ -520,6 +624,7 @@ def train(cfg: PPOConfig) -> None:
                 f"must_do={ep.must_do_completion_rate:.3f} "
                 f"pref/guest={ep.avg_preference_score_per_guest:.4f} "
                 f"rides={ep.rides_completed:,} rides/focal={ep.rides_per_party:.2f} "
+                f"route_shape={ep.mean_route_shaping:.4f} "
                 f"time={ep.rollout_sec:.1f}s "
                 f"({ep.routing_steps / max(ep.rollout_sec, 1e-6):,.0f} steps/s)"
             )
@@ -546,6 +651,7 @@ def train(cfg: PPOConfig) -> None:
             ),
             rollout_sec=rollout_sec,
             n_focals=int(np.mean([ep.n_focals for ep in episodes])),
+            mean_route_shaping=float(np.mean([ep.mean_route_shaping for ep in episodes])),
         )
 
         global_step += batch.routing_steps
@@ -581,7 +687,8 @@ def train(cfg: PPOConfig) -> None:
             f"{best_marker} pref/guest={batch.avg_preference_score_per_guest:.4f} "
             f"rides={batch.rides_completed:,} rides/focal={batch.rides_per_party:.2f} "
             f"pg_loss={stats.pg_loss:.4f} v_loss={stats.v_loss:.4f} "
-            f"entropy={stats.entropy:.3f} kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
+            f"entropy={stats.entropy:.3f} cf={stats.cf_loss:.4f} "
+            f"kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
             f"rollout={rollout_sec:.1f}s update={stats.update_sec:.1f}s total={elapsed:.1f}s "
             f"eta={eta_sec / 60.0:.1f}m for {remaining_days} day(s)"
         )
@@ -651,25 +758,21 @@ def main() -> None:
     parser.add_argument(
         "--init-checkpoint",
         type=str,
-        default="",
-        help="Optional BC checkpoint for warm-start (e.g. checkpoints/bc/bc_final.pt)",
+        default=None,
+        help="Optional BC/PPO checkpoint for encoder warm-start",
     )
-    parser.add_argument(
-        "--anneal-lr",
-        action=argparse.BooleanOptionalAction,
-        default=config.PPO_ANNEAL_LR,
-        help="Linearly decay LR over total_days (default from config.PPO_ANNEAL_LR)",
-    )
+    parser.add_argument("--save-dir", type=str, default=config.PPO_SAVE_DIR)
     args = parser.parse_args()
 
     cfg = PPOConfig(
         seed=args.seed,
         total_days=args.total_days,
         num_envs=args.num_envs,
-        device=args.device,
-        init_checkpoint=args.init_checkpoint or None,
-        anneal_lr=args.anneal_lr,
         num_focals=args.num_focals,
+        device=args.device,
+        init_checkpoint=args.init_checkpoint,
+        save_dir=args.save_dir,
+        route_k=route_k(),
     )
     train(cfg)
 

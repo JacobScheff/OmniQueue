@@ -4,8 +4,8 @@
 
 ## Overview
 
-1. **Phase 2 — Behavioral cloning:** mine heuristic routing decisions from the C++ simulator and train `ParkRouterModel` via cross-entropy loss (flat single-party batches).
-2. **Phase 3 — PPO (personal planner):** fine-tune on complete park days where **`PPO_NUM_FOCALS` parties** are PPO-controlled and the rest of the park is heuristic-routed. Rewards / KPIs are focal-only.
+1. **Phase 2 — Behavioral cloning:** mine heuristic routing decisions from the C++ simulator and train `ParkRouterModel` via cross-entropy on **slot-0** logits (flat single-party batches).
+2. **Phase 3 — PPO (personal planner):** fine-tune on complete park days where **`PPO_NUM_FOCALS` parties** are PPO-controlled and the rest of the park is heuristic-routed. The policy emits a length-**`PPO_ROUTE_K`** ride route; only `route[0]` is applied in the DES. Rewards / KPIs are focal-only.
 
 Checkpoints save automatically to the configured `save_dir` (`checkpoints/bc/` and `checkpoints/ppo/` by default).
 
@@ -41,7 +41,7 @@ python training/bc_train.py --seed 42 --bc-days 1 --device cpu
 
 ## Phase 3: PPO (personal focals)
 
-Warm-start from BC (optional; architecture must match — retrain BC after the no-G model change):
+Warm-start from BC (optional; encoder tensors load flexibly into the route decoder model):
 
 ```bash
 python training/ppo_train.py \
@@ -52,7 +52,7 @@ python training/ppo_train.py \
   --device cpu
 ```
 
-`--init-checkpoint` loads **model weights only** into the PPO agent (fresh Adam).
+`--init-checkpoint` loads matching weight tensors into the PPO agent (fresh Adam). Old single-action checkpoints warm-start the shared encoder / pointer projections; the GRU decoder starts fresh. Checkpoints carry `arch_version=route_v1`.
 
 Each day calls `ParkEnv.reset_personal(seed, n_focals)`:
 
@@ -78,8 +78,13 @@ Rewards are emitted **only on focal routing decisions**. Components:
 | **Dense urgency** | Every focal routing step | `-PPO_MUST_DO_URGENCY_COEF × remaining_must_dos` `- PPO_PREF_URGENCY_COEF × remaining_pref_mass` |
 | Preference / must-do | Focal’s next routing step after a real `RideComplete` | `time_factor × (PPO_PREF_REWARD_SCALE × preference[ride] + PPO_MUST_DO_COMPLETION_BONUS if must-do)` |
 | Terminal must-do | Last routing step of the day | `-PPO_UNFULFILLED_MUST_DO_PENALTY × (focal_remaining / focal_assigned)` + flush leftover **focal** pending bonuses |
+| Route consistency | Python shaping on the transition | `PPO_ROUTE_CONSIST_COEF × Σ w_i · 1[new[i]==prev[i+1]]` (front-weighted; skips illegal) |
+| Planned walk | Python shaping at emission | `-PPO_ROUTE_PLANNED_WALK_COEF × mean_inter_ride_walk / PPO_ROUTE_WALK_NORM_SEC` |
+| Realized walk | Python shaping with the reward | `-PPO_ROUTE_REALIZED_WALK_COEF × walk_to_commit / PPO_ROUTE_WALK_NORM_SEC` |
 
 Crowd completions do not write into the pending preference buffer when hybrid personal mode is active.
+
+**Anti-collapse regularizer (training only):** hinge Jensen–Shannon between slot-0 distributions under the real pref/must-do vector vs a counterfactual resample (`PPO_CF_COEF`, `PPO_CF_MARGIN`, `PPO_CF_FRAC`). See `docs/route-plan-output-plan.md`.
 
 ## Evaluate a checkpoint
 
@@ -97,7 +102,8 @@ python training/eval_policy.py \
 | Guest features | `(B, 46)` | Prefs `0..33`, remaining pref mass `34`, party state `35..44`, elapsed since spawn `45` |
 | Ride features | `(B, 34, 8)` | Wait, incoming, open, duration, capacity, walk, history, must-do |
 | Env features | `(B, 4)` | Time of day, mean wait, **wait-variance slot zeroed**, broken fraction |
-| Actions | `0–33` ride, `34` exit, `35` idle wander |
+| Route actions | `(B, K)` | `K=PPO_ROUTE_K` (default 6); rides `0–33`, or exit `34` / idle `35` in slot 0 only; later slots `-1` pad after exit/idle |
+| Commit | scalar | `route[0]` applied in the DES / companion |
 
 Flat observation size: **322** (`FLAT_OBS_DIM` = 46 + 34×8 + 4).
 
@@ -105,15 +111,19 @@ Flat observation size: **322** (`FLAT_OBS_DIM` = 46 + 34×8 + 4).
 
 - **`d_model=256`** single-party encoder (no guest transformer / no G axis).
 - Ride encoder: ride-id embedding + MLP over the 8 dynamic feats.
-- Pointer scores = guest query × ride keys; exit/idle from a linear head.
-- Critic head over guest + mean ride embedding + env.
-- **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal.
+- **Autoregressive pointer decoder:** slot 0 uses guest query × ride keys + exit/idle head; slots `1..K-1` continue with a GRU cell + no-replacement ride pointer (open + unfinished only).
+- Critic head over guest + mean ride embedding + env (single scalar).
+- **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal on slot 0.
+- Entropy bonus uses early-slot weights (`PPO_ROUTE_ENTROPY_WEIGHTS`); no softmax temperature annealing.
 
 Related knobs in `config.py`:
 
 | Knob | Default | Notes |
 |------|---------|--------|
 | `PPO_NUM_FOCALS` | 24 | Focal parties per training day |
+| `PPO_ROUTE_K` | 6 | Emitted route length |
+| `PPO_ENT_COEF` | 0.03 | Entropy bonus (slot-weighted) |
+| `PPO_CF_COEF` / `MARGIN` / `FRAC` | `0.1` / `0.15` / `0.25` | Counterfactual pref JS hinge |
 | `BC_BATCH_SIZE` | 256 | Individual decisions per BC minibatch |
 | `PPO_INFERENCE_BATCH_SIZE` | 256 | Max pending focals per `exchange_batch` |
 | `PPO_UPDATE_MB_SIZE` | 256 | Transitions per optimizer step |
