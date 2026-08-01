@@ -91,14 +91,33 @@ def train(cfg: BCConfig) -> None:
 
     model: ParkRouterModel = default_model(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    num_params = sum(p.numel() for p in model.parameters())
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    n_samples = int(obs.shape[0])
+    steps_per_epoch = max(1, (n_samples + cfg.batch_size - 1) // cfg.batch_size)
+    total_steps = steps_per_epoch * cfg.epochs
+    # Progress cadence: ~every 1% of an epoch, clamped to a readable range.
+    log_every = max(50, min(2000, steps_per_epoch // 100))
+
+    print(
+        f"BC train: samples={n_samples:,} batch={cfg.batch_size} "
+        f"steps/epoch={steps_per_epoch:,} epochs={cfg.epochs} "
+        f"total_steps={total_steps:,} lr={cfg.lr:.2e} device={device} "
+        f"params={num_params:,} log_every={log_every} save_every={cfg.save_every}",
+        flush=True,
+    )
+
     global_step = 0
+    train_t0 = time.perf_counter()
     for epoch in range(cfg.epochs):
         epoch_loss = 0.0
+        epoch_correct = 0
+        epoch_count = 0
         batches = 0
+        epoch_t0 = time.perf_counter()
         for obs_b, action_b in loader:
             obs_b = obs_b.to(device=device, dtype=torch.float32)
             action_b = action_b.to(device=device, dtype=torch.long)
@@ -116,21 +135,75 @@ def train(cfg: BCConfig) -> None:
             loss.backward()
             optimizer.step()
 
-            epoch_loss += float(loss.item())
+            with torch.no_grad():
+                pred = logits.argmax(dim=-1)
+                epoch_correct += int((pred == action_b).sum().item())
+                epoch_count += int(action_b.numel())
+
+            step_loss = float(loss.item())
+            epoch_loss += step_loss
             batches += 1
             global_step += 1
 
+            if global_step % log_every == 0 or batches == steps_per_epoch:
+                elapsed = time.perf_counter() - train_t0
+                steps_per_sec = global_step / max(elapsed, 1e-6)
+                remaining = max(total_steps - global_step, 0)
+                eta_sec = remaining / max(steps_per_sec, 1e-6)
+                avg_loss = epoch_loss / max(1, batches)
+                acc = epoch_correct / max(1, epoch_count)
+                print(
+                    f"  [epoch {epoch + 1}/{cfg.epochs}] "
+                    f"step={global_step:,}/{total_steps:,} "
+                    f"({100.0 * global_step / total_steps:.1f}%) "
+                    f"loss={step_loss:.4f} avg_loss={avg_loss:.4f} "
+                    f"acc={acc:.3f} "
+                    f"speed={steps_per_sec:,.1f} steps/s "
+                    f"eta={eta_sec / 60.0:.1f}m",
+                    flush=True,
+                )
+
             if global_step % cfg.save_every == 0:
                 ckpt = save_dir / f"bc_step_{global_step}.pt"
-                save_checkpoint(ckpt, model, optimizer, global_step, {"phase": "bc", "epoch": epoch})
+                save_checkpoint(
+                    ckpt,
+                    model,
+                    optimizer,
+                    global_step,
+                    {
+                        "phase": "bc",
+                        "epoch": epoch,
+                        "avg_loss": epoch_loss / max(1, batches),
+                        "acc": epoch_correct / max(1, epoch_count),
+                    },
+                )
                 print(f"Saved checkpoint: {ckpt}", flush=True)
 
         avg_loss = epoch_loss / max(1, batches)
-        print(f"Epoch {epoch + 1}/{cfg.epochs}  loss={avg_loss:.4f}", flush=True)
+        acc = epoch_correct / max(1, epoch_count)
+        epoch_sec = time.perf_counter() - epoch_t0
+        print(
+            f"Epoch {epoch + 1}/{cfg.epochs} done: "
+            f"loss={avg_loss:.4f} acc={acc:.3f} "
+            f"steps={batches:,} time={epoch_sec:.1f}s "
+            f"({batches / max(epoch_sec, 1e-6):,.1f} steps/s)",
+            flush=True,
+        )
 
     final_path = save_dir / "bc_final.pt"
-    save_checkpoint(final_path, model, optimizer, global_step, {"phase": "bc", "epochs": cfg.epochs})
-    print(f"Training complete. Final checkpoint: {final_path}", flush=True)
+    save_checkpoint(
+        final_path,
+        model,
+        optimizer,
+        global_step,
+        {"phase": "bc", "epochs": cfg.epochs},
+    )
+    total_sec = time.perf_counter() - train_t0
+    print(
+        f"Training complete in {total_sec / 60.0:.1f}m. "
+        f"Final checkpoint: {final_path}",
+        flush=True,
+    )
 
 
 def main() -> None:

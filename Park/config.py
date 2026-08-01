@@ -208,7 +208,7 @@ MACRO_EDGES.extend([
 # Behavioral Cloning (Phase 2) training defaults
 # ---------------------------------------------------------------------------
 BC_SAVE_DIR = "checkpoints/bc"
-BC_SAVE_EVERY = 500        # save checkpoint every N optimizer steps
+BC_SAVE_EVERY = 5_000      # save checkpoint every N optimizer steps
 BC_EPOCHS = 10
 # Batch size is in individual routing decisions (single-party model, no G axis).
 BC_BATCH_SIZE = 256
