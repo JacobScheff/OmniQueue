@@ -56,10 +56,12 @@ python training/ppo_train.py \
 
 Each day calls `ParkEnv.reset_personal(seed, n_focals)`:
 
-- Spawns a full park (~50k guests) with **randomized** prefs/must-dos.
+- Spawns a full park (~50k guests) with **training-only randomized** prefs/must-dos (play/watch/visualize keep popularity-weighted spawn — see `docs/parties.md`).
 - Marks N parties as size-1 focals (spread across spawn times).
 - Heuristic-routes the crowd; only focals enter the PPO `env_queue_`.
 - `exchange_batch` returns focal observations (+ `party_ids`); GAE breaks when `party_id` changes.
+
+BC mining (`collect_bc_dataset`) also uses the randomized training spawn so expert labels match the personal-planner preference distribution.
 
 **Checkpoint compatibility:** the personal/no-G architecture does not load old coordinator checkpoints. Retrain from scratch (or from a matching BC checkpoint).
 

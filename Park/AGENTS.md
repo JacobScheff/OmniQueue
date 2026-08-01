@@ -18,7 +18,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 4. **Second resolution** — park day is 8:00 AM–11:00 PM (54,000 seconds).
 5. **Switchable router** — `config.ROUTER` selects `"heuristic"` (C++ built-in) or `"ppo"` (Phase 3 stub).
 6. **Documentation stays current** — any behavior change must update the matching file in `docs/` in the same change.
-7. **Randomized preferences** — spawn prefs / must-dos are fully random (i.i.d. positive draws + uniform must-dos, then must-do boost + L1-normalize); not land-themed and not popularity-weighted. Ride `popularity` may remain for diagnostics / live UX only.
+7. **Preference spawn modes** — play/watch/visualize use popularity-weighted prefs (± noise) and popularity-weighted must-dos. BC / personal PPO training uses fully random prefs/must-dos so the policy must read the preference vector. Not land-themed.
 8. **Breakdown realism** — queued parties decide immediately at the ride entrance but evacuate one party every 4 seconds; on-ride parties evacuate last without ride completion credit.
 
 ## Repository Structure

@@ -55,7 +55,9 @@ constexpr double kBaseBalkSec = 40.0 * 60.0;  // 40 min floor (mirrored from con
 constexpr double kBalkScale = 5.0 * 60.0;     // +0–5 min by preference^exp (max ~45 min)
 constexpr double kBalkPrefExp = 1.5;
 constexpr double kMustDoPrefBoost = 10.0;
-// Spawn prefs: i.i.d. U(kPrefRawEps, 1), must-do boost, L1-normalize (not popularity-weighted).
+// Default (play/watch/visualize): popularity * U(1±noise), must-do boost, L1-normalize.
+constexpr double kPrefPopularityNoise = 0.25;  // mirrored from config.PREF_POPULARITY_NOISE
+// Training-only (BC / personal PPO): i.i.d. U(eps, 1), must-do boost, L1-normalize.
 constexpr double kPrefRawEps = 1e-3;  // mirrored from config.PREF_RAW_EPS
 constexpr double kIdleWalkProb = 0.5;
 

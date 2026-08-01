@@ -48,21 +48,32 @@ Parties whose `leave_sec` is the day end may still join long lines near close: f
 ## Must-Do Lists
 
 - Count per party: uniform **0–4** rides.
-- Rides are sampled **uniformly without replacement** (not popularity-weighted).
+- **Default** (play / watch / visualize / heuristic `run_day`): sampled **without replacement**, weighted by ride `popularity`.
+- **Training** (BC dataset + personal PPO `reset_personal` / `ParkEnv.reset`): sampled **uniformly** without replacement.
 - Unfinished must-dos sort first in `preference_order`.
 - Completing a must-do ride clears that flag, refreshes `preference_order` / `balk_sec`, and (in `ParkEnv` / PPO only) adds a time-decayed `PPO_MUST_DO_COMPLETION_BONUS` (optionally × `party_size`) to the party’s pending preference reward (see `docs/training.md`).
 
 ## Preferences
 
-Per-party preference masses are **fully randomized** (not land-themed, not popularity-weighted) so the policy must read the preference vector:
+Two spawn modes (not land-themed):
+
+**Default** — play / watch / visualize / heuristic days (popularity-weighted ± noise):
 
 ```
-raw[r] ~ U(PREF_RAW_EPS, 1)
+raw[r] = popularity[r] × U(1 − PREF_POPULARITY_NOISE, 1 + PREF_POPULARITY_NOISE)
 raw[r] *= MUST_DO_PREF_BOOST   # if ride is a must-do
 preferences[r] = raw[r] / sum(raw)
 ```
 
-Defaults: `PREF_RAW_EPS = 1e-3`. Ride `popularity` on `config.RIDES` remains for diagnostics / companion UX but does **not** drive sim spawn prefs.
+**Training** — BC / personal PPO (fully random so the policy must read the pref vector):
+
+```
+raw[r] ~ U(PREF_RAW_EPS, 1)
+raw[r] *= MUST_DO_PREF_BOOST
+preferences[r] = raw[r] / sum(raw)
+```
+
+Defaults: `PREF_POPULARITY_NOISE = 0.25`, `PREF_RAW_EPS = 1e-3`. Focal guests in play/watch can still override weights via the UI (often popularity-initialized sliders).
 
 ## Balk Thresholds
 

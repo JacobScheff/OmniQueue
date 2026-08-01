@@ -413,10 +413,10 @@ public:
         }
     }
 
-    DayMetricsResult run() {
+    DayMetricsResult run(bool randomize_prefs = false) {
         const auto t0 = std::chrono::steady_clock::now();
         reset();
-        spawn_day();
+        spawn_day(randomize_prefs);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
         metrics_.must_dos_assigned = must_dos_assigned_at_spawn_;
@@ -445,7 +445,7 @@ public:
         soft_human_leave_ = false;
         play_mode_ = true;
         reset();
-        spawn_day();
+        spawn_day(/*randomize_prefs=*/false);
         override_focal_party(focal);
         metrics_.total_parties = parties_.count;
         metrics_.total_guests = total_guests_;
@@ -788,7 +788,9 @@ public:
         env_queue_pos_ = 0;
         rng_ = Rng(seed);
         reset();
-        spawn_day();
+        // Default ParkEnv.reset matches play/watch/visualize (popularity-weighted).
+        // Personal PPO / BC pass randomize_prefs=true explicitly.
+        spawn_day(/*randomize_prefs=*/false);
         is_focal_.assign(static_cast<size_t>(parties_.count), 0);
         pending_pref_reward_.assign(static_cast<size_t>(parties_.count), 0.0f);
         metrics_.total_parties = parties_.count;
@@ -812,7 +814,7 @@ public:
         env_queue_pos_ = 0;
         rng_ = Rng(seed);
         reset();
-        spawn_day();
+        spawn_day(/*randomize_prefs=*/true);
         // Flags cleared by reset(); restore personal hybrid mode.
         hold_routing_ = true;
         hybrid_crowd_heuristic_ = true;
@@ -894,7 +896,7 @@ public:
         env_queue_pos_ = 0;
         rng_ = Rng(seed);
         reset();
-        spawn_day();
+        spawn_day(/*randomize_prefs=*/false);
         override_focal_party(focal);
         // Flags must be set after reset() which clears hybrid/play state.
         hold_routing_ = true;
@@ -1205,7 +1207,7 @@ private:
         owned_recording_ = DayRecording{};
     }
 
-    void spawn_day() {
+    void spawn_day(bool randomize_prefs = false) {
         const int total_guests = std::max(1000, static_cast<int>(std::round(rng_.normal(kTotalGuestsMean, kTotalGuestsStd))));
 
         std::vector<int32_t> sizes;
@@ -1238,26 +1240,58 @@ private:
             const int must_do_count = rng_.randint(0, 5);
             std::array<uint8_t, kNumRides> must_do{};
             if (must_do_count > 0) {
-                // Uniform sample without replacement (not popularity-weighted).
-                std::array<int, kNumRides> pool{};
-                for (int i = 0; i < kNumRides; ++i) {
-                    pool[static_cast<size_t>(i)] = i;
-                }
-                int remaining = kNumRides;
-                for (int pick = 0; pick < must_do_count; ++pick) {
-                    const int idx = rng_.randint(0, remaining);
-                    const int chosen = pool[static_cast<size_t>(idx)];
-                    must_do[static_cast<size_t>(chosen)] = 1;
-                    pool[static_cast<size_t>(idx)] = pool[static_cast<size_t>(remaining - 1)];
-                    --remaining;
+                if (randomize_prefs) {
+                    // Training: uniform sample without replacement.
+                    std::array<int, kNumRides> pool{};
+                    for (int i = 0; i < kNumRides; ++i) {
+                        pool[static_cast<size_t>(i)] = i;
+                    }
+                    int remaining = kNumRides;
+                    for (int pick = 0; pick < must_do_count; ++pick) {
+                        const int idx = rng_.randint(0, remaining);
+                        const int chosen = pool[static_cast<size_t>(idx)];
+                        must_do[static_cast<size_t>(chosen)] = 1;
+                        pool[static_cast<size_t>(idx)] = pool[static_cast<size_t>(remaining - 1)];
+                        --remaining;
+                    }
+                } else {
+                    // Play/watch/visualize: popularity-weighted without replacement.
+                    std::array<double, kNumRides> weights{};
+                    for (int i = 0; i < kNumRides; ++i) {
+                        weights[static_cast<size_t>(i)] = std::max(1e-9, gd::kRidePopularity[i]);
+                    }
+                    for (int pick = 0; pick < must_do_count; ++pick) {
+                        double total = 0.0;
+                        for (double w : weights) {
+                            total += w;
+                        }
+                        double r = rng_.uniform01() * total;
+                        int chosen = 0;
+                        for (int i = 0; i < kNumRides; ++i) {
+                            r -= weights[static_cast<size_t>(i)];
+                            if (r <= 0.0) {
+                                chosen = i;
+                                break;
+                            }
+                            chosen = i;
+                        }
+                        must_do[static_cast<size_t>(chosen)] = 1;
+                        weights[static_cast<size_t>(chosen)] = 0.0;
+                    }
                 }
             }
 
             std::array<float, kNumRides> prefs{};
             for (int i = 0; i < kNumRides; ++i) {
-                // i.i.d. positive draws — policy must read the preference vector.
-                prefs[i] = static_cast<float>(
-                    kPrefRawEps + rng_.uniform01() * (1.0 - kPrefRawEps));
+                if (randomize_prefs) {
+                    // Training: i.i.d. draws so the policy must read the pref vector.
+                    prefs[i] = static_cast<float>(
+                        kPrefRawEps + rng_.uniform01() * (1.0 - kPrefRawEps));
+                } else {
+                    const double noise =
+                        1.0 + (rng_.uniform01() * 2.0 - 1.0) * kPrefPopularityNoise;
+                    prefs[i] = static_cast<float>(gd::kRidePopularity[i] * noise);
+                }
                 if (must_do[i]) {
                     prefs[i] *= static_cast<float>(kMustDoPrefBoost);
                 }
@@ -2081,7 +2115,7 @@ std::vector<BCSample> collect_bc_dataset(const int num_days, const uint64_t seed
     for (int day = 0; day < num_days; ++day) {
         detail::Simulator sim(seed_start + static_cast<uint64_t>(day));
         sim.set_bc_recorder(&samples);
-        sim.run();
+        sim.run(/*randomize_prefs=*/true);
     }
     return samples;
 }

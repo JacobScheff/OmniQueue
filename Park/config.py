@@ -53,8 +53,10 @@ BASE_BALK_SEC = 40 * 60   # 40 min floor; typical rides stay near this
 BALK_SCALE = 5 * 60       # +0–5 min by preference^BALK_PREF_EXP (max ~45 min)
 BALK_PREF_EXP = 1.5
 MUST_DO_PREF_BOOST = 10.0
-# Spawn prefs: i.i.d. U(PREF_RAW_EPS, 1) per ride, must-do boost, L1-normalize.
-# Not popularity-weighted — forces the policy to read the preference vector.
+# Default spawn (play/watch/visualize/heuristic days):
+#   raw[r] = popularity[r] * U(1-noise, 1+noise), must-do boost, L1-normalize.
+PREF_POPULARITY_NOISE = 0.25
+# Training-only spawn (BC / personal PPO): i.i.d. U(PREF_RAW_EPS, 1), must-do boost, L1-normalize.
 PREF_RAW_EPS = 1e-3
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
