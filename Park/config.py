@@ -219,13 +219,13 @@ BC_LR = 3e-4
 # Override individual values here rather than via command-line flags.
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
-PPO_SAVE_EVERY = 50_000           # save checkpoint every N routing steps
-PPO_LEARNING_RATE = 1e-5
+PPO_SAVE_EVERY = 5_000           # save checkpoint every N routing steps
+PPO_LEARNING_RATE = 1e-4
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
 PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
 PPO_NUM_MINIBATCHES = 8           # PPO minibatch count per update
-PPO_UPDATE_EPOCHS = 1             # PPO epochs per day
+PPO_UPDATE_EPOCHS = 2             # PPO epochs per day
 PPO_CLIP_COEF = 0.1               # PPO clipping epsilon
 PPO_ENT_COEF = 0.01               # entropy bonus coefficient
 PPO_VF_COEF = 0.5                 # value loss coefficient
