@@ -246,7 +246,7 @@ For a fraction `PPO_CF_FRAC` of transitions in the minibatch (default `0.25`):
 1. Start from real obs tensors `(guest, ride, env)`.
 2. Clone → `guest_cf`, `ride_cf`.
 3. Resample a training-style random preference vector + must-do set (same rules as `reset_personal` spawn: uniform prefs / random must-dos — see `docs/parties.md`).
-4. Write prefs into guest feats `0..33`, recompute remaining pref mass, rewrite ride must-do flags (feat 7), update guest remaining must-do count; leave waits, walks, history, time, location unchanged.
+4. Write prefs into guest feats `0..33`, recompute remaining sharpened pref mass (`Σ pref**PPO_PREF_REWARD_EXP` unfinished), rewrite ride must-do flags (feat 7), update guest remaining must-do count; leave waits, walks, history, time, location unchanged.
 5. Reject the pair if top must-do (or top pref ride) equals the original — resample up to N times so the counterfactual actually differs.
 
 ### 7.3 Loss

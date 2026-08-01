@@ -21,7 +21,8 @@ constexpr int kBreakdownRepairMaxSec = 60 * 60;
 constexpr int kMetricsSampleIntervalSec = 300;
 constexpr int kMinDwellSec = 2 * 3600;
 
-// Guest feats: 0..33 preferences, 34 remaining_pref_mass, 35..44 party state,
+// Guest feats: 0..33 preferences, 34 remaining sharpened pref mass
+// (Σ preference**kPrefRewardExp over unfinished rides), 35..44 party state,
 // 45 elapsed_since_spawn / DAY_SECONDS.
 constexpr int kGuestFeatDim = 46;
 // Per-ride dynamic feats (party-relative walk/history/must-do included):
@@ -72,7 +73,10 @@ constexpr double kShortWaitSlackSec = 2.0 * 60.0; // Pass 3 relative-to-best sla
 
 // PPO reward shaping (mirrored from config.py PPO_* reward knobs).
 // Preference / must-do latency objective; wait variance is not rewarded.
-constexpr float kPrefRewardScale = 0.05f;
+// Pref mass is raised to kPrefRewardExp so high-preference completions dominate
+// many low-preference fillers (see config.PPO_PREF_REWARD_EXP).
+constexpr float kPrefRewardExp = 2.0f;
+constexpr float kPrefRewardScale = 0.2f;
 constexpr float kMustDoCompletionBonus = 0.15f;
 constexpr float kTimeDecay = 0.75f;
 constexpr float kMustDoUrgencyCoef = 2e-5f;

@@ -75,8 +75,8 @@ Rewards are emitted **only on focal routing decisions**. Components:
 
 | Component | When | Formula (defaults in `config.py`) |
 |-----------|------|-----------------------------------|
-| **Dense urgency** | Every focal routing step | `-PPO_MUST_DO_URGENCY_COEF × remaining_must_dos` `- PPO_PREF_URGENCY_COEF × remaining_pref_mass` |
-| Preference / must-do | Focal’s next routing step after a real `RideComplete` | `time_factor × (PPO_PREF_REWARD_SCALE × preference[ride] + PPO_MUST_DO_COMPLETION_BONUS if must-do)` |
+| **Dense urgency** | Every focal routing step | `-PPO_MUST_DO_URGENCY_COEF × remaining_must_dos` `- PPO_PREF_URGENCY_COEF × Σ preference[r]**PPO_PREF_REWARD_EXP` (unfinished only) |
+| Preference / must-do | Focal’s next routing step after a real `RideComplete` | `time_factor × (PPO_PREF_REWARD_SCALE × preference[ride]**PPO_PREF_REWARD_EXP + PPO_MUST_DO_COMPLETION_BONUS if must-do)` |
 | Terminal must-do | Last routing step of the day | `-PPO_UNFULFILLED_MUST_DO_PENALTY × (focal_remaining / focal_assigned)` + flush leftover **focal** pending bonuses |
 | Route consistency | Python shaping on the transition | `PPO_ROUTE_CONSIST_COEF × Σ w_i · 1[new[i]==prev[i+1]]` (front-weighted; skips illegal) |
 | Planned walk | Python shaping at emission | `-PPO_ROUTE_PLANNED_WALK_COEF × mean_inter_ride_walk / PPO_ROUTE_WALK_NORM_SEC` |
@@ -99,7 +99,7 @@ python training/eval_policy.py \
 
 | Tensor | Shape | Content |
 |--------|-------|---------|
-| Guest features | `(B, 46)` | Prefs `0..33`, remaining pref mass `34`, party state `35..44`, elapsed since spawn `45` |
+| Guest features | `(B, 46)` | Prefs `0..33`, remaining sharpened pref mass `34` (`Σ pref**PPO_PREF_REWARD_EXP` unfinished), party state `35..44`, elapsed since spawn `45` |
 | Ride features | `(B, 34, 8)` | Wait, incoming, open, duration, capacity, walk, history, must-do |
 | Env features | `(B, 4)` | Time of day, mean wait, **wait-variance slot zeroed**, broken fraction |
 | Route actions | `(B, K)` | `K=PPO_ROUTE_K` (default 6); rides `0–33`, or exit `34` / idle `35` in slot 0 only; later slots `-1` pad after exit/idle |

@@ -61,7 +61,8 @@ On real `RideComplete` (not breakdown evacuation), accumulate into `pending_pref
 time_factor = max(0, 1 - PPO_TIME_DECAY * (now_sec - spawn_sec) / DAY_SECONDS)
 # or: exp(-PPO_TIME_DECAY * (now_sec - spawn_sec) / DAY_SECONDS)
 
-bonus  = PPO_PREF_REWARD_SCALE * preference[ride] * time_factor
+pref_value = preference[ride] ** PPO_PREF_REWARD_EXP   # EXP>1 → high-pref >> many low-pref
+bonus  = PPO_PREF_REWARD_SCALE * pref_value * time_factor
 bonus += PPO_MUST_DO_COMPLETION_BONUS * time_factor   # if was_must_do
 bonus *= party_size                                 # optional guest-weighting
 pending[party] += bonus
@@ -70,6 +71,8 @@ pending[party] += bonus
 Flush unchanged: add pending into the reward on that party’s **next** routing step (and flush leftovers in `terminal_reward_bonus`).
 
 **Must-do scale should dominate preference scale** (today must-do is smaller than pref — invert that). Suggested starting ratios: must-do bonus ≫ per-ride pref mass (e.g. must-do `0.05–0.2`, pref scale `0.02–0.1`), tuned so a day of heuristic routing has a stable return magnitude for the critic.
+
+**Preference sharpness:** `PPO_PREF_REWARD_EXP` (default `2.0`) makes one high-preference completion dominate several low-preference fillers (e.g. raw weights 80 vs 3×5 → ~85× after L1-normalize). Raise `PPO_PREF_REWARD_SCALE` when increasing EXP so typical top-pref bonuses stay similar magnitude.
 
 ### 3.3 Dense urgency (recommended)
 
@@ -81,7 +84,7 @@ urgency = PPO_MUST_DO_URGENCY_COEF * remaining_must_dos[p]
 reward = -urgency  (+ flushed completion bonuses)
 ```
 
-Define `remaining_pref_mass` as sum of `preference[r]` over rides with `ride_history[r] == 0` (or over unfinished must-dos only, if you want urgency strictly on itinerary items). This creates pressure to clear high-value unfinished rides **quickly** without referencing wait variance.
+Define `remaining_pref_mass` as sum of `preference[r] ** PPO_PREF_REWARD_EXP` over rides with `ride_history[r] == 0` (same sharpening as the completion bonus; also written to guest feat 34). This creates pressure to clear high-value unfinished rides **quickly** without referencing wait variance.
 
 Keep coefficients small enough that one completion bonus outweighs many steps of urgency (so the agent does not exit early to stop the clock unless leave time forces it).
 

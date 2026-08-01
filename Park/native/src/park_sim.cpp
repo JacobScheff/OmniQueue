@@ -1019,11 +1019,20 @@ public:
         return var / valid;
     }
 
+    static float pref_value(float pref) {
+        const float p = std::max(0.0f, pref);
+        if (kPrefRewardExp == 1.0f) {
+            return p;
+        }
+        return std::pow(p, kPrefRewardExp);
+    }
+
     float remaining_pref_mass(int party_id) const {
+        // Sharpened unfinished pref mass (matches completion bonus / urgency).
         float mass = 0.0f;
         for (int r = 0; r < kNumRides; ++r) {
             if (parties_.ride_history[party_id][r] == 0) {
-                mass += parties_.preferences[party_id][static_cast<size_t>(r)];
+                mass += pref_value(parties_.preferences[party_id][static_cast<size_t>(r)]);
             }
         }
         return mass;
@@ -1583,7 +1592,7 @@ private:
                 static_cast<float>(std::max(0, now_sec - parties_.spawn_sec[party_id]));
             const float time_factor = std::max(
                 0.0f, 1.0f - kTimeDecay * elapsed / static_cast<float>(kDaySeconds));
-            float bonus = kPrefRewardScale * pref * time_factor;
+            float bonus = kPrefRewardScale * pref_value(pref) * time_factor;
             if (was_must_do) {
                 bonus += kMustDoCompletionBonus * time_factor;
             }
@@ -1852,7 +1861,7 @@ private:
         for (int i = 0; i < kNumRides; ++i) {
             obs.guest[static_cast<size_t>(i)] = parties_.preferences[party_id][i];
             if (parties_.ride_history[party_id][i] == 0) {
-                remaining_pref += parties_.preferences[party_id][i];
+                remaining_pref += pref_value(parties_.preferences[party_id][i]);
             }
         }
         obs.guest[34] = remaining_pref;

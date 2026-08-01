@@ -125,7 +125,9 @@ def build_live_observation(
 
     guest = np.zeros(GUEST_FEAT_DIM, dtype=np.float32)
     guest[0:NUM_RIDES] = prefs
-    guest[34] = float(prefs[history == 0].sum())
+    pref_exp = float(getattr(config, "PPO_PREF_REWARD_EXP", 1.0))
+    unfinished = prefs[history == 0]
+    guest[34] = float(np.power(np.clip(unfinished, 0.0, None), pref_exp).sum())
     guest[35] = float(np.clip(state.party_size, 1, 16)) / 8.0
     guest[36] = float(state.walking_speed) / 2.0
     guest[37] = float(leave_sec - now_sec) / float(config.DAY_SECONDS)

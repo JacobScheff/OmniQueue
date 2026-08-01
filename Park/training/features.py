@@ -12,7 +12,8 @@ if TYPE_CHECKING:
     import torch
 
 GUEST_FEAT_DIM = 46
-# 0..33 preferences, 34 remaining_pref_mass, 35..44 party state, 45 elapsed_since_spawn
+# 0..33 preferences, 34 remaining sharpened pref mass (Σ pref**EXP unfinished),
+# 35..44 party state, 45 elapsed_since_spawn
 # 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do
 RIDE_DYNAMIC_FEAT_DIM = 8
 ENV_DYNAMIC_FEAT_DIM = 4
@@ -204,7 +205,9 @@ def rewrite_prefs_must_dos(
                 raw[mid] = raw[mid] * must_do_boost
         prefs = raw / raw.sum().clamp(min=1e-8)
         new_guest[b, :num_rides] = prefs
-        rem = (prefs * (~history[b]).to(dtype)).sum()
+        pref_exp = float(getattr(config, "PPO_PREF_REWARD_EXP", 1.0))
+        sharpened = prefs.clamp(min=0.0).pow(pref_exp)
+        rem = (sharpened * (~history[b]).to(dtype)).sum()
         new_guest[b, GUEST_FEAT_REMAINING_PREF_MASS] = rem
         new_guest[b, GUEST_FEAT_MUST_DO_COUNT] = float(len(must_ids)) / 5.0
         new_ride[b, :, RIDE_FEAT_MUST_DO] = 0.0

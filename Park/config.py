@@ -263,12 +263,13 @@ MODEL_ARCH_VERSION = "route_v1"
 #
 # On RideComplete (pending, flushed on that party's next routing step):
 #   time_factor = max(0, 1 - PPO_TIME_DECAY * (now - spawn) / DAY_SECONDS)
-#   bonus = (PPO_PREF_REWARD_SCALE * preference[ride]
+#   pref_value = preference[ride] ** PPO_PREF_REWARD_EXP
+#   bonus = (PPO_PREF_REWARD_SCALE * pref_value
 #            + PPO_MUST_DO_COMPLETION_BONUS if must-do) * time_factor
 #   if PPO_WEIGHT_BY_PARTY_SIZE: bonus *= party_size
 # Every routing step (party-local):
 #   -PPO_MUST_DO_URGENCY_COEF * remaining_must_dos
-#   -PPO_PREF_URGENCY_COEF * remaining_pref_mass  (prefs for rides with history==0)
+#   -PPO_PREF_URGENCY_COEF * sum(pref**EXP for history==0)
 # Terminal (focals only in personal mode):
 #   -PPO_UNFULFILLED_MUST_DO_PENALTY * (focal_remaining / max(1, focal_assigned))
 #   + flush remaining pending bonuses for learners
@@ -276,7 +277,12 @@ MODEL_ARCH_VERSION = "route_v1"
 #   + PPO_ROUTE_CONSIST_COEF * Σ w_i * 1[new[i]==old[i+1]]
 #   - PPO_ROUTE_PLANNED_WALK_COEF * mean_inter_ride_walk / WALK_NORM
 #   - PPO_ROUTE_REALIZED_WALK_COEF * walk_to_commit / WALK_NORM
-PPO_PREF_REWARD_SCALE = 0.05
+#
+# EXP > 1 makes one high-pref completion dominate several low-pref fillers
+# (e.g. raw 80 vs 3×5 → ~85× under EXP=2 after L1 normalize). SCALE is
+# raised vs the linear era so typical top-pref bonuses stay O(same) magnitude.
+PPO_PREF_REWARD_EXP = 2.0
+PPO_PREF_REWARD_SCALE = 0.2
 PPO_MUST_DO_COMPLETION_BONUS = 0.15
 PPO_TIME_DECAY = 0.75
 PPO_MUST_DO_URGENCY_COEF = 2e-5
