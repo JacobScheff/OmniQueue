@@ -220,7 +220,7 @@ BC_LR = 3e-4
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
 PPO_SAVE_EVERY = 5_000           # save checkpoint every N routing steps
-PPO_LEARNING_RATE = 1e-4
+PPO_LEARNING_RATE = 3e-5
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
 PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
