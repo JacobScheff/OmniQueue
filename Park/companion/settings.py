@@ -16,7 +16,8 @@ _MODEL_DIR = Path(__file__).resolve().parent / "model"
 # Named PPO checkpoints (ONNX for free CPU hosting; .pt kept as training sources).
 # Tags shown in the UI come from these keys (v1, v2, …). Add entries to restore multi-version.
 MODELS: dict[str, Path] = {
-    "v1": _MODEL_DIR / "ppo_final.onnx",
+    "v1": _MODEL_DIR / "v1.onnx",
+    "v2": _MODEL_DIR / "v2.onnx",
 }
 
 # Default tag when the client does not specify one.
