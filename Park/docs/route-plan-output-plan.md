@@ -60,7 +60,7 @@ When soft-closed / exit-only mask: force `a_0 = exit`, `L = 1`.
 |-------|----------|
 | C++ `ParkEnv` | Still accepts a **single** action id per exchange (unchanged DES). Python applies `route[0]` only. |
 | PPO storage | Transition stores full route (+ old route for consistency), log-prob = sum of per-slot log-probs, entropy = sum of per-slot entropies. |
-| Companion / ONNX | Export decoder; HTTP returns `route: [{action_id, label, prob_slot}, …]` plus committed recommendation = `route[0]`. Keep full slot-0 distribution for debugging. |
+| Companion / ONNX | Export decoder (`route_v2`); HTTP returns `route: [{action_id, label, prob_slot}, …]`, committed recommendation = `route[0]`, `distributions_by_slot`, and optional `force_first` pin for what-if AR continuations. |
 
 ### 3.3 Persistent plan state (per focal party)
 

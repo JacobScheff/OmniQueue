@@ -25,6 +25,7 @@ from Park.training.features import (
     RIDE_FEAT_OPEN,
     RIDE_FEAT_WAIT,
     RIDE_FEAT_WALK,
+    route_k as default_route_k,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,39 @@ def _read_meta(path: Path) -> dict:
     return {}
 
 
+def _dist_rows(
+    logits: np.ndarray,
+    legal: np.ndarray,
+    *,
+    action_dim: int | None = None,
+) -> list[dict]:
+    """Softmax over legal actions; return sorted DistRow dicts."""
+    logits = np.asarray(logits, dtype=np.float32).reshape(-1).copy()
+    legal = np.asarray(legal, dtype=bool).reshape(-1)
+    n = int(action_dim or min(logits.shape[0], legal.shape[0]))
+    logits = logits[:n]
+    legal = legal[:n]
+    masked = logits.copy()
+    masked[~legal] = -1.0e9
+    if not legal.any():
+        probs = np.zeros(n, dtype=np.float32)
+    else:
+        probs = _softmax(masked)
+    rows = []
+    for i in range(n):
+        rows.append(
+            {
+                "action_id": i,
+                "label": action_label(i),
+                "prob": float(probs[i]),
+                "legal": bool(legal[i]),
+                "is_ride": i < NUM_RIDES,
+            }
+        )
+    rows.sort(key=lambda row: row["prob"], reverse=True)
+    return rows
+
+
 class Recommender:
     def __init__(
         self,
@@ -127,7 +161,10 @@ class Recommender:
         self._session = None
         self._torch_model = None
         self._onnx_has_route = False
+        self._onnx_has_slots = False
+        self._onnx_has_force = False
         self._onnx_outputs: list[str] = []
+        self.route_k = default_route_k()
         self.step = 0
         self.meta: dict = {}
         self.is_stub = False
@@ -179,9 +216,13 @@ class Recommender:
         self.is_stub = bool(self.meta.get("stub"))
         self._backend = "onnxruntime"
         self.checkpoint_path = path
+        self.route_k = int(self.meta.get("route_k", default_route_k()))
         outs = [o.name for o in self._session.get_outputs()]
+        ins = [i.name for i in self._session.get_inputs()]
         self._onnx_outputs = outs
         self._onnx_has_route = "route" in outs and "slot0_logits" in outs
+        self._onnx_has_slots = "slot_logits" in outs and "slot_masks" in outs
+        self._onnx_has_force = "force_first" in ins
 
     def _load_torch(self, path: Path) -> None:
         import torch
@@ -200,6 +241,7 @@ class Recommender:
         self.is_stub = bool(self.meta.get("stub"))
         self._backend = "torch"
         self.checkpoint_path = path
+        self.route_k = int(getattr(model, "route_k", default_route_k()))
 
     def _load_or_create_stub(self, path: Path) -> None:
         if path.is_file():
@@ -229,22 +271,37 @@ class Recommender:
                     super().__init__()
                     self.model = m
 
-                def forward(self, guest, ride, env):
+                def forward(self, guest, ride, env, force_first):
                     out = self.model.forward_route(
-                        guest, ride, env, routes=None, deterministic=True
+                        guest,
+                        ride,
+                        env,
+                        routes=None,
+                        deterministic=True,
+                        force_first=force_first,
                     )
-                    return out.routes.to(dtype=torch.int64), out.slot0_logits
+                    return (
+                        out.routes.to(dtype=torch.int64),
+                        out.slot0_logits,
+                        out.slot_logits,
+                        out.slot_masks.to(dtype=torch.float32),
+                    )
 
             guest = torch.zeros(1, GUEST_FEAT_DIM)
+            guest[..., GUEST_FEAT_TIME_LEFT] = 0.5
+            guest[..., :NUM_RIDES] = 1.0 / float(NUM_RIDES)
             ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+            ride[..., RIDE_FEAT_OPEN] = 1.0
+            ride[..., 5] = 0.1
             env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM)
+            force = torch.full((1,), -1, dtype=torch.int64)
             with torch.inference_mode():
                 torch.onnx.export(
                     _Wrap(model),
-                    (guest, ride, env),
+                    (guest, ride, env, force),
                     str(path),
-                    input_names=["guest", "ride", "env"],
-                    output_names=["route", "slot0_logits"],
+                    input_names=["guest", "ride", "env", "force_first"],
+                    output_names=["route", "slot0_logits", "slot_logits", "slot_masks"],
                     opset_version=17,
                     dynamo=False,
                 )
@@ -254,7 +311,8 @@ class Recommender:
                         "step": 0,
                         "stub": True,
                         "path": str(path),
-                        "arch_version": "route_v1",
+                        "arch_version": "route_v2",
+                        "route_k": int(model.route_k),
                     },
                     indent=2,
                 ),
@@ -277,19 +335,66 @@ class Recommender:
             "device": str(self.device),
             "backend": self._backend,
             "available": self.checkpoint_path.is_file() and not self.is_stub,
+            "supports_force_first": self._backend == "torch" or self._onnx_has_force,
+            "supports_slot_distributions": (
+                self._backend == "torch" or self._onnx_has_slots
+            ),
+            "route_k": int(self.route_k),
         }
 
-    def recommend(self, obs_flat: np.ndarray) -> dict:
+    def recommend(
+        self,
+        obs_flat: np.ndarray,
+        *,
+        force_first: int | None = None,
+    ) -> dict:
         guest, ride, env = _split_flat_obs(obs_flat)
         legal = build_action_mask_numpy(guest, ride, env)[0]
         route_ids: list[int] = []
+        slot_logits_np: np.ndarray | None = None
+        slot_masks_np: np.ndarray | None = None
+
+        if force_first is not None:
+            force_first = int(force_first)
+            if force_first < 0 or force_first >= NUM_ACTIONS:
+                raise ValueError(
+                    f"force_first must be in [0, {NUM_ACTIONS}), got {force_first}"
+                )
+            if not bool(legal[force_first]):
+                raise ValueError(
+                    f"force_first action {force_first} ({action_label(force_first)}) "
+                    "is not legal under the current mask"
+                )
 
         if self._session is not None:
-            feeds = {"guest": guest, "ride": ride, "env": env}
-            if getattr(self, "_onnx_has_route", False):
-                route_out, logits = self._session.run(
-                    ["route", "slot0_logits"], feeds
+            feeds: dict[str, np.ndarray] = {
+                "guest": guest,
+                "ride": ride,
+                "env": env,
+            }
+            if force_first is not None and not self._onnx_has_force:
+                raise RuntimeError(
+                    "This ONNX model does not support force_first; re-export with "
+                    "Park/tools/export_companion_onnx.py (arch route_v2)."
                 )
+            if self._onnx_has_force:
+                feeds["force_first"] = np.asarray(
+                    [force_first if force_first is not None else -1],
+                    dtype=np.int64,
+                )
+
+            if getattr(self, "_onnx_has_route", False):
+                if self._onnx_has_slots:
+                    route_out, logits, slot_logits_np, slot_masks_np = self._session.run(
+                        ["route", "slot0_logits", "slot_logits", "slot_masks"],
+                        feeds,
+                    )
+                    slot_logits_np = np.asarray(slot_logits_np, dtype=np.float32)
+                    slot_masks_np = np.asarray(slot_masks_np, dtype=np.float32) > 0.5
+                else:
+                    route_out, logits = self._session.run(
+                        ["route", "slot0_logits"], feeds
+                    )
                 route_ids = [
                     int(x)
                     for x in np.asarray(route_out).reshape(-1).tolist()
@@ -309,8 +414,19 @@ class Recommender:
                     device=self.device,
                 ).unsqueeze(0)
                 g, r, e = self._torch_split(obs)
+                ff = None
+                if force_first is not None:
+                    ff = torch.tensor(
+                        [force_first], dtype=torch.long, device=self.device
+                    )
                 out = self._torch_forward_route(
-                    self._torch_model, g, r, e, routes=None, deterministic=True
+                    self._torch_model,
+                    g,
+                    r,
+                    e,
+                    routes=None,
+                    deterministic=True,
+                    force_first=ff,
                 )
                 logits = out.slot0_logits[0].cpu().numpy()
                 legal = out.slot0_mask[0].cpu().numpy().astype(bool)
@@ -319,26 +435,46 @@ class Recommender:
                     for x in out.routes[0].cpu().numpy().tolist()
                     if int(x) >= 0
                 ]
+                slot_logits_np = out.slot_logits.cpu().numpy()
+                slot_masks_np = out.slot_masks.cpu().numpy().astype(bool)
         else:
             raise RuntimeError("No model backend loaded")
 
         probs = _softmax(logits)
-        action = int(probs.argmax())
+        natural_action = int(probs.argmax())
         if not route_ids:
-            route_ids = [action]
+            route_ids = [force_first if force_first is not None else natural_action]
 
-        distribution = []
-        for i in range(NUM_ACTIONS):
-            distribution.append(
-                {
-                    "action_id": i,
-                    "label": action_label(i),
-                    "prob": float(probs[i]),
-                    "legal": bool(legal[i]),
-                    "is_ride": i < len(ACTION_LABELS) - 2,
-                }
+        # Recommended follows the plan's committed next action (forced when set).
+        action = int(route_ids[0])
+        if force_first is not None and action != force_first:
+            raise RuntimeError(
+                f"Model did not honor force_first={force_first} "
+                f"(got route[0]={action}); re-export ONNX as route_v2."
             )
-        distribution.sort(key=lambda row: row["prob"], reverse=True)
+
+        distribution = _dist_rows(logits, legal, action_dim=NUM_ACTIONS)
+
+        distributions_by_slot: list[list[dict]] = []
+        if slot_logits_np is not None and slot_masks_np is not None:
+            # Shapes: (1, K, A) or (K, A)
+            sl = np.asarray(slot_logits_np)
+            sm = np.asarray(slot_masks_np)
+            if sl.ndim == 3:
+                sl = sl[0]
+                sm = sm[0]
+            n_slots = min(len(route_ids), sl.shape[0])
+            for k in range(n_slots):
+                # Slot 0: full action dim; later slots: rides only (exit/idle never legal).
+                dim = NUM_ACTIONS if k == 0 else NUM_RIDES
+                distributions_by_slot.append(
+                    _dist_rows(sl[k, :dim], sm[k, :dim], action_dim=dim)
+                )
+        else:
+            distributions_by_slot = [distribution]
+
+        # Keep top-level distribution as slot 0 for backward compatibility.
+        distribution = distributions_by_slot[0]
 
         route = [
             {
@@ -346,6 +482,16 @@ class Recommender:
                 "label": action_label(int(aid)),
                 "slot": slot,
                 "is_ride": int(aid) < NUM_RIDES,
+                "prob_slot": next(
+                    (
+                        float(row["prob"])
+                        for row in distributions_by_slot[slot]
+                        if row["action_id"] == int(aid)
+                    ),
+                    None,
+                )
+                if slot < len(distributions_by_slot)
+                else None,
             }
             for slot, aid in enumerate(route_ids)
         ]
@@ -354,11 +500,19 @@ class Recommender:
             "recommended": {
                 "action_id": action,
                 "label": action_label(action),
-                "prob": float(probs[action]),
-                "legal": bool(legal[action]),
+                "prob": float(probs[action]) if action < len(probs) else 0.0,
+                "legal": bool(legal[action]) if action < len(legal) else False,
             },
+            "natural_recommended": {
+                "action_id": natural_action,
+                "label": action_label(natural_action),
+                "prob": float(probs[natural_action]),
+                "legal": bool(legal[natural_action]),
+            },
+            "forced_first": force_first,
             "route": route,
             "distribution": distribution,
+            "distributions_by_slot": distributions_by_slot,
             "model": self.info(),
         }
 
@@ -393,6 +547,11 @@ class ModelRegistry:
                     "device": str(self.device),
                     "backend": "onnxruntime" if p.suffix.lower() == ".onnx" else "torch",
                     "available": exists,
+                    "supports_force_first": False,
+                    "supports_slot_distributions": False,
+                    "route_k": int(_read_meta(p).get("route_k", default_route_k()))
+                    if exists
+                    else default_route_k(),
                 }
             out.append({"id": version, "label": version.upper(), **info})
         return out

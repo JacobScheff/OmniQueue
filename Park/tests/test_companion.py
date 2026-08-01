@@ -99,6 +99,25 @@ def test_recommender_stub_smoke(tmp_path):
     assert out["recommended"]["action_id"] in range(NUM_ACTIONS)
     assert len(out["distribution"]) == NUM_ACTIONS
     assert abs(sum(r["prob"] for r in out["distribution"]) - 1.0) < 1e-3
+    assert len(out["distributions_by_slot"]) >= 1
+    assert out["distributions_by_slot"][0] == out["distribution"]
+    assert out["forced_first"] is None
+    assert out["natural_recommended"]["action_id"] == out["recommended"]["action_id"]
+    assert out["model"]["supports_force_first"] is True
+    assert out["model"]["supports_slot_distributions"] is True
+
+    natural0 = out["recommended"]["action_id"]
+    force_id = 0 if natural0 != 0 else 1
+    # Skip if that ride is illegal under the stub mask.
+    legal_ids = [r["action_id"] for r in out["distribution"] if r["legal"] and r["is_ride"]]
+    if force_id not in legal_ids and legal_ids:
+        force_id = legal_ids[0] if legal_ids[0] != natural0 else legal_ids[-1]
+    forced = rec.recommend(flat, force_first=force_id)
+    assert forced["forced_first"] == force_id
+    assert forced["route"][0]["action_id"] == force_id
+    assert forced["recommended"]["action_id"] == force_id
+    assert forced["natural_recommended"]["action_id"] == natural0
+    assert len(forced["distributions_by_slot"]) == len(forced["route"])
 
 
 def test_model_registry_versions(tmp_path, monkeypatch):

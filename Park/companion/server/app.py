@@ -46,6 +46,16 @@ class RecommendRequest(BaseModel):
         default=None,
         description="Model tag from settings.MODELS (e.g. v1, v2). Defaults to DEFAULT_MODEL_VERSION.",
     )
+    force_first: int | None = Field(
+        default=None,
+        description=(
+            "Optional action id to pin as route slot 0; the autoregressive decoder "
+            "then greedily continues the remaining slots. Must be legal under the "
+            "current slot-0 mask."
+        ),
+        ge=0,
+        le=NUM_RIDES + 1,
+    )
     force_refresh_waits: bool = False
 
 
@@ -223,14 +233,26 @@ def create_app(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"obs build failed: {exc}") from exc
 
-        result = rec.recommend(flat)
+        try:
+            result = rec.recommend(flat, force_first=body.force_first)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         waits_by_id = {r.ride_id: r for r in board.rides}
-        for row in result["distribution"]:
-            if row["is_ride"]:
-                live = waits_by_id.get(row["action_id"])
-                row["wait_min"] = live.wait_min if live else None
-                row["status"] = live.status if live else "UNKNOWN"
-                row["open"] = live.open if live else False
+
+        def _annotate_dist(rows: list[dict]) -> None:
+            for row in rows:
+                if row.get("is_ride"):
+                    live = waits_by_id.get(row["action_id"])
+                    row["wait_min"] = live.wait_min if live else None
+                    row["status"] = live.status if live else "UNKNOWN"
+                    row["open"] = live.open if live else False
+
+        _annotate_dist(result["distribution"])
+        for slot_rows in result.get("distributions_by_slot", []):
+            _annotate_dist(slot_rows)
 
         return {
             **result,

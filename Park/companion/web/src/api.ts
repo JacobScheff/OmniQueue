@@ -24,6 +24,9 @@ export type ModelInfo = {
   stub: boolean;
   device: string;
   available: boolean;
+  supports_force_first?: boolean;
+  supports_slot_distributions?: boolean;
+  route_k?: number;
 };
 
 export type Catalog = {
@@ -63,17 +66,23 @@ export type RouteStop = {
   label: string;
   slot: number;
   is_ride: boolean;
+  prob_slot?: number | null;
+};
+
+export type ActionPick = {
+  action_id: number;
+  label: string;
+  prob: number;
+  legal: boolean;
 };
 
 export type RecommendResponse = {
-  recommended: {
-    action_id: number;
-    label: string;
-    prob: number;
-    legal: boolean;
-  };
+  recommended: ActionPick;
+  natural_recommended?: ActionPick;
+  forced_first?: number | null;
   route?: RouteStop[];
   distribution: DistRow[];
+  distributions_by_slot?: DistRow[][];
   model: {
     version: string | null;
     path: string;
@@ -81,6 +90,9 @@ export type RecommendResponse = {
     stub: boolean;
     device: string;
     available: boolean;
+    supports_force_first?: boolean;
+    supports_slot_distributions?: boolean;
+    route_k?: number;
   };
   meta: {
     warnings: string[];
@@ -123,6 +135,7 @@ export function fetchWaits(force = false): Promise<{ rides: WaitRow[]; fetched_a
 export async function postRecommend(
   state: UserState,
   forceRefreshWaits = false,
+  forceFirst: number | null = null,
 ): Promise<RecommendResponse> {
   const res = await fetch("/api/recommend", {
     method: "POST",
@@ -137,6 +150,7 @@ export async function postRecommend(
       party_size: state.party_size,
       model_version: state.model_version,
       force_refresh_waits: forceRefreshWaits,
+      force_first: forceFirst,
     }),
   });
   if (!res.ok) {

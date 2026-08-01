@@ -28,6 +28,8 @@ class RouteOutput:
     values: torch.Tensor  # (B, 1)
     slot0_logits: torch.Tensor  # (B, A) masked
     slot0_mask: torch.Tensor  # (B, A)
+    slot_logits: torch.Tensor  # (B, K, A) masked; ride-only slots pad exit/idle as -inf
+    slot_masks: torch.Tensor  # (B, K, A) bool; ride-only slots pad exit/idle as False
 
 
 class ParkRouterModel(nn.Module):
@@ -160,10 +162,14 @@ class ParkRouterModel(nn.Module):
         routes: torch.Tensor | None = None,
         *,
         deterministic: bool = False,
+        force_first: torch.Tensor | None = None,
     ) -> RouteOutput:
         """Autoregressive route decode.
 
         routes: optional teacher-forced (B, K) with ROUTE_PAD after exit/idle.
+        force_first: optional (B,) int64; values >= 0 pin slot 0 (if legal) then
+            greedy/sample the remaining slots. Ignored when ``routes`` is set.
+            Use -1 per batch row for no force. Companion ONNX always passes this.
         """
         guest_embeddings, ride_embeddings, values = self._encode(
             guest_dynamic_features,
@@ -192,13 +198,22 @@ class ParkRouterModel(nn.Module):
         active = torch.ones(batch, dtype=torch.bool, device=device)
 
         route_list: list[torch.Tensor] = []
+        slot_logits_list: list[torch.Tensor] = []
+        slot_masks_list: list[torch.Tensor] = []
         log_prob = torch.zeros(batch, device=device, dtype=dtype)
         entropy = torch.zeros(batch, device=device, dtype=dtype)
+
+        if force_first is None:
+            force_first = torch.full((batch,), -1, dtype=torch.long, device=device)
+        else:
+            force_first = force_first.to(device=device, dtype=torch.long).reshape(batch)
 
         for step in range(k):
             if step == 0:
                 logits = slot0_logits
                 mask = slot0_mask
+                pad_logits = logits
+                pad_mask = mask
             else:
                 ride_logits = self._pointer_logits(hidden, ride_embeddings)
                 mask_r = build_tail_ride_mask(ride_dynamic_features, picked)
@@ -212,6 +227,20 @@ class ParkRouterModel(nn.Module):
                 logits = apply_action_mask(ride_logits, mask_r)
                 # Pad to full action dim unused; sample in ride space only.
                 mask = mask_r
+                pad_logits = torch.full(
+                    (batch, self.num_actions),
+                    -1.0e9,
+                    device=device,
+                    dtype=dtype,
+                )
+                pad_logits[:, : self.num_rides] = logits
+                pad_mask = torch.zeros(
+                    batch, self.num_actions, dtype=torch.bool, device=device
+                )
+                pad_mask[:, : self.num_rides] = mask
+
+            slot_logits_list.append(pad_logits)
+            slot_masks_list.append(pad_mask)
 
             dist = torch.distributions.Categorical(logits=logits)
 
@@ -226,10 +255,21 @@ class ParkRouterModel(nn.Module):
                 if illegal.any():
                     legal_idx = mask.float().argmax(dim=-1)
                     action = torch.where(illegal | (raw < 0), legal_idx, action)
-            elif deterministic:
-                action = logits.argmax(dim=-1)
             else:
-                action = dist.sample()
+                if deterministic:
+                    natural = logits.argmax(dim=-1)
+                else:
+                    natural = dist.sample()
+                if step == 0:
+                    # Pin slot 0 when force_first >= 0 and legal; else natural.
+                    # Always-on tensor ops so ONNX traces the force branch.
+                    forced = force_first.clamp(0, self.num_actions - 1)
+                    use_force = (force_first >= 0) & mask.gather(
+                        1, forced.unsqueeze(1)
+                    ).squeeze(1)
+                    action = torch.where(use_force, forced, natural)
+                else:
+                    action = natural
 
             step_logp = dist.log_prob(action)
             step_ent = dist.entropy()
@@ -275,6 +315,8 @@ class ParkRouterModel(nn.Module):
             values=values,
             slot0_logits=slot0_logits,
             slot0_mask=slot0_mask,
+            slot_logits=torch.stack(slot_logits_list, dim=1),
+            slot_masks=torch.stack(slot_masks_list, dim=1),
         )
 
 
@@ -315,8 +357,14 @@ def forward_route_with_mask(
     routes: torch.Tensor | None = None,
     *,
     deterministic: bool = False,
+    force_first: torch.Tensor | None = None,
 ) -> RouteOutput:
     """Full route decode (masking applied inside the model)."""
     return model.forward_route(
-        guest, ride, env, routes=routes, deterministic=deterministic
+        guest,
+        ride,
+        env,
+        routes=routes,
+        deterministic=deterministic,
+        force_first=force_first,
     )

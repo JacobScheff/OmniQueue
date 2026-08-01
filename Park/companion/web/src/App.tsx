@@ -65,6 +65,10 @@ export default function App() {
   /** Stable pref-row order while sliding; only refreshes on slider release. */
   const [editOrder, setEditOrder] = useState<number[]>([]);
   const [showAllDist, setShowAllDist] = useState(false);
+  /** Pin route slot 0 (what-if); not persisted — exploration only. */
+  const [forceFirst, setForceFirst] = useState<number | null>(null);
+  /** Which route-slot distribution is shown. */
+  const [distSlot, setDistSlot] = useState(0);
 
   const prefRowRefs = useRef(new Map<number, HTMLDivElement>());
   const prefFlipFrom = useRef(new Map<number, number>());
@@ -104,8 +108,12 @@ export default function App() {
       setBusy(true);
       setError(null);
       try {
-        const rec = await postRecommend(bundle.state, false);
-        if (!cancelled) setResult(rec);
+        const rec = await postRecommend(bundle.state, false, forceFirst);
+        if (!cancelled) {
+          setResult(rec);
+          const nSlots = rec.distributions_by_slot?.length ?? 1;
+          setDistSlot((s) => Math.min(s, Math.max(0, nSlots - 1)));
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -117,7 +125,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [bundle]);
+  }, [bundle, forceFirst]);
 
   useLayoutEffect(() => {
     const from = prefFlipFrom.current;
@@ -214,8 +222,10 @@ export default function App() {
     try {
       const board = await fetchWaits(true);
       setWaits(board.rides);
-      const rec = await postRecommend(bundle.state, true);
+      const rec = await postRecommend(bundle.state, true, forceFirst);
       setResult(rec);
+      const nSlots = rec.distributions_by_slot?.length ?? 1;
+      setDistSlot((s) => Math.min(s, Math.max(0, nSlots - 1)));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -224,6 +234,8 @@ export default function App() {
   };
 
   const setModelVersion = (version: string) => {
+    setForceFirst(null);
+    setDistSlot(0);
     setBundle((prev) => {
       if (!prev || prev.state.model_version === version) return prev;
       return {
@@ -231,6 +243,11 @@ export default function App() {
         state: { ...prev.state, model_version: version },
       };
     });
+  };
+
+  const pinFirst = (actionId: number) => {
+    setDistSlot(0);
+    setForceFirst((prev) => (prev === actionId ? null : actionId));
   };
 
   if (!catalog || !bundle) {
@@ -243,10 +260,19 @@ export default function App() {
 
   const state = bundle.state;
   const edit = draft ?? state;
-  const dist = result?.distribution ?? [];
+  const slotDists = result?.distributions_by_slot ?? (result ? [result.distribution] : []);
+  const activeSlot = Math.min(distSlot, Math.max(0, slotDists.length - 1));
+  const dist = slotDists[activeSlot] ?? [];
   const visibleDist = showAllDist ? dist : dist.filter((d) => d.legal).slice(0, 8);
   const stub = result?.model.stub;
   const activeModel = catalog.models.find((m) => m.id === state.model_version);
+  const canForce = result?.model.supports_force_first !== false;
+  const forcedLabel =
+    forceFirst != null
+      ? result?.route?.find((s) => s.slot === 0)?.label ??
+        result?.recommended.label ??
+        `action ${forceFirst}`
+      : null;
   const editRides = editOrder
     .map((id) => rideById.get(id))
     .filter((r): r is RideInfo => r != null);
@@ -295,19 +321,51 @@ export default function App() {
       {error && <div className="error">{error}</div>}
 
       <section className="hero-rec">
-        <p className="eyebrow">Next action</p>
+        <p className="eyebrow">{forceFirst != null ? "What-if next action" : "Next action"}</p>
         <h2 className="rec-title">
           {result ? result.recommended.label : busy ? "Thinking…" : "—"}
         </h2>
         {result && (
-          <div className="rec-prob">{formatProb(result.recommended.prob)} confidence</div>
+          <div className="rec-prob">
+            {formatProb(result.recommended.prob)} confidence
+            {forceFirst != null && result.natural_recommended && (
+              <span className="rec-natural">
+                {" "}
+                · model prefers {result.natural_recommended.label} (
+                {formatProb(result.natural_recommended.prob)})
+              </span>
+            )}
+          </div>
         )}
-        {result?.route && result.route.length > 1 && (
+        {forceFirst != null && forcedLabel && (
+          <div className="force-banner">
+            <span>
+              Forcing <strong>{forcedLabel}</strong> first — plan continues autoregressively
+            </span>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() => setForceFirst(null)}
+              disabled={busy}
+            >
+              Clear
+            </button>
+          </div>
+        )}
+        {result?.route && result.route.length > 0 && (
           <ol className="route-list" aria-label="Planned route">
             {result.route.map((stop) => (
-              <li key={`${stop.slot}-${stop.action_id}`} className={stop.slot === 0 ? "next" : ""}>
-                <span className="route-slot">{stop.slot === 0 ? "Now" : `Then`}</span>
+              <li
+                key={`${stop.slot}-${stop.action_id}`}
+                className={`${stop.slot === 0 ? "next" : ""}${
+                  forceFirst != null && stop.slot === 0 ? " forced" : ""
+                }`}
+              >
+                <span className="route-slot">{stop.slot === 0 ? "Now" : "Then"}</span>
                 <span className="route-label">{stop.label}</span>
+                {stop.prob_slot != null && (
+                  <span className="route-prob">{formatProb(stop.prob_slot)}</span>
+                )}
               </li>
             ))}
           </ol>
@@ -324,25 +382,75 @@ export default function App() {
 
       <section className="section">
         <h2>Probability distribution</h2>
+        {slotDists.length > 1 && (
+          <div className="slot-tabs" role="tablist" aria-label="Route slot">
+            {slotDists.map((_, slot) => (
+              <button
+                key={slot}
+                type="button"
+                role="tab"
+                aria-selected={activeSlot === slot}
+                className={`slot-tab${activeSlot === slot ? " active" : ""}`}
+                onClick={() => {
+                  setDistSlot(slot);
+                  setShowAllDist(false);
+                }}
+              >
+                {slot === 0 ? "Next" : `Then ${slot}`}
+              </button>
+            ))}
+          </div>
+        )}
+        {activeSlot === 0 && canForce && (
+          <p className="hint">Tap a legal ride to force it first and rebuild the plan.</p>
+        )}
+        {activeSlot > 0 && (
+          <p className="hint">
+            Distribution after committing the earlier stops
+            {result?.route?.[activeSlot - 1]
+              ? ` (through ${result.route[activeSlot - 1].label})`
+              : ""}
+            .
+          </p>
+        )}
         <ul className="dist-list">
-          {visibleDist.map((row) => (
-            <li key={row.action_id} className={`dist-item${row.legal ? "" : " illegal"}`}>
-              <div>
-                <div className="ride-name">{row.label}</div>
-                <div className="ride-meta">
-                  {row.is_ride
-                    ? waitLabel(row.wait_min, row.open, row.status)
-                    : row.legal
-                      ? "legal"
-                      : "masked"}
-                </div>
-              </div>
-              <strong>{formatProb(row.prob)}</strong>
-              <div className="bar">
-                <span style={{ width: `${Math.min(100, row.prob * 100)}%` }} />
-              </div>
-            </li>
-          ))}
+          {visibleDist.map((row) => {
+            const isForced = forceFirst != null && row.action_id === forceFirst;
+            const clickable = canForce && activeSlot === 0 && row.legal;
+            return (
+              <li key={row.action_id}>
+                <button
+                  type="button"
+                  className={`dist-item${row.legal ? "" : " illegal"}${
+                    isForced ? " forced" : ""
+                  }${clickable ? " clickable" : ""}`}
+                  disabled={!clickable || busy}
+                  onClick={() => {
+                    if (clickable) pinFirst(row.action_id);
+                  }}
+                >
+                  <div>
+                    <div className="ride-name">
+                      {row.label}
+                      {isForced && <span className="tag force">FORCED</span>}
+                    </div>
+                    <div className="ride-meta">
+                      {row.is_ride
+                        ? waitLabel(row.wait_min, row.open, row.status)
+                        : row.legal
+                          ? "legal"
+                          : "masked"}
+                      {clickable ? " · tap to force first" : ""}
+                    </div>
+                  </div>
+                  <strong>{formatProb(row.prob)}</strong>
+                  <div className="bar">
+                    <span style={{ width: `${Math.min(100, row.prob * 100)}%` }} />
+                  </div>
+                </button>
+              </li>
+            );
+          })}
         </ul>
         {dist.length > 8 && (
           <div className="actions">

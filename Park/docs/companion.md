@@ -4,7 +4,7 @@
 
 ## Overview
 
-Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the **committed next action**, a short **planned route** (`route[0..K-1]`), and the full masked slot-0 probability distribution.
+Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the **committed next action**, a short **planned route** (`route[0..K-1]`), and **per-slot** masked probability distributions. Guests can **force a legal first ride** (`force_first`) so the autoregressive decoder continues the rest of the plan from that pin.
 
 This does **not** run the C++ DES or Watch pygame UI. The simulator is unused at request time; only the exported ONNX policy, walk times from `park_graph`, and `config.RIDES` are reused on the server.
 
@@ -32,7 +32,7 @@ pip install torch onnx onnxruntime
 PYTHONPATH=. python Park/tools/export_companion_onnx.py
 ```
 
-Route models export ONNX outputs `route` (int64, length K) and `slot0_logits`. Older single-`logits` ONNX files still load; the API then returns a length-1 route from argmax. Export uses a mid-day open-park example (non-zero `time_left`) so the autoregressive ride-update path is traced; the smoke check requires Torch/ORT route equality and no repeated rides.
+Route models export ONNX (`arch_version=route_v2`) with inputs `guest`, `ride`, `env`, `force_first` (int64, `-1` = no pin) and outputs `route` (int64, length K), `slot0_logits`, `slot_logits` `(1,K,A)`, `slot_masks` `(1,K,A)` float 0/1. Older `route`+`slot0_logits` ONNX still loads (slot-0 distribution only; `force_first` requests fail until re-export). Single-`logits` ONNX still loads as a length-1 route from argmax. Export uses a mid-day open-park example (non-zero `time_left`) so the autoregressive ride-update path is traced; the smoke check requires Torch/ORT route equality, no repeated rides, and a working `force_first` pin.
 
 ## Run (dev)
 
@@ -85,7 +85,7 @@ Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX
 | GET | `/api/health` | Model + wait cache status |
 | GET | `/api/catalog` | Ride/hub list + default prefs |
 | GET | `/api/waits` | Cached live board (`?force=true`) |
-| POST | `/api/recommend` | Body: prefs, must-dos, history, location → `recommended`, `route`, slot-0 `distribution` |
+| POST | `/api/recommend` | Body: prefs, must-dos, history, location, optional `force_first` → `recommended`, `route`, `distribution` (slot 0), `distributions_by_slot`, `natural_recommended`, `forced_first` |
 
 ## Observation mapping
 
@@ -101,9 +101,15 @@ Live features are built in `companion/server/obs.py` to match training (`FLAT_OB
 | Incoming | **0** (not available from the public API) |
 | Env mean wait / broken frac | Aggregated from the live board |
 
+## What-if force-first + slot distributions
+
+- Request field `force_first` (action id) pins route slot 0 when legal; the decoder GRU then continues slots `1..K-1` under the tail mask (open ∧ unfinished ∧ not already picked). Slot-0 logits stay the natural policy — only the chosen action changes.
+- Response includes `distributions_by_slot[k]` (softmax over that step's mask), `natural_recommended` (slot-0 argmax without the pin), and `forced_first`.
+- UI: tap a legal ride in the **Next** distribution to pin/unpin; slot tabs switch which step's distribution is shown. Force state is ephemeral (not in `localStorage`).
+
 ## Persistence
 
-All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. The API is stateless per request.
+All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. The API is stateless per request. Force-first exploration is UI-only and is cleared when switching model versions.
 
 ## Notes
 

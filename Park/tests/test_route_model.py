@@ -48,9 +48,33 @@ def test_route_decode_shape_and_no_repeat():
     assert out.log_prob.shape == (4,)
     assert out.entropy.shape == (4,)
     assert out.slot0_logits.shape == (4, NUM_ACTIONS)
+    assert out.slot_logits.shape == (4, model.route_k, NUM_ACTIONS)
+    assert out.slot_masks.shape == (4, model.route_k, NUM_ACTIONS)
     for b in range(4):
         rides = [int(a) for a in out.routes[b].tolist() if 0 <= int(a) < NUM_RIDES]
         assert len(rides) == len(set(rides))
+
+
+def test_force_first_pins_slot0_and_continues():
+    model = default_model("cpu")
+    guest, ride, env = _open_obs(1)
+    natural = forward_route_with_mask(model, guest, ride, env, deterministic=True)
+    natural0 = int(natural.routes[0, 0].item())
+    force_id = 0 if natural0 != 0 else 1
+    forced = forward_route_with_mask(
+        model,
+        guest,
+        ride,
+        env,
+        deterministic=True,
+        force_first=torch.tensor([force_id], dtype=torch.long),
+    )
+    assert int(forced.routes[0, 0].item()) == force_id
+    rides = [int(a) for a in forced.routes[0].tolist() if 0 <= int(a) < NUM_RIDES]
+    assert rides[0] == force_id
+    assert len(rides) == len(set(rides))
+    # Slot-0 logits are the natural policy (force only changes the chosen action).
+    assert torch.allclose(forced.slot0_logits, natural.slot0_logits)
 
 
 def test_exit_pads_route():

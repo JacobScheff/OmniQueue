@@ -5,7 +5,7 @@
   "arch_version": "route_v1",
   "route_k": 6,
   "phase": "ppo",
-  "days_done": 150,
+  "days_done": 100,
   "num_focals": 24,
   "best_must_do_completion_rate": 1.0
 }

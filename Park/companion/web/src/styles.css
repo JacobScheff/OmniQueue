@@ -183,7 +183,7 @@ select {
 
 .route-list li {
   display: grid;
-  grid-template-columns: 3.25rem 1fr;
+  grid-template-columns: 3.25rem 1fr auto;
   gap: 0.55rem;
   align-items: baseline;
   font-size: 0.95rem;
@@ -195,10 +195,79 @@ select {
   font-weight: 600;
 }
 
+.route-list li.forced .route-label {
+  color: var(--accent-2);
+}
+
 .route-slot {
   font-size: 0.78rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: var(--muted);
+}
+
+.route-prob {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.rec-natural {
+  display: inline;
+  font-weight: 400;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.force-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 12px;
+  background: rgba(196, 92, 38, 0.1);
+  border: 1px solid rgba(196, 92, 38, 0.28);
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.force-banner .btn {
+  min-height: 36px;
+  padding: 0.4rem 0.75rem;
+}
+
+.slot-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.65rem;
+}
+
+.slot-tab {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  min-height: 36px;
+  background: rgba(255, 252, 247, 0.7);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.slot-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #f7faf8;
+}
+
+.hint {
+  margin: 0 0 0.65rem;
+  font-size: 0.85rem;
   color: var(--muted);
 }
 
@@ -267,10 +336,38 @@ select {
   border-radius: 14px;
   background: rgba(255, 252, 247, 0.72);
   border: 1px solid var(--line);
+  width: 100%;
+  text-align: left;
+  color: inherit;
+}
+
+button.dist-item {
+  appearance: none;
+  font: inherit;
+  cursor: default;
+}
+
+button.dist-item.clickable {
+  cursor: pointer;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+button.dist-item.clickable:hover:not(:disabled) {
+  border-color: rgba(14, 61, 54, 0.35);
+  transform: translateY(-1px);
+}
+
+button.dist-item:disabled {
+  cursor: default;
 }
 
 .dist-item.illegal {
   opacity: 0.45;
+}
+
+.dist-item.forced {
+  border-color: rgba(196, 92, 38, 0.45);
+  background: rgba(196, 92, 38, 0.08);
 }
 
 .bar {
@@ -312,6 +409,10 @@ select {
 
 .tag.done {
   color: var(--good);
+}
+
+.tag.force {
+  color: var(--accent-2);
 }
 
 .sheet {
