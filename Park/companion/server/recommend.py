@@ -35,14 +35,14 @@ _STUB_PT = Path(__file__).resolve().parents[1] / "model" / "_stub_random.pt"
 
 
 def _split_flat_obs(obs_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """flat [FLAT_OBS_DIM] → guest (1,1,F), ride (1,1,R,F), env (1,E)."""
+    """flat [FLAT_OBS_DIM] → guest (1,F), ride (1,R,F), env (1,E)."""
     flat = np.asarray(obs_flat, dtype=np.float32).reshape(-1)
     if flat.shape[0] != FLAT_OBS_DIM:
         raise ValueError(f"obs_flat must have length {FLAT_OBS_DIM}, got {flat.shape[0]}")
     guest_end = GUEST_FEAT_DIM
     ride_end = guest_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
-    guest = flat[:guest_end].reshape(1, 1, GUEST_FEAT_DIM)
-    ride = flat[guest_end:ride_end].reshape(1, 1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+    guest = flat[:guest_end].reshape(1, GUEST_FEAT_DIM)
+    ride = flat[guest_end:ride_end].reshape(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     env = flat[ride_end:].reshape(1, ENV_DYNAMIC_FEAT_DIM)
     return guest, ride, env
 
@@ -52,12 +52,8 @@ def build_action_mask_numpy(
     ride: np.ndarray,
     env: np.ndarray,
 ) -> np.ndarray:
-    """Boolean mask (B, G, A) matching training.features.build_action_mask."""
-    if ride.ndim == 3:
-        ride = ride[:, None, :, :]
-    if guest.ndim == 2:
-        guest = guest[:, None, :]
-    batch, num_guests, num_rides, _ = ride.shape
+    """Boolean mask (B, A) matching training.features.build_action_mask."""
+    batch, num_rides, _ = ride.shape
 
     open_ok = ride[..., RIDE_FEAT_OPEN] > 0.5
     walk = np.clip(ride[..., RIDE_FEAT_WALK], 0.0, None) * 3600.0
@@ -66,13 +62,13 @@ def build_action_mask_numpy(
 
     time_left_frac = np.clip(guest[..., GUEST_FEAT_TIME_LEFT], 0.0, None)
     remaining_sec = time_left_frac * DAY_SECONDS
-    day_frac = np.broadcast_to(env[..., 0].reshape(batch, 1), (batch, num_guests))
+    day_frac = env[..., 0]
     soft_closed = (day_frac >= 1.0) | (time_left_frac <= 0.0)
 
     drain = np.where(
         day_frac < 1.0,
-        np.full((batch, num_guests), CLOSE_DRAIN_SEC, dtype=np.float32),
-        np.zeros((batch, num_guests), dtype=np.float32),
+        np.full((batch,), CLOSE_DRAIN_SEC, dtype=np.float32),
+        np.zeros((batch,), dtype=np.float32),
     )
     remaining_for_feas = (remaining_sec + drain)[..., None]
     time_ok = (walk + wait + duration) <= remaining_for_feas
@@ -82,10 +78,10 @@ def build_action_mask_numpy(
 
     ride_ok = open_ok & time_ok & (~already_here) & (~soft_closed[..., None])
 
-    mask = np.zeros((batch, num_guests, NUM_ACTIONS), dtype=bool)
-    mask[:, :, :num_rides] = ride_ok
-    mask[:, :, NUM_RIDES] = True
-    mask[:, :, NUM_RIDES + 1] = ~soft_closed
+    mask = np.zeros((batch, NUM_ACTIONS), dtype=bool)
+    mask[:, :num_rides] = ride_ok
+    mask[:, NUM_RIDES] = True
+    mask[:, NUM_RIDES + 1] = ~soft_closed
     return mask
 
 
@@ -229,12 +225,11 @@ class Recommender:
                     self.model = m
 
                 def forward(self, guest, ride, env):
-                    logits, _values = self.model(guest, ride, env, guest_padding_mask=None)
+                    logits, _values = self.model(guest, ride, env)
                     return logits
 
-            torch.backends.mha.set_fastpath_enabled(False)
-            guest = torch.zeros(1, 1, GUEST_FEAT_DIM)
-            ride = torch.zeros(1, 1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
+            guest = torch.zeros(1, GUEST_FEAT_DIM)
+            ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
             env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM)
             with torch.inference_mode():
                 torch.onnx.export(
@@ -271,13 +266,13 @@ class Recommender:
 
     def recommend(self, obs_flat: np.ndarray) -> dict:
         guest, ride, env = _split_flat_obs(obs_flat)
-        legal = build_action_mask_numpy(guest, ride, env)[0, 0]
+        legal = build_action_mask_numpy(guest, ride, env)[0]
 
         if self._session is not None:
             logits = self._session.run(
                 None, {"guest": guest, "ride": ride, "env": env}
             )[0]
-            logits = np.asarray(logits, dtype=np.float32)[0, 0].copy()
+            logits = np.asarray(logits, dtype=np.float32)[0].copy()
             logits[~legal] = -1.0e9
         elif self._torch_model is not None:
             torch = self._torch
@@ -289,8 +284,8 @@ class Recommender:
                 ).unsqueeze(0)
                 g, r, e = self._torch_split(obs)
                 masked, _, m = self._torch_forward(self._torch_model, g, r, e)
-                logits = masked[0, 0].cpu().numpy()
-                legal = m[0, 0].cpu().numpy().astype(bool)
+                logits = masked[0].cpu().numpy()
+                legal = m[0].cpu().numpy().astype(bool)
         else:
             raise RuntimeError("No model backend loaded")
 

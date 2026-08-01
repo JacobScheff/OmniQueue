@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 3: PPO fine-tuning on full park-day episodes."""
+"""Phase 3: PPO fine-tuning for a personal next-ride planner (N focals / day)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Parent of the Park/ package dir must be on sys.path for `import Park.*`.
 _PARENT = ROOT.parent
 if str(_PARENT) not in sys.path:
     sys.path.insert(0, str(_PARENT))
@@ -23,10 +22,9 @@ import torch.optim as optim
 
 import _park_sim
 import Park.config as config
-from Park.model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
+from Park.model import forward_with_mask, obs_flat_to_tensors
 from Park.training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from Park.training.features import (
-    ENV_DYNAMIC_FEAT_DIM,
     FLAT_OBS_DIM,
     GUEST_FEAT_DIM,
     NUM_RIDES,
@@ -34,23 +32,19 @@ from Park.training.features import (
 )
 
 
-def _coordinator_chunk_size() -> int:
-    return int(getattr(config, "MAX_COORDINATOR_GUESTS", 32))
-
-
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def _require_batched_rollout_api() -> None:
-    """Fail fast when the installed C++ extension predates exchange_batch."""
-    if hasattr(_park_sim.ParkEnv, "exchange_batch"):
+def _require_personal_api() -> None:
+    if hasattr(_park_sim.ParkEnv, "reset_personal") and hasattr(
+        _park_sim.ParkEnv, "exchange_batch"
+    ):
         return
     raise RuntimeError(
-        "This PPO script requires a rebuilt native extension with ParkEnv.exchange_batch.\n"
-        "Your _park_sim module is out of date. From the repo root, rebuild:\n"
-        "  pip install -e .\n"
-        "Verify with: python -c \"import _park_sim; print(hasattr(_park_sim.ParkEnv,'exchange_batch'))\""
+        "This PPO script requires a rebuilt native extension with "
+        "ParkEnv.reset_personal / exchange_batch.\n"
+        "From the Park/ directory, rebuild: pip install -e ."
     )
 
 
@@ -76,20 +70,12 @@ def _park_time_label(obs: np.ndarray) -> str:
 
 @dataclass
 class PPOConfig:
-    """PPO run configuration.
-
-    Runtime parameters are provided via CLI. All hyperparameters default to
-    the values in ``config.py``; edit that file to change training behaviour
-    without touching the script.
-    """
-    # Runtime parameters (set via CLI)
     seed: int = 42
     total_days: int = 20
     num_envs: int = 1
     device: str = "cpu"
     init_checkpoint: str | None = None
     anneal_lr: bool = config.PPO_ANNEAL_LR
-    # Hyperparameters (from config.py)
     learning_rate: float = config.PPO_LEARNING_RATE
     gamma: float = config.PPO_GAMMA
     gae_lambda: float = config.PPO_GAE_LAMBDA
@@ -102,7 +88,8 @@ class PPOConfig:
     subsample_size: int = config.PPO_SUBSAMPLE_SIZE
     max_routing_steps: int = config.PPO_MAX_ROUTING_STEPS
     inference_batch_size: int = config.PPO_INFERENCE_BATCH_SIZE
-    update_wave_batch: int = config.PPO_UPDATE_WAVE_BATCH
+    num_focals: int = config.PPO_NUM_FOCALS
+    update_mb_size: int = getattr(config, "PPO_UPDATE_MB_SIZE", 256)
     update_yield_sec: float = getattr(config, "PPO_UPDATE_YIELD_SEC", 0.05)
     save_dir: str = config.PPO_SAVE_DIR
     save_every: int = config.PPO_SAVE_EVERY
@@ -116,7 +103,6 @@ class EpisodeBatch:
     logprobs: torch.Tensor
     advantages: torch.Tensor
     returns: torch.Tensor
-    wave_ids: torch.Tensor
     routing_steps: int
     episode_return: float
     avg_wait_variance: float
@@ -126,6 +112,7 @@ class EpisodeBatch:
     avg_preference_score_per_guest: float
     avg_must_do_latency_sec: float
     rollout_sec: float
+    n_focals: int
 
 
 @dataclass
@@ -152,194 +139,14 @@ class Agent(nn.Module):
         self,
         obs: torch.Tensor,
         action: torch.Tensor | None = None,
-        *,
-        joint_group: bool = False,
     ):
-        """Policy forward with legal-action masking.
-
-        joint_group=True treats ``obs`` as one co-timed wave (G, flat) so the
-        coordinator can attend across parties. Oversized waves are automatically
-        split into chunks of ``MAX_COORDINATOR_GUESTS``.
-        """
-        if joint_group:
-            if obs.dim() == 1:
-                obs = obs.unsqueeze(0)
-            max_g = _coordinator_chunk_size()
-            if obs.shape[0] > max_g:
-                actions_out: list[torch.Tensor] = []
-                logprobs_out: list[torch.Tensor] = []
-                entropy_out: list[torch.Tensor] = []
-                values_out: list[torch.Tensor] = []
-                offset = 0
-                while offset < obs.shape[0]:
-                    chunk = obs[offset : offset + max_g]
-                    chunk_action = None
-                    if action is not None:
-                        chunk_action = action[offset : offset + max_g]
-                    a, lp, ent, val = self.get_action_and_value(
-                        chunk, chunk_action, joint_group=True
-                    )
-                    actions_out.append(a)
-                    logprobs_out.append(lp)
-                    entropy_out.append(ent)
-                    values_out.append(val)
-                    offset += max_g
-                return (
-                    torch.cat(actions_out, dim=0),
-                    torch.cat(logprobs_out, dim=0),
-                    torch.cat(entropy_out, dim=0),
-                    torch.cat(values_out, dim=0),
-                )
-
-            guest, ride, env = obs_group_to_tensors(obs)
-            logits, value, _ = forward_with_mask(self.model, guest, ride, env)
-            logits = logits[0]  # (G, A)
-            value = value[0, :, 0]
-        else:
-            guest, ride, env = obs_flat_to_tensors(obs)
-            logits, value, _ = forward_with_mask(self.model, guest, ride, env)
-            logits = logits[:, 0, :]
-            value = value.flatten()
-
+        guest, ride, env = obs_flat_to_tensors(obs)
+        logits, value, _ = forward_with_mask(self.model, guest, ride, env)
+        value = value.flatten()
         dist = torch.distributions.Categorical(logits=logits)
         if action is None:
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), value
-
-    def get_action_and_value_by_waves(
-        self,
-        obs: torch.Tensor,
-        actions: torch.Tensor,
-        wave_ids: torch.Tensor,
-        *,
-        wave_batch_size: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Recompute logprobs/values with the same joint waves used at rollout.
-
-        Sorts by ``wave_id`` once so members are contiguous, then packs many
-        waves into padded ``(B, G, …)`` forwards (no per-wave full-tensor scans).
-        """
-        n = obs.shape[0]
-        device = obs.device
-        logprobs = torch.empty(n, dtype=torch.float32, device=device)
-        entropy = torch.empty(n, dtype=torch.float32, device=device)
-        values = torch.empty(n, dtype=torch.float32, device=device)
-        if n == 0:
-            return logprobs, entropy, values
-
-        pack = max(1, int(wave_batch_size or getattr(config, "PPO_UPDATE_WAVE_BATCH", 256)))
-        table = _WaveTable.build(obs, actions, wave_ids)
-        self._eval_wave_table(
-            table,
-            torch.arange(table.n_waves, device=device),
-            logprobs,
-            entropy,
-            values,
-            pack=pack,
-        )
-        return logprobs, entropy, values
-
-    def _eval_wave_table(
-        self,
-        table: "_WaveTable",
-        wave_rows: torch.Tensor,
-        logprobs_out: torch.Tensor,
-        entropy_out: torch.Tensor,
-        values_out: torch.Tensor,
-        *,
-        pack: int,
-    ) -> None:
-        """Run joint policy on selected waves; write outputs at original row indices."""
-        rows = wave_rows.detach().cpu().tolist()
-        for start in range(0, len(rows), pack):
-            chunk = rows[start : start + pack]
-            flat_lp, flat_ent, flat_val, flat_orig = self._forward_wave_rows(table, chunk)
-            logprobs_out.index_copy_(0, flat_orig, flat_lp)
-            entropy_out.index_copy_(0, flat_orig, flat_ent)
-            values_out.index_copy_(0, flat_orig, flat_val)
-
-    def _forward_wave_rows(
-        self,
-        table: "_WaveTable",
-        rows: list[int],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Single joint forward over ``rows`` (one pack). Returns flat lp/ent/val/orig_idx."""
-        if not rows:
-            device = table.obs.device
-            empty_f = table.obs.new_zeros((0,))
-            empty_i = torch.zeros(0, dtype=torch.long, device=device)
-            return empty_f, empty_f, empty_f, empty_i
-
-        guest_end = GUEST_FEAT_DIM
-        ride_end = guest_end + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
-        device = table.obs.device
-        lengths = [int(table.ends[r] - table.starts[r]) for r in rows]
-        max_g = max(lengths)
-        bsz = len(rows)
-
-        guest = table.obs.new_zeros((bsz, max_g, GUEST_FEAT_DIM))
-        ride = table.obs.new_zeros((bsz, max_g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM))
-        env = table.obs.new_zeros((bsz, ENV_DYNAMIC_FEAT_DIM))
-        act = torch.zeros(bsz, max_g, dtype=torch.long, device=device)
-        padding = torch.zeros(bsz, max_g, dtype=torch.bool, device=device)
-        orig_idx = torch.empty(bsz, max_g, dtype=torch.long, device=device)
-
-        for row, w in enumerate(rows):
-            s = int(table.starts[w])
-            e = int(table.ends[w])
-            g = e - s
-            flat = table.obs[s:e]
-            guest[row, :g] = flat[:, :guest_end]
-            ride[row, :g] = flat[:, guest_end:ride_end].view(g, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
-            env[row] = flat[0, ride_end:]
-            act[row, :g] = table.actions[s:e]
-            padding[row, :g] = True
-            orig_idx[row, :g] = table.order[s:e]
-
-        logits, value, _ = forward_with_mask(
-            self.model, guest, ride, env, guest_padding_mask=padding
-        )
-        flat_logits = logits[padding]
-        flat_actions = act[padding]
-        flat_values = value.squeeze(-1)[padding]
-        flat_orig = orig_idx[padding]
-        dist = torch.distributions.Categorical(logits=flat_logits)
-        return dist.log_prob(flat_actions), dist.entropy(), flat_values, flat_orig
-
-@dataclass
-class _WaveTable:
-    """Wave members laid out contiguously after sorting by wave_id."""
-
-    obs: torch.Tensor
-    actions: torch.Tensor
-    order: torch.Tensor  # sorted -> original row
-    starts: list[int]
-    ends: list[int]
-    n_waves: int
-
-    @staticmethod
-    def build(obs: torch.Tensor, actions: torch.Tensor, wave_ids: torch.Tensor) -> "_WaveTable":
-        order = torch.argsort(wave_ids, stable=True)
-        sorted_ids = wave_ids.index_select(0, order)
-        sorted_obs = obs.index_select(0, order)
-        sorted_actions = actions.index_select(0, order)
-
-        ids_np = sorted_ids.detach().cpu().numpy()
-        if ids_np.size == 0:
-            starts_arr = np.array([], dtype=np.int64)
-            ends_arr = np.array([], dtype=np.int64)
-        else:
-            changes = np.flatnonzero(ids_np[1:] != ids_np[:-1]) + 1
-            starts_arr = np.concatenate((np.array([0], dtype=np.int64), changes.astype(np.int64)))
-            ends_arr = np.concatenate((starts_arr[1:], np.array([ids_np.size], dtype=np.int64)))
-        return _WaveTable(
-            obs=sorted_obs,
-            actions=sorted_actions,
-            order=order,
-            starts=starts_arr.tolist(),
-            ends=ends_arr.tolist(),
-            n_waves=int(starts_arr.size),
-        )
 
 
 def _collect_episode(
@@ -351,9 +158,9 @@ def _collect_episode(
     day_label: str = "",
     env_label: str = "",
 ) -> EpisodeBatch:
-    """Run one full park day via native C++ sim + batched policy inference."""
+    """Run one personal-planner day: N focals + heuristic crowd."""
     env = _park_sim.ParkEnv(seed)
-    env.reset(seed)
+    env.reset_personal(seed, cfg.num_focals)
 
     obs_buf: list[np.ndarray] = []
     action_buf: list[int] = []
@@ -361,43 +168,53 @@ def _collect_episode(
     reward_buf: list[float] = []
     value_buf: list[float] = []
     done_buf: list[float] = []
-    wave_id_buf: list[int] = []
+    party_buf: list[int] = []
 
     episode_return = 0.0
-    terminal_info: dict = {}
     routing_steps = 0
     rollout_t0 = time.perf_counter()
     last_log_step = 0
     prefix = " ".join(part for part in (day_label, env_label) if part)
-    wave_counter = 0
 
     pending_actions: list[int] = []
     staged_obs: np.ndarray | None = None
     staged_actions: np.ndarray | None = None
     staged_logprobs: np.ndarray | None = None
     staged_values: np.ndarray | None = None
-    staged_wave_ids: np.ndarray | None = None
+    staged_parties: np.ndarray | None = None
+    result = None
 
     def _record_rewards(rewards_arr: np.ndarray, terminal: bool) -> None:
         nonlocal routing_steps, episode_return, last_log_step
-        if staged_obs is None or staged_actions is None:
+        if (
+            staged_obs is None
+            or staged_actions is None
+            or staged_logprobs is None
+            or staged_values is None
+            or staged_parties is None
+        ):
             raise RuntimeError("Rollout batch state missing staged transitions.")
-        if staged_logprobs is None or staged_values is None:
-            raise RuntimeError("Rollout batch state missing staged policy outputs.")
-        if staged_wave_ids is None:
-            raise RuntimeError("Rollout batch state missing staged wave ids.")
 
         for i in range(len(rewards_arr)):
             obs_row = staged_obs[i]
+            party_id = int(staged_parties[i])
             obs_buf.append(obs_row.copy())
             action_buf.append(int(staged_actions[i]))
             logprob_buf.append(float(staged_logprobs[i]))
             value_buf.append(float(staged_values[i]))
             reward_buf.append(float(rewards_arr[i]))
-            wave_id_buf.append(int(staged_wave_ids[i]))
+            party_buf.append(party_id)
             episode_return += float(rewards_arr[i])
             routing_steps += 1
-            done_buf.append(1.0 if terminal and i == len(rewards_arr) - 1 else 0.0)
+            # End of day, or next transition belongs to a different focal.
+            is_last = i == len(rewards_arr) - 1
+            next_party = (
+                int(staged_parties[i + 1])
+                if (not is_last)
+                else (-1 if terminal else party_id)
+            )
+            done = 1.0 if terminal and is_last else (0.0 if next_party == party_id else 1.0)
+            done_buf.append(done)
 
             if cfg.log_every > 0 and routing_steps - last_log_step >= cfg.log_every:
                 elapsed = time.perf_counter() - rollout_t0
@@ -429,14 +246,6 @@ def _collect_episode(
 
         if result.episode_done:
             episode_done = True
-            terminal_info = {
-                "avg_wait_variance": result.metrics.avg_wait_variance(),
-                "rides_completed": result.metrics.rides_completed,
-                "rides_per_party": result.metrics.rides_per_party(),
-                "must_do_completion_rate": result.metrics.must_do_completion_rate(),
-                "avg_preference_score_per_guest": result.metrics.avg_preference_score_per_guest(),
-                "avg_must_do_latency_sec": result.metrics.avg_must_do_latency_sec(),
-            }
             break
 
         if result.n_obs <= 0:
@@ -445,26 +254,20 @@ def _collect_episode(
         obs_np = np.asarray(result.obs, dtype=np.float32)
         if obs_np.ndim == 1:
             obs_np = obs_np.reshape(1, FLAT_OBS_DIM)
+        parties_np = np.asarray(result.party_ids, dtype=np.int64)
         if obs_np.shape[0] > remaining:
             obs_np = obs_np[:remaining]
+            parties_np = parties_np[:remaining]
 
         obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
         with torch.no_grad():
-            actions, logprobs, _, values = agent.get_action_and_value(
-                obs_t, joint_group=True
-            )
+            actions, logprobs, _, values = agent.get_action_and_value(obs_t)
 
         staged_obs = obs_np
         staged_actions = actions.detach().cpu().numpy()
         staged_logprobs = logprobs.detach().cpu().numpy()
         staged_values = values.detach().cpu().numpy()
-        # One wave id per coordinator chunk so PPO updates never rebuild huge G.
-        max_g = _coordinator_chunk_size()
-        staged_wave_ids = np.empty(obs_np.shape[0], dtype=np.int64)
-        for start in range(0, obs_np.shape[0], max_g):
-            end = min(start + max_g, obs_np.shape[0])
-            staged_wave_ids[start:end] = wave_counter
-            wave_counter += 1
+        staged_parties = parties_np
         pending_actions = [int(a) for a in staged_actions.tolist()]
 
     if not obs_buf:
@@ -472,15 +275,14 @@ def _collect_episode(
 
     rollout_sec = time.perf_counter() - rollout_t0
 
-    # If we hit the routing-step cap mid-day, bootstrap GAE from V(s') of the
-    # next unconsumed observation instead of treating the trajectory as terminal.
     bootstrap_value = 0.0
-    if (
-        not episode_done
-        and staged_values is not None
-        and len(staged_values) > 0
-    ):
+    if not episode_done and staged_values is not None and len(staged_values) > 0:
         bootstrap_value = float(staged_values[0])
+
+    # Mark trajectory breaks when focal party_id changes across recorded rows.
+    for i in range(len(done_buf) - 1):
+        if party_buf[i] != party_buf[i + 1]:
+            done_buf[i] = 1.0
 
     rewards_t = torch.tensor(reward_buf, dtype=torch.float32, device=device)
     values_t = torch.tensor(value_buf, dtype=torch.float32, device=device)
@@ -497,51 +299,37 @@ def _collect_episode(
     obs_t = torch.tensor(np.stack(obs_buf), dtype=torch.float32, device=device)
     actions_t = torch.tensor(action_buf, dtype=torch.long, device=device)
     logprobs_t = torch.tensor(logprob_buf, dtype=torch.float32, device=device)
-    wave_ids_t = torch.tensor(wave_id_buf, dtype=torch.long, device=device)
 
     n = obs_t.shape[0]
     if cfg.subsample_size > 0 and n > cfg.subsample_size:
-        # Subsample whole waves so joint coordinator context stays intact.
-        unique_waves = torch.unique(wave_ids_t).tolist()
-        random.shuffle(unique_waves)
-        chosen: list[int] = []
-        count = 0
-        for wid in unique_waves:
-            members = (wave_ids_t == wid).nonzero(as_tuple=False).squeeze(-1).tolist()
-            if isinstance(members, int):
-                members = [members]
-            if count + len(members) > cfg.subsample_size and count > 0:
-                break
-            chosen.extend(members)
-            count += len(members)
-            if count >= cfg.subsample_size:
-                break
-        idx = torch.tensor(sorted(chosen), dtype=torch.long, device=device)
+        idx = torch.randperm(n, device=device)[: cfg.subsample_size]
         obs_t = obs_t[idx]
         actions_t = actions_t[idx]
         logprobs_t = logprobs_t[idx]
         advantages_t = advantages_t[idx]
         returns_t = returns_t[idx]
-        wave_ids_t = wave_ids_t[idx]
 
+    personal = env.personal_stats()
+    metrics = getattr(result, "metrics", None) if (episode_done and result is not None) else None
+    avg_wait = float(metrics.avg_wait_variance()) if metrics is not None else 0.0
+    n_focals = int(personal.n_focals)
+    rides = int(personal.rides_completed)
     return EpisodeBatch(
         obs=obs_t,
         actions=actions_t,
         logprobs=logprobs_t,
         advantages=advantages_t,
         returns=returns_t,
-        wave_ids=wave_ids_t,
         routing_steps=routing_steps,
         episode_return=episode_return,
-        avg_wait_variance=float(terminal_info.get("avg_wait_variance", 0.0)),
-        rides_completed=int(terminal_info.get("rides_completed", 0)),
-        rides_per_party=float(terminal_info.get("rides_per_party", 0.0)),
-        must_do_completion_rate=float(terminal_info.get("must_do_completion_rate", 0.0)),
-        avg_preference_score_per_guest=float(
-            terminal_info.get("avg_preference_score_per_guest", 0.0)
-        ),
-        avg_must_do_latency_sec=float(terminal_info.get("avg_must_do_latency_sec", 0.0)),
+        avg_wait_variance=avg_wait,
+        rides_completed=rides,
+        rides_per_party=(rides / max(n_focals, 1)),
+        must_do_completion_rate=float(personal.must_do_completion_rate),
+        avg_preference_score_per_guest=float(personal.avg_preference_score_per_guest),
+        avg_must_do_latency_sec=0.0,
         rollout_sec=rollout_sec,
+        n_focals=n_focals,
     )
 
 
@@ -558,8 +346,6 @@ def _compute_gae(
     last_gae = 0.0
     for t in reversed(range(rewards.shape[0])):
         if t == rewards.shape[0] - 1:
-            # Terminal steps have dones[t]=1 → value bootstrap 0.
-            # Truncated rollouts keep dones[t]=0 and use bootstrap_value = V(s').
             next_nonterminal = 1.0 - float(dones[t].item())
             next_value = 0.0 if next_nonterminal == 0.0 else bootstrap_value
         else:
@@ -578,48 +364,41 @@ def _ppo_update(
     batch: EpisodeBatch,
     cfg: PPOConfig,
 ) -> PPOStats:
-    """PPO update with small per-step graphs (laptop-friendly).
-
-    Each optimizer step forwards at most ``update_wave_batch`` waves, then
-    ``backward``/``step`` immediately so autograd does not retain a ~30k-sample
-    graph. A short yield after each step reduces display freezes on laptop dGPUs.
-    """
-    table = _WaveTable.build(batch.obs, batch.actions, batch.wave_ids)
-    n_waves = table.n_waves
-    pack = max(1, int(cfg.update_wave_batch))
-    wave_order = list(range(n_waves))
+    n = batch.obs.shape[0]
+    mb_size = max(1, int(cfg.update_mb_size))
     yield_sec = float(getattr(cfg, "update_yield_sec", 0.0) or 0.0)
+    mb_adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
 
     last_pg_loss = 0.0
     last_v_loss = 0.0
     last_entropy = 0.0
     last_approx_kl = 0.0
     last_clipfrac = 0.0
-    mb_adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
-
     update_t0 = time.perf_counter()
-    steps_per_epoch = max(1, (n_waves + pack - 1) // pack)
+    steps_per_epoch = max(1, (n + mb_size - 1) // mb_size)
     total_mb = cfg.update_epochs * steps_per_epoch
     mb_done = 0
     last_log_t = update_t0
     device = batch.obs.device
 
     for epoch in range(cfg.update_epochs):
-        random.shuffle(wave_order)
-        for start in range(0, n_waves, pack):
-            rows = wave_order[start : start + pack]
-            new_logprob, entropy, new_value, orig = agent._forward_wave_rows(table, rows)
-            if orig.numel() == 0:
-                continue
+        order = torch.randperm(n, device=device)
+        for start in range(0, n, mb_size):
+            idx = order[start : start + mb_size]
+            obs = batch.obs.index_select(0, idx)
+            actions = batch.actions.index_select(0, idx)
+            old_logprob = batch.logprobs.index_select(0, idx)
+            adv = mb_adv.index_select(0, idx)
+            ret = batch.returns.index_select(0, idx)
 
-            logratio = new_logprob - batch.logprobs.index_select(0, orig)
+            _, new_logprob, entropy, new_value = agent.get_action_and_value(obs, actions)
+            logratio = new_logprob - old_logprob
             ratio = logratio.exp()
-            adv = mb_adv.index_select(0, orig)
 
             pg_loss1 = -adv * ratio
             pg_loss2 = -adv * torch.clamp(ratio, 1 - cfg.clip_coef, 1 + cfg.clip_coef)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-            v_loss = 0.5 * ((new_value - batch.returns.index_select(0, orig)) ** 2).mean()
+            v_loss = 0.5 * ((new_value - ret) ** 2).mean()
             entropy_loss = entropy.mean()
             loss = pg_loss - cfg.ent_coef * entropy_loss + cfg.vf_coef * v_loss
 
@@ -665,7 +444,7 @@ def _ppo_update(
 
 
 def train(cfg: PPOConfig) -> None:
-    _require_batched_rollout_api()
+    _require_personal_api()
     device = torch.device(cfg.device)
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -678,9 +457,6 @@ def train(cfg: PPOConfig) -> None:
     global_step = 0
     init_extra: dict = {}
     if cfg.init_checkpoint:
-        # Load weights into the existing Agent submodule so the Adam optimizer
-        # (created on agent.parameters()) keeps tracking the live tensors.
-        # Do not restore the BC optimizer state — PPO uses a fresh Adam.
         loaded_model, global_step, init_extra = load_checkpoint(cfg.init_checkpoint, device)
         agent.model.load_state_dict(loaded_model.state_dict())
         _log(f"Loaded init checkpoint: {cfg.init_checkpoint} (prior step={global_step})")
@@ -691,15 +467,13 @@ def train(cfg: PPOConfig) -> None:
     _log(f"PyTorch {torch.__version__} on {_format_device(device)}")
     _log(f"Model parameters: {num_params:,}")
     _log(
-        f"PPO full-day mode: target_days={cfg.total_days}, num_envs={cfg.num_envs}, "
-        f"subsample={cfg.subsample_size}, inference_batch={cfg.inference_batch_size}, "
-        f"update_wave_batch={cfg.update_wave_batch}, "
-        f"update_yield_sec={cfg.update_yield_sec}, "
-        f"save_every={cfg.save_every} routing steps, log_every={cfg.log_every} rollout steps"
+        f"PPO personal mode: focals={cfg.num_focals}, target_days={cfg.total_days}, "
+        f"num_envs={cfg.num_envs}, subsample={cfg.subsample_size}, "
+        f"inference_batch={cfg.inference_batch_size}, update_mb={cfg.update_mb_size}"
     )
     _log(
-        "Primary metrics: must_do rate (higher better), pref/guest (higher better), "
-        "must-do latency (lower better); wait_var is diagnostic only"
+        "Primary metrics (focals only): must_do rate, pref/guest; "
+        "wait_var is diagnostic only"
     )
     if init_extra:
         _log(f"Init checkpoint metadata: {init_extra}")
@@ -713,12 +487,14 @@ def train(cfg: PPOConfig) -> None:
     while days_done < cfg.total_days:
         update += 1
         t0 = time.perf_counter()
-        # Clamp so we never simulate more days than requested
         envs_this_update = min(cfg.num_envs, cfg.total_days - days_done)
         day_num = days_done + 1
         day_label = f"[day {day_num}/{cfg.total_days}]"
 
-        _log(f"{day_label} starting rollout (seed={cfg.seed + days_done})...")
+        _log(
+            f"{day_label} starting personal rollout "
+            f"(seed={cfg.seed + days_done}, focals={cfg.num_focals})..."
+        )
 
         episodes: list[EpisodeBatch] = []
         for i in range(envs_this_update):
@@ -740,33 +516,20 @@ def train(cfg: PPOConfig) -> None:
             env_label = f" env={i + 1}" if envs_this_update > 1 else ""
             _log(
                 f"{day_label}{env_label} rollout done: steps={ep.routing_steps:,} "
-                f"return={ep.episode_return:.2f} must_do={ep.must_do_completion_rate:.3f} "
+                f"focals={ep.n_focals} return={ep.episode_return:.2f} "
+                f"must_do={ep.must_do_completion_rate:.3f} "
                 f"pref/guest={ep.avg_preference_score_per_guest:.4f} "
-                f"must_do_lat={ep.avg_must_do_latency_sec / 60.0:.1f}m "
-                f"rides={ep.rides_completed:,} rides/party={ep.rides_per_party:.2f} "
-                f"time={ep.rollout_sec:.1f}s ({ep.routing_steps / max(ep.rollout_sec, 1e-6):,.0f} steps/s)"
+                f"rides={ep.rides_completed:,} rides/focal={ep.rides_per_party:.2f} "
+                f"time={ep.rollout_sec:.1f}s "
+                f"({ep.routing_steps / max(ep.rollout_sec, 1e-6):,.0f} steps/s)"
             )
 
-        # Offset wave ids across parallel envs so cohorts stay unique.
-        wave_parts = []
-        wave_offset = 0
-        for ep in episodes:
-            wave_parts.append(ep.wave_ids + wave_offset)
-            wave_offset = int(wave_parts[-1].max().item()) + 1
-        combined_obs = torch.cat([ep.obs for ep in episodes], dim=0)
-        combined_actions = torch.cat([ep.actions for ep in episodes], dim=0)
-        combined_logprobs = torch.cat([ep.logprobs for ep in episodes], dim=0)
-        combined_advantages = torch.cat([ep.advantages for ep in episodes], dim=0)
-        combined_returns = torch.cat([ep.returns for ep in episodes], dim=0)
-        combined_wave_ids = torch.cat(wave_parts, dim=0)
-
         batch = EpisodeBatch(
-            obs=combined_obs,
-            actions=combined_actions,
-            logprobs=combined_logprobs,
-            advantages=combined_advantages,
-            returns=combined_returns,
-            wave_ids=combined_wave_ids,
+            obs=torch.cat([ep.obs for ep in episodes], dim=0),
+            actions=torch.cat([ep.actions for ep in episodes], dim=0),
+            logprobs=torch.cat([ep.logprobs for ep in episodes], dim=0),
+            advantages=torch.cat([ep.advantages for ep in episodes], dim=0),
+            returns=torch.cat([ep.returns for ep in episodes], dim=0),
             routing_steps=raw_steps,
             episode_return=float(np.mean([ep.episode_return for ep in episodes])),
             avg_wait_variance=float(np.mean([ep.avg_wait_variance for ep in episodes])),
@@ -782,6 +545,7 @@ def train(cfg: PPOConfig) -> None:
                 np.mean([ep.avg_must_do_latency_sec for ep in episodes])
             ),
             rollout_sec=rollout_sec,
+            n_focals=int(np.mean([ep.n_focals for ep in episodes])),
         )
 
         global_step += batch.routing_steps
@@ -795,7 +559,7 @@ def train(cfg: PPOConfig) -> None:
         lr = optimizer.param_groups[0]["lr"]
         _log(
             f"{day_label} PPO update on {batch.obs.shape[0]:,} samples "
-            f"(subsampled from {raw_steps:,}) lr={lr:.2e}..."
+            f"(from {raw_steps:,} focal decisions) lr={lr:.2e}..."
         )
         stats = _ppo_update(agent, optimizer, batch, cfg)
         elapsed = time.perf_counter() - t0
@@ -815,8 +579,7 @@ def train(cfg: PPOConfig) -> None:
             f"train_samples={batch.obs.shape[0]:,} "
             f"return={batch.episode_return:.2f} must_do={batch.must_do_completion_rate:.3f}"
             f"{best_marker} pref/guest={batch.avg_preference_score_per_guest:.4f} "
-            f"must_do_lat={batch.avg_must_do_latency_sec / 60.0:.1f}m "
-            f"rides={batch.rides_completed:,} rides/party={batch.rides_per_party:.2f} "
+            f"rides={batch.rides_completed:,} rides/focal={batch.rides_per_party:.2f} "
             f"pg_loss={stats.pg_loss:.4f} v_loss={stats.v_loss:.4f} "
             f"entropy={stats.entropy:.3f} kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
             f"rollout={rollout_sec:.1f}s update={stats.update_sec:.1f}s total={elapsed:.1f}s "
@@ -834,9 +597,9 @@ def train(cfg: PPOConfig) -> None:
                     "phase": "ppo",
                     "update": update,
                     "days_done": days_done,
+                    "num_focals": cfg.num_focals,
                     "must_do_completion_rate": batch.must_do_completion_rate,
                     "avg_preference_score_per_guest": batch.avg_preference_score_per_guest,
-                    "avg_must_do_latency_sec": batch.avg_must_do_latency_sec,
                     "avg_wait_variance": batch.avg_wait_variance,
                     "rides_per_party": batch.rides_per_party,
                 },
@@ -853,6 +616,7 @@ def train(cfg: PPOConfig) -> None:
         {
             "phase": "ppo",
             "days_done": days_done,
+            "num_focals": cfg.num_focals,
             "best_must_do_completion_rate": best_must_do_rate,
         },
     )
@@ -865,9 +629,8 @@ def train(cfg: PPOConfig) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "PPO training on full park-day episodes. "
-            "Hyperparameters (learning rate, gamma, GAE, PPO clip, etc.) "
-            "are configured in config.py — edit that file to tune them."
+            "PPO personal planner training (N focals + heuristic crowd). "
+            "Hyperparameters are configured in config.py."
         )
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -875,9 +638,15 @@ def main() -> None:
         "--total-days",
         type=int,
         default=20,
-        help="Number of complete park days to simulate (each day ~500k routing decisions)",
+        help="Number of complete park days to simulate",
     )
     parser.add_argument("--num-envs", type=int, default=1, help="Parallel full days per update")
+    parser.add_argument(
+        "--num-focals",
+        type=int,
+        default=config.PPO_NUM_FOCALS,
+        help="Focal parties trained per day against the heuristic crowd",
+    )
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
         "--init-checkpoint",
@@ -900,6 +669,7 @@ def main() -> None:
         device=args.device,
         init_checkpoint=args.init_checkpoint or None,
         anneal_lr=args.anneal_lr,
+        num_focals=args.num_focals,
     )
     train(cfg)
 

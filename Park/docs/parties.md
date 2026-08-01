@@ -48,21 +48,21 @@ Parties whose `leave_sec` is the day end may still join long lines near close: f
 ## Must-Do Lists
 
 - Count per party: uniform **0–4** rides.
-- Rides are sampled **without replacement**, weighted by ride `popularity` (same table as preferences), so must-dos skew toward high-demand attractions.
+- Rides are sampled **uniformly without replacement** (not popularity-weighted).
 - Unfinished must-dos sort first in `preference_order`.
 - Completing a must-do ride clears that flag, refreshes `preference_order` / `balk_sec`, and (in `ParkEnv` / PPO only) adds a time-decayed `PPO_MUST_DO_COMPLETION_BONUS` (optionally × `party_size`) to the party’s pending preference reward (see `docs/training.md`).
 
 ## Preferences
 
-Per-party preference masses are **popularity-weighted**, not land-themed and not uniform-random:
+Per-party preference masses are **fully randomized** (not land-themed, not popularity-weighted) so the policy must read the preference vector:
 
 ```
-raw[r] = popularity[r] × U(1 − PREF_POPULARITY_NOISE, 1 + PREF_POPULARITY_NOISE)
+raw[r] ~ U(PREF_RAW_EPS, 1)
 raw[r] *= MUST_DO_PREF_BOOST   # if ride is a must-do
 preferences[r] = raw[r] / sum(raw)
 ```
 
-Defaults: `PREF_POPULARITY_NOISE = 0.25` (±25% multiplicative noise). Ride `popularity` values live on each entry in `config.RIDES` and are exported to C++ as `kRidePopularity`. On average, high-demand rides (e.g. Space Mountain) receive higher preference mass than low-demand ones (e.g. Explorer Canoes); noise keeps individual parties varied.
+Defaults: `PREF_RAW_EPS = 1e-3`. Ride `popularity` on `config.RIDES` remains for diagnostics / companion UX but does **not** drive sim spawn prefs.
 
 ## Balk Thresholds
 

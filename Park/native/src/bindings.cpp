@@ -107,6 +107,30 @@ PYBIND11_MODULE(_park_sim, m) {
         .def_readonly("has_obs", &park::EnvStepResult::has_obs)
         .def_readonly("metrics", &park::EnvStepResult::metrics);
 
+    py::class_<park::PersonalDayStats>(m, "PersonalDayStats")
+        .def_readonly("n_focals", &park::PersonalDayStats::n_focals)
+        .def_readonly("must_dos_assigned", &park::PersonalDayStats::must_dos_assigned)
+        .def_readonly("must_dos_completed", &park::PersonalDayStats::must_dos_completed)
+        .def_readonly("preference_score_sum", &park::PersonalDayStats::preference_score_sum)
+        .def_readonly("rides_completed", &park::PersonalDayStats::rides_completed)
+        .def_property_readonly(
+            "must_do_completion_rate",
+            [](const park::PersonalDayStats& self) {
+                if (self.must_dos_assigned <= 0) {
+                    return 0.0;
+                }
+                return static_cast<double>(self.must_dos_completed) /
+                       static_cast<double>(self.must_dos_assigned);
+            })
+        .def_property_readonly(
+            "avg_preference_score_per_guest",
+            [](const park::PersonalDayStats& self) {
+                if (self.n_focals <= 0) {
+                    return 0.0;
+                }
+                return self.preference_score_sum / static_cast<double>(self.n_focals);
+            });
+
     py::class_<park::RolloutBatchResult>(m, "RolloutBatchResult")
         .def_readonly("n_obs", &park::RolloutBatchResult::n_obs)
         .def_readonly("n_rewards", &park::RolloutBatchResult::n_rewards)
@@ -117,6 +141,17 @@ PYBIND11_MODULE(_park_sim, m) {
         })
         .def_property_readonly("rewards", [](const park::RolloutBatchResult& self) {
             return vector_to_rewards(self.rewards);
+        })
+        .def_property_readonly("party_ids", [](const park::RolloutBatchResult& self) {
+            const py::ssize_t n = static_cast<py::ssize_t>(self.party_ids.size());
+            py::array_t<int32_t> arr(n);
+            if (n > 0) {
+                std::memcpy(
+                    arr.mutable_data(),
+                    self.party_ids.data(),
+                    self.party_ids.size() * sizeof(int32_t));
+            }
+            return arr;
         });
 
     py::class_<park::WalkRecord>(m, "WalkRecord")
@@ -263,6 +298,13 @@ PYBIND11_MODULE(_park_sim, m) {
     py::class_<park::ParkEnv>(m, "ParkEnv")
         .def(py::init<uint64_t>(), py::arg("seed") = 0)
         .def("reset", &park::ParkEnv::reset, py::arg("seed"))
+        .def(
+            "reset_personal",
+            &park::ParkEnv::reset_personal,
+            py::arg("seed"),
+            py::arg("n_focals"),
+            "Start a personal-planner day: N focal parties + heuristic crowd.")
+        .def("personal_stats", &park::ParkEnv::personal_stats)
         .def("step", &park::ParkEnv::step, py::arg("action"))
         .def(
             "exchange_batch",

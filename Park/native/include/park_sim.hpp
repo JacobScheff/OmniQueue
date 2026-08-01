@@ -55,8 +55,8 @@ constexpr double kBaseBalkSec = 40.0 * 60.0;  // 40 min floor (mirrored from con
 constexpr double kBalkScale = 5.0 * 60.0;     // +0–5 min by preference^exp (max ~45 min)
 constexpr double kBalkPrefExp = 1.5;
 constexpr double kMustDoPrefBoost = 10.0;
-// Spawn prefs: popularity * U(1-noise, 1+noise), then must-do boost, L1-normalize.
-constexpr double kPrefPopularityNoise = 0.25;  // mirrored from config.PREF_POPULARITY_NOISE
+// Spawn prefs: i.i.d. U(kPrefRawEps, 1), must-do boost, L1-normalize (not popularity-weighted).
+constexpr double kPrefRawEps = 1e-3;  // mirrored from config.PREF_RAW_EPS
 constexpr double kIdleWalkProb = 0.5;
 
 // Heuristic ride-repeat dampening (mirrored from config.py)
@@ -182,10 +182,20 @@ struct EnvStepResult {
 struct RolloutBatchResult {
     std::vector<float> obs;
     std::vector<float> rewards;
+    std::vector<int32_t> party_ids;
     int n_obs = 0;
     int n_rewards = 0;
     bool episode_done = false;
     DayMetricsResult metrics;
+};
+
+/** Aggregate KPIs for personal-training focals (heuristic crowd excluded). */
+struct PersonalDayStats {
+    int n_focals = 0;
+    int64_t must_dos_assigned = 0;
+    int64_t must_dos_completed = 0;
+    double preference_score_sum = 0.0;
+    int rides_completed = 0;
 };
 
 /** One party walk segment for visualization replay. */
@@ -320,8 +330,11 @@ public:
     ParkEnv& operator=(ParkEnv&& other) noexcept;
 
     Observation reset(uint64_t seed);
+    /** Personal planner training: N focals + heuristic crowd. Returns first obs batch size via exchange_batch. */
+    void reset_personal(uint64_t seed, int n_focals);
     EnvStepResult step(int action);
     RolloutBatchResult exchange_batch(const std::vector<int>& actions, int max_obs);
+    PersonalDayStats personal_stats() const;
 
     /** Interactive / shadow hybrid session (focal guest + crowd policy).
      *  focal_policy: 0=human, 1=heuristic, 2=ppo

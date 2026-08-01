@@ -34,7 +34,7 @@ from Park.training.features import (
 
 
 class _CompanionExportWrapper(torch.nn.Module):
-    """G=1 companion forward: guest/ride/env → action logits."""
+    """Single-party companion forward: guest/ride/env → action logits."""
 
     def __init__(self, model: ParkRouterModel) -> None:
         super().__init__()
@@ -46,8 +46,8 @@ class _CompanionExportWrapper(torch.nn.Module):
         ride: torch.Tensor,
         env: torch.Tensor,
     ) -> torch.Tensor:
-        # guest: (1, 1, GUEST), ride: (1, 1, R, F) or (1, R, F), env: (1, E)
-        logits, _values = self.model(guest, ride, env, guest_padding_mask=None)
+        # guest: (1, GUEST), ride: (1, R, F), env: (1, E)
+        logits, _values = self.model(guest, ride, env)
         return logits
 
 
@@ -57,13 +57,11 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     wrapped = _CompanionExportWrapper(model)
     wrapped.eval()
 
-    guest = torch.zeros(1, 1, GUEST_FEAT_DIM, dtype=torch.float32)
-    ride = torch.zeros(1, 1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32)
+    guest = torch.zeros(1, GUEST_FEAT_DIM, dtype=torch.float32)
+    ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32)
     env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM, dtype=torch.float32)
 
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
-    # Native MHA fast-path uses aten::_native_multi_head_attention (not ONNX-exportable).
-    torch.backends.mha.set_fastpath_enabled(False)
     with torch.inference_mode():
         torch.onnx.export(
             wrapped,
@@ -81,8 +79,8 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
 
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     rng = np.random.default_rng(0)
-    g = rng.standard_normal((1, 1, GUEST_FEAT_DIM), dtype=np.float32)
-    r = rng.standard_normal((1, 1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
+    g = rng.standard_normal((1, GUEST_FEAT_DIM), dtype=np.float32)
+    r = rng.standard_normal((1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
     e = rng.standard_normal((1, ENV_DYNAMIC_FEAT_DIM), dtype=np.float32)
     ort_out = sess.run(None, {"guest": g, "ride": r, "env": e})[0]
     with torch.inference_mode():

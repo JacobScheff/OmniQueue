@@ -53,8 +53,9 @@ BASE_BALK_SEC = 40 * 60   # 40 min floor; typical rides stay near this
 BALK_SCALE = 5 * 60       # +0–5 min by preference^BALK_PREF_EXP (max ~45 min)
 BALK_PREF_EXP = 1.5
 MUST_DO_PREF_BOOST = 10.0
-# Spawn prefs: raw[r] = popularity[r] * U(1-noise, 1+noise), then must-do boost, L1-normalize.
-PREF_POPULARITY_NOISE = 0.25  # multiplicative ±25% per ride (slight per-party randomization)
+# Spawn prefs: i.i.d. U(PREF_RAW_EPS, 1) per ride, must-do boost, L1-normalize.
+# Not popularity-weighted — forces the policy to read the preference vector.
+PREF_RAW_EPS = 1e-3
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
 MAX_ROUTE_BATCH = 256
@@ -207,20 +208,16 @@ MACRO_EDGES.extend([
 BC_SAVE_DIR = "checkpoints/bc"
 BC_SAVE_EVERY = 500        # save checkpoint every N optimizer steps
 BC_EPOCHS = 10
-# Batch size is in *waves* (co-timed party groups), not individual decisions.
-# Keep modest: each wave expands to (B, G, 34, 8) ride tensors.
-BC_BATCH_SIZE = 128
+# Batch size is in individual routing decisions (single-party model, no G axis).
+BC_BATCH_SIZE = 256
 BC_LR = 3e-4
-# Cap parties attending together. Opening-rush waves can be thousands of parties;
-# padding a BC batch to that G (and O(G²) attention) OOMs long before d_model matters.
-MAX_COORDINATOR_GUESTS = 34
 
 # ---------------------------------------------------------------------------
-# PPO (Phase 3) training defaults
+# PPO (Phase 3) training defaults — personal focal planner
 # Override individual values here rather than via command-line flags.
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
-PPO_SAVE_EVERY = 500_000          # save checkpoint every N routing steps
+PPO_SAVE_EVERY = 50_000           # save checkpoint every N routing steps
 PPO_LEARNING_RATE = 1e-5
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
 PPO_GAMMA = 0.999                 # discount factor
@@ -233,16 +230,15 @@ PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
 PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
 PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
-# C++ may return up to this many pending parties; the policy chunks them into
-# groups of MAX_COORDINATOR_GUESTS for the neural forward.
-PPO_INFERENCE_BATCH_SIZE = 1024
-# Waves packed into one neural forward / optimizer step during PPO update.
-# Keep this small on laptop dGPUs: one large minibatch was retaining a giant
-# autograd graph (~30k transitions) and freezing the display every few seconds.
-PPO_UPDATE_WAVE_BATCH = 256
+# N focal parties trained against a heuristic crowd on the same day.
+PPO_NUM_FOCALS = 24
+# C++ may return up to this many pending focal observations per exchange.
+PPO_INFERENCE_BATCH_SIZE = 256
+# Transitions packed into one neural forward / optimizer step during PPO update.
+PPO_UPDATE_MB_SIZE = 256
 # Pause after each optimizer step so Windows can composite the desktop.
 PPO_UPDATE_YIELD_SEC = 0.05
-PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
+PPO_LOG_EVERY = 5_000             # rollout progress log interval (0 = disabled)
 
 # PPO reward shaping (mirrored in park_sim.hpp)
 # Objective: preferred + must-do rides done quickly per party (guest-weighted).
@@ -256,9 +252,9 @@ PPO_LOG_EVERY = 50_000            # rollout progress log interval (0 = disabled)
 # Every routing step (party-local):
 #   -PPO_MUST_DO_URGENCY_COEF * remaining_must_dos
 #   -PPO_PREF_URGENCY_COEF * remaining_pref_mass  (prefs for rides with history==0)
-# Terminal:
-#   -PPO_UNFULFILLED_MUST_DO_PENALTY * (remaining / max(1, assigned))
-#   + flush remaining pending bonuses
+# Terminal (focals only in personal mode):
+#   -PPO_UNFULFILLED_MUST_DO_PENALTY * (focal_remaining / max(1, focal_assigned))
+#   + flush remaining pending bonuses for learners
 PPO_PREF_REWARD_SCALE = 0.05
 PPO_MUST_DO_COMPLETION_BONUS = 0.15
 PPO_TIME_DECAY = 0.75

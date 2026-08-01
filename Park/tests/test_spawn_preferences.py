@@ -1,4 +1,4 @@
-"""Spawn preferences should track real ride popularity with slight noise."""
+"""Spawn preferences should be fully randomized (not popularity-weighted)."""
 
 import numpy as np
 import pytest
@@ -8,8 +8,8 @@ from Park.simulator import native_backend_name
 
 
 @pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
-def test_mean_preferences_follow_ride_popularity():
-    """Across many parties, Space Mountain should outrank Explorer Canoes on average."""
+def test_mean_preferences_uncorrelated_with_popularity():
+    """Across many parties, mean prefs should not track ride popularity ranks."""
     import _park_sim
 
     names = [r["name"] for r in config.RIDES]
@@ -19,7 +19,6 @@ def test_mean_preferences_follow_ride_popularity():
 
     sums = np.zeros(config.NUM_RIDES, dtype=np.float64)
     seen: set[tuple[float, ...]] = set()
-    # A few full days of routing obs; dedupe by rounded preference vector.
     for seed in (0, 1, 2, 7, 11):
         env = _park_sim.ParkEnv(seed)
         obs = env.reset(seed)
@@ -37,18 +36,34 @@ def test_mean_preferences_follow_ride_popularity():
 
     assert len(seen) >= 200
     means = sums / len(seen)
-    assert means[space_idx] > means[canoe_idx] * 2.0
+    # Uniform-ish: no large popularity-driven gap between high/low demand rides.
+    assert means[space_idx] < means[canoe_idx] * 2.0
+    assert means[canoe_idx] < means[space_idx] * 2.0
 
     pops = np.array([float(r["popularity"]) for r in config.RIDES], dtype=np.float64)
     pop_ranks = pops.argsort().argsort().astype(np.float64)
     mean_ranks = means.argsort().argsort().astype(np.float64)
     corr = np.corrcoef(pop_ranks, mean_ranks)[0, 1]
-    assert corr > 0.7
+    assert abs(corr) < 0.35
 
 
-def test_config_popularity_table_complete():
+@pytest.mark.skipif(native_backend_name() != "native", reason="C++ extension not built")
+def test_reset_personal_only_queues_focals():
+    import _park_sim
+
+    env = _park_sim.ParkEnv(0)
+    env.reset_personal(0, 8)
+    result = env.exchange_batch([], 64)
+    assert result.n_obs > 0
+    assert result.n_obs <= 8
+    stats = env.personal_stats()
+    assert stats.n_focals == 8
+
+
+def test_config_pref_sampler_knobs():
     assert len(config.RIDES) == config.NUM_RIDES
     for ride in config.RIDES:
         assert "popularity" in ride
         assert ride["popularity"] > 0
-    assert 0.0 < config.PREF_POPULARITY_NOISE < 1.0
+    assert 0.0 < config.PREF_RAW_EPS < 1.0
+    assert config.PPO_NUM_FOCALS > 0

@@ -106,7 +106,7 @@ Raise `PPO_UNFULFILLED_MUST_DO_PENALTY` substantially vs today’s `0.002` so un
 
 ### 4.1 Likely sufficient with small feature tweaks
 
-`ParkRouterModel` (guest transformer + pointer over rides + per-party critic) already matches a **per-party** return. No architecture change required for v1.
+`ParkRouterModel` is now a **single-party** pointer actor-critic (no guest-axis coordinator). Personal PPO trains N focals against a heuristic crowd; see `docs/training.md`.
 
 Recommended observation updates in `build_observation` / `training/features.py`:
 
@@ -123,7 +123,7 @@ Update `GUEST_FEAT_DIM` / `FLAT_OBS_DIM` and any hard-coded index docs if guest 
 
 - Separate must-do vs preference value heads.  
 - Action prior / mask bias toward unfinished must-dos (usually unnecessary if reward + features are clear).  
-- Shrink coordinator depth if multi-party attention proves less useful without park-wide variance sharing.
+- (Done) Removed guest-axis coordination; personal planner uses independent single-party forwards.
 
 ---
 
@@ -174,9 +174,10 @@ Update `GUEST_FEAT_DIM` / `FLAT_OBS_DIM` and any hard-coded index docs if guest 
 ## 8. Out of scope for this objective flip
 
 - Pathway congestion (future phase).  
-- Changing spawn preference / must-do generation (keep popularity-weighted, non-land).  
 - Replacing the pointer actor-critic.  
-- Making wait variance the primary KPI again.
+- Making wait variance the primary KPI again.  
+
+Spawn prefs are fully randomized (see `docs/parties.md`).
 
 ---
 

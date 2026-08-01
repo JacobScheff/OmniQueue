@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from Park.model import forward_with_mask, obs_flat_to_tensors, obs_group_to_tensors
+from Park.model import forward_with_mask, obs_flat_to_tensors
 from Park.training.checkpoint import load_checkpoint
 
 
@@ -28,7 +28,7 @@ class PPOPolicy:
         obs = torch.tensor(np.asarray(obs_flat), dtype=torch.float32, device=self.device).unsqueeze(0)
         guest, ride, env = obs_flat_to_tensors(obs)
         logits, _, _ = forward_with_mask(self.model, guest, ride, env)
-        probs = torch.softmax(logits[0, 0], dim=-1)
+        probs = torch.softmax(logits[0], dim=-1)
         action = int(probs.argmax().item())
         return action, probs.cpu().numpy()
 
@@ -39,11 +39,13 @@ class PPOPolicy:
 
     @torch.no_grad()
     def act_batch_with_probs(self, obs_batch) -> tuple[np.ndarray, np.ndarray]:
-        """Return (actions [G], probs [G, A]) for a co-timed PPO batch."""
+        """Return (actions [B], probs [B, A]) for a batch of independent parties."""
         obs = torch.tensor(np.asarray(obs_batch), dtype=torch.float32, device=self.device)
-        guest, ride, env = obs_group_to_tensors(obs)
+        if obs.dim() == 1:
+            obs = obs.unsqueeze(0)
+        guest, ride, env = obs_flat_to_tensors(obs)
         logits, _, _ = forward_with_mask(self.model, guest, ride, env)
-        probs = torch.softmax(logits[0], dim=-1)  # (G, A)
+        probs = torch.softmax(logits, dim=-1)
         actions = probs.argmax(dim=-1).cpu().numpy()
         return actions, probs.cpu().numpy()
 

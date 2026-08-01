@@ -2,13 +2,13 @@
 
 ## Project Goal
 
-Build a centralized, AI-driven routing system for a theme park that dynamically directs **parties** (groups of guests) to their next attraction. The system optimizes:
+Build an AI-driven **personal next-ride planner** for theme-park parties. PPO trains N focal parties per day against a heuristic crowd so each guest (party) gets a personalized itinerary; companion / watch / play consume the same single-party policy. The system optimizes:
 
-1. **Wait variance** — balance load across all rides (heuristic / diagnostic KPI).
-2. **Pathway congestion** — avoid bottlenecks (future phases).
-3. **Guest satisfaction** — get preferred and must-do rides done quickly (primary PPO objective; wait variance is diagnostic only — see `docs/training.md`).
+1. **Guest satisfaction** — get preferred and must-do rides done quickly (primary PPO objective).
+2. **Wait variance** — balance load across rides (heuristic / diagnostic KPI only).
+3. **Pathway congestion** — avoid bottlenecks (future phases).
 
-Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, implemented in **C++17** and exposed to Python via **`_park_sim`**. Phase 1 delivers fast rollouts and a built-in **heuristic router**. Later phases add PyTorch (Pointer Actor-Critic), PPO via CleanRL, and Pygame visualization.
+Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, implemented in **C++17** and exposed to Python via **`_park_sim`**. Phase 1 delivers fast rollouts and a built-in **heuristic router**. Later phases add PyTorch (pointer actor-critic, no guest-axis coordination), PPO, and Pygame visualization.
 
 ## Enforced Rules
 
@@ -18,7 +18,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 4. **Second resolution** — park day is 8:00 AM–11:00 PM (54,000 seconds).
 5. **Switchable router** — `config.ROUTER` selects `"heuristic"` (C++ built-in) or `"ppo"` (Phase 3 stub).
 6. **Documentation stays current** — any behavior change must update the matching file in `docs/` in the same change.
-7. **No land-themed preferences** — party preferences are popularity-weighted (from ride `popularity` in `config.py`) with slight per-party noise and must-do boosts; not land-based.
+7. **Randomized preferences** — spawn prefs / must-dos are fully random (i.i.d. positive draws + uniform must-dos, then must-do boost + L1-normalize); not land-themed and not popularity-weighted. Ride `popularity` may remain for diagnostics / live UX only.
 8. **Breakdown realism** — queued parties decide immediately at the ride entrance but evacuate one party every 4 seconds; on-ride parties evacuate last without ride completion credit.
 
 ## Repository Structure
