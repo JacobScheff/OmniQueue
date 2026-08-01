@@ -1,8 +1,9 @@
 {
-  "step": 11072966,
-  "path": "/workspace/Park/companion/model/ppo_final.onnx",
-  "source_pt": "/workspace/Park/companion/model/ppo_final.pt",
+  "step": 368767,
+  "path": "C:\\Users\\jacob\\Documents\\VSC\\OmniQueue\\Park\\companion\\model\\ppo_final.onnx",
+  "source_pt": "C:\\Users\\jacob\\Documents\\VSC\\OmniQueue\\Park\\companion\\model\\ppo_final.pt",
   "phase": "ppo",
-  "days_done": 20,
-  "best_must_do_completion_rate": 0.9961905404038701
+  "days_done": 200,
+  "num_focals": 24,
+  "best_must_do_completion_rate": 1.0
 }

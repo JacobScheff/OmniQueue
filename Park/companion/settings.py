@@ -14,14 +14,13 @@ from pathlib import Path
 _MODEL_DIR = Path(__file__).resolve().parent / "model"
 
 # Named PPO checkpoints (ONNX for free CPU hosting; .pt kept as training sources).
-# Tags shown in the UI come from these keys (v1, v2, …).
+# Tags shown in the UI come from these keys (v1, v2, …). Add entries to restore multi-version.
 MODELS: dict[str, Path] = {
-    "v1": _MODEL_DIR / "ppo_step_2543143.onnx",
-    "v2": _MODEL_DIR / "ppo_final.onnx",
+    "v1": _MODEL_DIR / "ppo_final.onnx",
 }
 
 # Default tag when the client does not specify one.
-DEFAULT_MODEL_VERSION = "v2"
+DEFAULT_MODEL_VERSION = "v1"
 
 # Inference device hint ("cpu" or "cuda"). Free hosts are CPU-only.
 # ONNX Runtime always uses CPUExecutionProvider in the companion image.

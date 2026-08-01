@@ -14,14 +14,14 @@ Edit `companion/settings.py`:
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `MODELS` | `v1` → `ppo_step_2543143.onnx`, `v2` → `ppo_final.onnx` | Named checkpoints (UI tags) |
-| `DEFAULT_MODEL_VERSION` | `"v2"` | Tag used when the client omits one |
+| `MODELS` | `v1` → `ppo_final.onnx` | Named checkpoints (UI tags; add keys to restore multi-version) |
+| `DEFAULT_MODEL_VERSION` | `"v1"` | Tag used when the client omits one |
 | `DEVICE` / `COMPANION_DEVICE` | `"cpu"` | Device hint (ONNX Runtime uses CPU in deploy) |
 | `WAIT_CACHE_TTL_SEC` | `45` | Live-wait cache lifetime |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address (`PORT` overridden by hosts) |
 | `RELOAD` | `False` | Uvicorn auto-reload (dev only) |
 
-Place real `.onnx` files under `companion/model/` for each tag (committed for deploy). Missing files fall back to a disposable stub when torch is installed (banner warns you). Switch versions in the UI with the **V1 / V2** tags; `/api/recommend` accepts `model_version`.
+Place real `.onnx` files under `companion/model/` for each tag (committed for deploy). Missing files fall back to a disposable stub when torch is installed (banner warns you). Version tags in the UI come from `MODELS` keys (currently **V1** only); `/api/recommend` accepts `model_version`.
 
 ### Refreshing ONNX after training
 
