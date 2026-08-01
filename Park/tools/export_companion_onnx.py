@@ -60,6 +60,9 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
 
     guest = torch.zeros(1, GUEST_FEAT_DIM, dtype=torch.float32)
     ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32)
+    # Open rides so the route decoder's empty-mask fallback is traced into ONNX.
+    ride[..., 2] = 1.0
+    ride[..., 5] = 0.1
     env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM, dtype=torch.float32)
 
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,8 +113,8 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
         encoding="utf-8",
     )
     print(
-        f"OK {pt_path.name} → {onnx_path.name} "
-        f"(step={step}, {size_mb:.1f} MiB, max|Δ|={max_abs:.3e}, "
+        f"OK {pt_path.name} -> {onnx_path.name} "
+        f"(step={step}, {size_mb:.1f} MiB, max_abs_delta={max_abs:.3e}, "
         f"route_match={route_match}, stub={bool(extra.get('stub'))})"
     )
     if max_abs > 1e-4:

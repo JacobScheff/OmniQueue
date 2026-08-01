@@ -204,9 +204,11 @@ class ParkRouterModel(nn.Module):
                 mask_r = build_tail_ride_mask(ride_dynamic_features, picked)
                 # If nothing legal remains, allow any unfinished open ride (still masked by picked).
                 none = ~mask_r.any(dim=-1)
-                if none.any():
-                    fallback = (ride_dynamic_features[..., 2] > 0.5) & (~picked)
-                    mask_r = torch.where(none.unsqueeze(-1), fallback, mask_r)
+                fallback = (ride_dynamic_features[..., 2] > 0.5) & (~picked)
+                # Always blend (identity when any legal) so ONNX traces the path;
+                # use &/| not bool torch.where — ORT has no Where(bool).
+                none_b = none.unsqueeze(-1)
+                mask_r = (fallback & none_b) | (mask_r & ~none_b)
                 logits = apply_action_mask(ride_logits, mask_r)
                 # Pad to full action dim unused; sample in ride space only.
                 mask = mask_r
