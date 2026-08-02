@@ -126,7 +126,11 @@ class HybridDriver:
     def _decision_from_obs(self, now_sec: int, obs) -> DecisionRequest:
         flat = np.asarray(obs.flat(), dtype=np.float32)
         guest = np.asarray(obs.guest, dtype=np.float32)
-        ride = np.asarray(obs.ride, dtype=np.float32).reshape(34, 8)
+        from Park.training.features import NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+
+        ride = np.asarray(obs.ride, dtype=np.float32).reshape(
+            NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+        )
         return DecisionRequest(
             now_sec=int(now_sec),
             obs_flat=flat,

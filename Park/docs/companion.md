@@ -89,7 +89,7 @@ Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX
 
 ## Observation mapping
 
-Live features are built in `companion/server/obs.py` to match training (`FLAT_OBS_DIM=322`):
+Live features are built in `companion/server/obs.py` to match training (`FLAT_OBS_DIM=356`):
 
 | Slot | Source |
 |------|--------|
@@ -97,9 +97,12 @@ Live features are built in `companion/server/obs.py` to match training (`FLAT_OB
 | Duration / capacity | `config.RIDES` |
 | Walk | `park_graph.walk_times_to_rides` from user location |
 | History / must-do | User inputs |
-| Prefs | User weights (L1-normalized) |
+| Unfinished pref (ride feat 8) | Sharpened user pref when history is 0; else 0 |
+| Prefs | User weights (L1-normalized) on guest feats |
 | Incoming | **0** (not available from the public API) |
 | Env mean wait / broken frac | Aggregated from the live board |
+
+**Model versions:** `v1` / `v2` keep legacy ONNX with ride feat dim 8 — `recommend.py` slices off column 8 before inference. `v3` expects dim 9 (place `companion/model/v3.pt`, export with `tools/export_companion_onnx.py --only v3`).
 
 ## What-if force-first + slot distributions
 

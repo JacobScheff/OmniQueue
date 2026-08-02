@@ -52,7 +52,7 @@ python training/ppo_train.py \
   --device cpu
 ```
 
-`--init-checkpoint` loads matching weight tensors into the PPO agent (fresh Adam). Old single-action checkpoints warm-start the shared encoder / pointer projections; the GRU decoder starts fresh. Checkpoints carry `arch_version=route_v1`.
+`--init-checkpoint` loads matching weight tensors into the PPO agent (fresh Adam). Old single-action checkpoints warm-start the shared encoder / pointer projections; the GRU decoder starts fresh. An 8-feat ride encoder widens into the current 9-feat first linear (new unfinished-pref column zeroed). Checkpoints carry `arch_version=route_v1`.
 
 Each day calls `ParkEnv.reset_personal(seed, n_focals)`:
 
@@ -100,17 +100,19 @@ python training/eval_policy.py \
 | Tensor | Shape | Content |
 |--------|-------|---------|
 | Guest features | `(B, 46)` | Prefs `0..33`, remaining sharpened pref mass `34` (`Σ pref**PPO_PREF_REWARD_EXP` unfinished), party state `35..44`, elapsed since spawn `45` |
-| Ride features | `(B, 34, 8)` | Wait, incoming, open, duration, capacity, walk, history, must-do |
+| Ride features | `(B, 34, 9)` | Wait, incoming, open, duration, capacity, walk, history, must-do, unfinished sharpened pref (`pref**PPO_PREF_REWARD_EXP`, else 0 if already ridden) |
 | Env features | `(B, 4)` | Time of day, mean wait, **wait-variance slot zeroed**, broken fraction |
 | Route actions | `(B, K)` | `K=PPO_ROUTE_K` (default 6); rides `0–33`, or exit `34` / idle `35` in slot 0 only; later slots `-1` pad after exit/idle |
 | Commit | scalar | `route[0]` applied in the DES / companion |
 
-Flat observation size: **322** (`FLAT_OBS_DIM` = 46 + 34×8 + 4).
+Flat observation size: **356** (`FLAT_OBS_DIM` = 46 + 34×9 + 4).
+
+Warm-start from an 8-feat checkpoint: `--init-checkpoint` loads matching tensors and **widens** `ride_feat_proj.0` (copies old columns, zeros the new unfinished-pref column). Fresh Adam.
 
 ### Architecture (`ParkRouterModel`)
 
 - **`d_model=256`** single-party encoder (no guest transformer / no G axis).
-- Ride encoder: ride-id embedding + MLP over the 8 dynamic feats.
+- Ride encoder: ride-id embedding + MLP over the 9 dynamic feats.
 - **Autoregressive pointer decoder:** slot 0 uses guest query × ride keys + exit/idle head; slots `1..K-1` continue with a GRU cell + no-replacement ride pointer (open + unfinished only).
 - Critic head over guest + mean ride embedding + env (single scalar).
 - **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal on slot 0.

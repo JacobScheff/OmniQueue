@@ -1908,6 +1908,9 @@ private:
             obs.ride[base + 6] =
                 std::min(static_cast<float>(parties_.ride_history[party_id][r]), 10.0f) / 10.0f;
             obs.ride[base + 7] = parties_.must_do_remaining[party_id][r] != 0 ? 1.0f : 0.0f;
+            obs.ride[base + 8] = parties_.ride_history[party_id][r] == 0
+                                     ? pref_value(parties_.preferences[party_id][static_cast<size_t>(r)])
+                                     : 0.0f;
         }
 
         double mean = 0.0;

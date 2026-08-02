@@ -21,6 +21,7 @@ from Park.training.features import (
     NUM_ACTIONS,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
+    RIDE_DYNAMIC_FEAT_DIM_LEGACY,
     RIDE_FEAT_DURATION,
     RIDE_FEAT_OPEN,
     RIDE_FEAT_WAIT,
@@ -46,6 +47,18 @@ def _split_flat_obs(obs_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nd
     ride = flat[guest_end:ride_end].reshape(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     env = flat[ride_end:].reshape(1, ENV_DYNAMIC_FEAT_DIM)
     return guest, ride, env
+
+
+def _adapt_ride_feat_dim(ride: np.ndarray, expected_dim: int) -> np.ndarray:
+    """Slice or zero-pad ride feats so the last axis matches the loaded model."""
+    cur = int(ride.shape[-1])
+    exp = int(expected_dim)
+    if cur == exp:
+        return ride
+    if cur > exp:
+        return np.ascontiguousarray(ride[..., :exp])
+    pad = np.zeros((*ride.shape[:-1], exp - cur), dtype=ride.dtype)
+    return np.concatenate([ride, pad], axis=-1)
 
 
 def build_action_mask_numpy(
@@ -164,6 +177,7 @@ class Recommender:
         self._onnx_has_slots = False
         self._onnx_has_force = False
         self._onnx_outputs: list[str] = []
+        self.ride_feat_dim = RIDE_DYNAMIC_FEAT_DIM
         self.route_k = default_route_k()
         self.step = 0
         self.meta: dict = {}
@@ -218,23 +232,30 @@ class Recommender:
         self.checkpoint_path = path
         self.route_k = int(self.meta.get("route_k", default_route_k()))
         outs = [o.name for o in self._session.get_outputs()]
-        ins = [i.name for i in self._session.get_inputs()]
+        ins = {i.name: i for i in self._session.get_inputs()}
         self._onnx_outputs = outs
         self._onnx_has_route = "route" in outs and "slot0_logits" in outs
         self._onnx_has_slots = "slot_logits" in outs and "slot_masks" in outs
         self._onnx_has_force = "force_first" in ins
+        ride_dim = self.meta.get("ride_dynamic_feat_dim")
+        if ride_dim is None and "ride" in ins:
+            shape = ins["ride"].shape
+            if shape is not None and len(shape) >= 1:
+                last = shape[-1]
+                if isinstance(last, int) and last > 0:
+                    ride_dim = last
+        self.ride_feat_dim = int(ride_dim or RIDE_DYNAMIC_FEAT_DIM_LEGACY)
 
     def _load_torch(self, path: Path) -> None:
         import torch
 
-        from Park.model import forward_route_with_mask, obs_flat_to_tensors
+        from Park.model import forward_route_with_mask
         from Park.training.checkpoint import load_checkpoint
 
         model, step, meta = load_checkpoint(path, self.device)
         model.eval()
         self._torch_model = model
         self._torch_forward_route = forward_route_with_mask
-        self._torch_split = obs_flat_to_tensors
         self._torch = torch
         self.step = int(step)
         self.meta = dict(meta or {})
@@ -242,6 +263,15 @@ class Recommender:
         self._backend = "torch"
         self.checkpoint_path = path
         self.route_k = int(getattr(model, "route_k", default_route_k()))
+        cfg_dim = None
+        if isinstance(meta, dict):
+            cfg_dim = meta.get("ride_dynamic_feat_dim")
+        if cfg_dim is None:
+            try:
+                cfg_dim = int(model.ride_feat_proj[0].in_features)
+            except Exception:  # noqa: BLE001
+                cfg_dim = RIDE_DYNAMIC_FEAT_DIM
+        self.ride_feat_dim = int(cfg_dim)
 
     def _load_or_create_stub(self, path: Path) -> None:
         if path.is_file():
@@ -313,6 +343,7 @@ class Recommender:
                         "path": str(path),
                         "arch_version": "route_v2",
                         "route_k": int(model.route_k),
+                        "ride_dynamic_feat_dim": int(RIDE_DYNAMIC_FEAT_DIM),
                     },
                     indent=2,
                 ),
@@ -340,6 +371,7 @@ class Recommender:
                 self._backend == "torch" or self._onnx_has_slots
             ),
             "route_k": int(self.route_k),
+            "ride_dynamic_feat_dim": int(self.ride_feat_dim),
         }
 
     def recommend(
@@ -349,6 +381,8 @@ class Recommender:
         force_first: int | None = None,
     ) -> dict:
         guest, ride, env = _split_flat_obs(obs_flat)
+        # Masking uses the full live ride tensor; models may expect a legacy width.
+        model_ride = _adapt_ride_feat_dim(ride, self.ride_feat_dim)
         legal = build_action_mask_numpy(guest, ride, env)[0]
         route_ids: list[int] = []
         slot_logits_np: np.ndarray | None = None
@@ -369,7 +403,7 @@ class Recommender:
         if self._session is not None:
             feeds: dict[str, np.ndarray] = {
                 "guest": guest,
-                "ride": ride,
+                "ride": model_ride,
                 "env": env,
             }
             if force_first is not None and not self._onnx_has_force:
@@ -408,12 +442,9 @@ class Recommender:
         elif self._torch_model is not None:
             torch = self._torch
             with torch.no_grad():
-                obs = torch.tensor(
-                    np.asarray(obs_flat, dtype=np.float32),
-                    dtype=torch.float32,
-                    device=self.device,
-                ).unsqueeze(0)
-                g, r, e = self._torch_split(obs)
+                g = torch.tensor(guest, dtype=torch.float32, device=self.device)
+                r = torch.tensor(model_ride, dtype=torch.float32, device=self.device)
+                e = torch.tensor(env, dtype=torch.float32, device=self.device)
                 ff = None
                 if force_first is not None:
                     ff = torch.tensor(

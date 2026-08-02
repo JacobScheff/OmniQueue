@@ -47,6 +47,31 @@ def default_model(device: str | torch.device = "cpu") -> ParkRouterModel:
     return model.to(device)
 
 
+def _try_widen_ride_feat_proj(model: ParkRouterModel, state: dict) -> bool:
+    """Copy a narrower ``ride_feat_proj.0`` into a wider first linear; zero new columns.
+
+    Used when warm-starting from checkpoints trained with fewer ride dynamic feats
+    (e.g. 8 → 9 after adding unfinished-pref). Returns True if a widen was applied.
+    """
+    key_w = "ride_feat_proj.0.weight"
+    key_b = "ride_feat_proj.0.bias"
+    if key_w not in state:
+        return False
+    layer = model.ride_feat_proj[0]
+    tw = layer.weight
+    sw = state[key_w]
+    if tw.ndim != 2 or sw.ndim != 2:
+        return False
+    if tw.shape[0] != sw.shape[0] or tw.shape[1] <= sw.shape[1]:
+        return False
+    with torch.no_grad():
+        tw.zero_()
+        tw[:, : sw.shape[1]].copy_(sw.to(device=tw.device, dtype=tw.dtype))
+        if key_b in state and layer.bias is not None:
+            layer.bias.copy_(state[key_b].to(device=layer.bias.device, dtype=layer.bias.dtype))
+    return True
+
+
 def _load_state_flexible(model: ParkRouterModel, state: dict) -> list[str]:
     """Load matching tensors; allow encoder warm-start from single-action checkpoints."""
     model_state = model.state_dict()
@@ -64,6 +89,8 @@ def _load_state_flexible(model: ParkRouterModel, state: dict) -> list[str]:
         notes.append(f"missing={len(missing)}")
     if unexpected:
         notes.append(f"unexpected={len(unexpected)}")
+    if _try_widen_ride_feat_proj(model, state):
+        notes.append("widened_ride_feat_proj")
     return notes
 
 

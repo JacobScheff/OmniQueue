@@ -182,6 +182,10 @@ def build_live_observation(
             ride[r, 5] = min(float(walk_secs[r]), 3600.0) / 3600.0
         ride[r, 6] = min(float(history[r]), 10.0) / 10.0
         ride[r, 7] = 1.0 if must_remaining[r] else 0.0
+        if history[r] == 0:
+            ride[r, 8] = float(np.power(max(float(prefs[r]), 0.0), pref_exp))
+        else:
+            ride[r, 8] = 0.0
 
     warnings.append("incoming queue pressure set to 0 (not provided by wait API)")
 

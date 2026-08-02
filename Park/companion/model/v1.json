@@ -4,6 +4,7 @@
   "source_pt": "C:\\Users\\jacob\\Documents\\VSC\\OmniQueue\\Park\\companion\\model\\v1.pt",
   "arch_version": "route_v1",
   "route_k": 6,
+  "ride_dynamic_feat_dim": 8,
   "phase": "ppo",
   "days_done": 50,
   "num_focals": 24,

@@ -25,9 +25,10 @@ constexpr int kMinDwellSec = 2 * 3600;
 // (Σ preference**kPrefRewardExp over unfinished rides), 35..44 party state,
 // 45 elapsed_since_spawn / DAY_SECONDS.
 constexpr int kGuestFeatDim = 46;
-// Per-ride dynamic feats (party-relative walk/history/must-do included):
-// 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do
-constexpr int kRideDynamicFeatDim = 8;
+// Per-ride dynamic feats (party-relative walk/history/must-do/pref included):
+// 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do,
+// 8 unfinished sharpened pref (preference**kPrefRewardExp, else 0 if already ridden)
+constexpr int kRideDynamicFeatDim = 9;
 constexpr int kEnvDynamicFeatDim = 4;
 constexpr int kNumActions = 36;  // 34 rides + exit + idle
 constexpr int kFlatObsDim = kGuestFeatDim + kNumRides * kRideDynamicFeatDim + kEnvDynamicFeatDim;

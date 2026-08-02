@@ -30,7 +30,6 @@ from Park.training.features import (
     GUEST_FEAT_DIM,
     GUEST_FEAT_TIME_LEFT,
     NUM_RIDES,
-    RIDE_DYNAMIC_FEAT_DIM,
 )
 
 
@@ -69,6 +68,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     model.eval()
     wrapped = _CompanionExportWrapper(model)
     wrapped.eval()
+    ride_feat_dim = int(model.ride_feat_proj[0].in_features)
 
     guest = torch.zeros(1, GUEST_FEAT_DIM, dtype=torch.float32)
     # Mid-day open park so slot-0 can pick a ride; soft-close (time_left=0)
@@ -76,7 +76,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     # under legacy torch.onnx tracing.
     guest[..., GUEST_FEAT_TIME_LEFT] = 0.5
     guest[..., :NUM_RIDES] = 1.0 / float(NUM_RIDES)
-    ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM, dtype=torch.float32)
+    ride = torch.zeros(1, NUM_RIDES, ride_feat_dim, dtype=torch.float32)
     # Open rides so the route decoder's empty-mask fallback is traced into ONNX.
     ride[..., 2] = 1.0
     ride[..., 5] = 0.1
@@ -105,7 +105,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     g = rng.standard_normal((1, GUEST_FEAT_DIM), dtype=np.float32)
     g[..., GUEST_FEAT_TIME_LEFT] = 0.5
     g[..., :NUM_RIDES] = 1.0 / float(NUM_RIDES)
-    r = rng.standard_normal((1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
+    r = rng.standard_normal((1, NUM_RIDES, ride_feat_dim), dtype=np.float32)
     e = rng.standard_normal((1, ENV_DYNAMIC_FEAT_DIM), dtype=np.float32)
     # Open all rides so masks are non-degenerate for the smoke compare.
     r[..., 2] = 1.0
@@ -150,6 +150,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
         "source_pt": str(pt_path),
         "arch_version": "route_v2",
         "route_k": int(model.route_k),
+        "ride_dynamic_feat_dim": ride_feat_dim,
         **{k: v for k, v in (extra or {}).items() if isinstance(v, (str, int, float, bool))},
     }
     onnx_path.with_suffix(".json").write_text(

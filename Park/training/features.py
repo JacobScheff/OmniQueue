@@ -14,8 +14,11 @@ if TYPE_CHECKING:
 GUEST_FEAT_DIM = 46
 # 0..33 preferences, 34 remaining sharpened pref mass (Σ pref**EXP unfinished),
 # 35..44 party state, 45 elapsed_since_spawn
-# 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do
-RIDE_DYNAMIC_FEAT_DIM = 8
+# 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do,
+# 8 unfinished sharpened pref (0 if already ridden)
+RIDE_DYNAMIC_FEAT_DIM = 9
+# Legacy companion ONNX (v1/v2) was trained with 8 ride feats (no pref column).
+RIDE_DYNAMIC_FEAT_DIM_LEGACY = 8
 ENV_DYNAMIC_FEAT_DIM = 4
 NUM_RIDES = 34
 NUM_ACTIONS = 36  # 34 rides + exit + idle
@@ -38,6 +41,7 @@ RIDE_FEAT_DURATION = 3
 RIDE_FEAT_WALK = 5
 RIDE_FEAT_HISTORY = 6
 RIDE_FEAT_MUST_DO = 7
+RIDE_FEAT_UNFINISHED_PREF = 8
 
 # Guest feature indices used for masking / diagnostics
 GUEST_FEAT_REMAINING_PREF_MASS = 34
@@ -213,6 +217,10 @@ def rewrite_prefs_must_dos(
         new_ride[b, :, RIDE_FEAT_MUST_DO] = 0.0
         for mid in must_ids:
             new_ride[b, mid, RIDE_FEAT_MUST_DO] = 1.0
+        if new_ride.size(-1) > RIDE_FEAT_UNFINISHED_PREF:
+            new_ride[b, :, RIDE_FEAT_UNFINISHED_PREF] = sharpened * (
+                ~history[b]
+            ).to(dtype)
     return new_guest, new_ride
 
 

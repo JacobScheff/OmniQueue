@@ -344,7 +344,7 @@ Do not enable consistency/walk at full suggested coefs until slot-0 must-do rate
 | Consistency crystallizes a global Fantasyland loop | Front-weighted only; coef ≪ must-do; CF KL on `a_0`; consistency is vs **party’s own** prev plan |
 | Walk terms dominate → land camping, ignore prefs | Tiny coefs; normalize by `WALK_NORM_SEC`; watch component logs |
 | CF KL too strong → ignore waits | Hinge margin + modest `PPO_CF_COEF`; never unmasked KL maximize |
-| Tail slots meaningless / noisy | Low entropy weight on tail; low consist weight; accept tails as soft lookahead |
+| Tail slots meaningless / noisy | Low entropy weight on tail; low consist weight; accept tails as soft lookahead; unfinished sharpened pref is now ride feat 8 so pointer keys stay pref-aware after slot 0 |
 | BC gap / cold decoder | Encoder warm-start; optional synthetic route BC later |
 | ONNX / companion break | Version meta; ship decoder wrapper; refuse old single-logit models |
 | Credit assignment longer | Unchanged DES horizon; route is action representation, not open-loop multi-commit |

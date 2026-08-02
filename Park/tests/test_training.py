@@ -107,7 +107,43 @@ def test_forward_with_mask_sets_illegal_logits():
 def test_train_config_defaults():
     cfg = TrainConfig()
     assert cfg.d_model == 256
-    assert cfg.ride_dynamic_feat_dim == 8
+    assert cfg.ride_dynamic_feat_dim == RIDE_DYNAMIC_FEAT_DIM
+
+
+def test_warm_start_widens_ride_feat_proj_from_legacy_dim(tmp_path):
+    """8-feat checkpoints widen ride_feat_proj.0 into the current 9-feat model."""
+    from Park.model import ParkRouterModel
+    from Park.training.checkpoint import _load_state_flexible
+    from Park.training.features import (
+        D_MODEL,
+        ENV_DYNAMIC_FEAT_DIM,
+        GUEST_FEAT_DIM,
+        NUM_RIDES,
+        RIDE_DYNAMIC_FEAT_DIM,
+        RIDE_DYNAMIC_FEAT_DIM_LEGACY,
+    )
+
+    device = torch.device("cpu")
+    legacy = ParkRouterModel(
+        guest_feat_dim=GUEST_FEAT_DIM,
+        num_rides=NUM_RIDES,
+        ride_dynamic_feat_dim=RIDE_DYNAMIC_FEAT_DIM_LEGACY,
+        environment_dynamic_feat_dim=ENV_DYNAMIC_FEAT_DIM,
+        d_model=D_MODEL,
+    ).to(device)
+    with torch.no_grad():
+        legacy.ride_feat_proj[0].weight.fill_(0.5)
+        legacy.ride_feat_proj[0].bias.fill_(0.1)
+        legacy.q_proj.weight.fill_(0.3)
+
+    target = default_model(device)
+    notes = _load_state_flexible(target, legacy.state_dict())
+    assert any("widened_ride_feat_proj" in n for n in notes)
+    w = target.ride_feat_proj[0].weight.detach()
+    assert w.shape == (D_MODEL, RIDE_DYNAMIC_FEAT_DIM)
+    assert torch.allclose(w[:, :RIDE_DYNAMIC_FEAT_DIM_LEGACY], torch.full_like(w[:, :8], 0.5))
+    assert torch.allclose(w[:, RIDE_DYNAMIC_FEAT_DIM_LEGACY:], torch.zeros_like(w[:, 8:]))
+    assert torch.allclose(target.q_proj.weight, torch.full_like(target.q_proj.weight, 0.3))
 
 
 def test_ppo_warm_start_keeps_optimizer_linked(tmp_path):

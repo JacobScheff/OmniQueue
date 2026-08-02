@@ -75,10 +75,16 @@ def test_build_live_observation_shape_and_mask_inputs():
     assert np.isfinite(flat).all()
     assert meta["must_remaining"][0] == 1
     assert meta["must_remaining"][5] == 0
-    # history ride feat
-    ride = flat[46 : 46 + NUM_RIDES * 8].reshape(NUM_RIDES, 8)
+    # history / must-do / unfinished-pref ride feats
+    from Park.training.features import RIDE_DYNAMIC_FEAT_DIM
+
+    ride = flat[46 : 46 + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM].reshape(
+        NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
+    )
     assert ride[5, 6] == pytest.approx(0.2)
     assert ride[0, 7] == pytest.approx(1.0)
+    assert ride[5, 8] == pytest.approx(0.0)  # already ridden → no pref mass
+    assert ride[0, 8] > 0.0
 
 
 def test_recommender_stub_smoke(tmp_path):
@@ -118,6 +124,41 @@ def test_recommender_stub_smoke(tmp_path):
     assert forced["recommended"]["action_id"] == force_id
     assert forced["natural_recommended"]["action_id"] == natural0
     assert len(forced["distributions_by_slot"]) == len(forced["route"])
+
+
+def test_adapt_ride_feat_dim_slices_legacy_width():
+    from Park.companion.server.recommend import _adapt_ride_feat_dim
+    from Park.training.features import RIDE_DYNAMIC_FEAT_DIM, RIDE_DYNAMIC_FEAT_DIM_LEGACY
+
+    ride = np.ones((1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
+    ride[..., 8] = 0.42
+    slim = _adapt_ride_feat_dim(ride, RIDE_DYNAMIC_FEAT_DIM_LEGACY)
+    assert slim.shape == (1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM_LEGACY)
+    assert slim[..., 7].max() == pytest.approx(1.0)
+
+
+def test_legacy_onnx_accepts_dim9_live_obs():
+    """Committed v1/v2 ONNX (ride dim 8) must run against the live dim-9 obs."""
+    from pathlib import Path
+
+    from Park.companion.server.recommend import Recommender
+
+    onnx_path = Path(__file__).resolve().parents[1] / "companion" / "model" / "v2.onnx"
+    if not onnx_path.is_file():
+        pytest.skip("companion/model/v2.onnx not present")
+    rec = Recommender(checkpoint=onnx_path, device="cpu")
+    assert rec.ride_feat_dim == 8
+    weights = default_preference_weights()
+    state = CompanionState(
+        preference_weights=weights,
+        must_dos=np.zeros(NUM_RIDES, dtype=np.uint8),
+        history=np.zeros(NUM_RIDES, dtype=np.int32),
+        location_node_id=config.NODE_ENTRANCE,
+    )
+    flat, _ = build_live_observation(state, _board_all_open(), now_sec=3600)
+    out = rec.recommend(flat)
+    assert out["recommended"]["action_id"] in range(NUM_ACTIONS)
+    assert out["model"]["ride_dynamic_feat_dim"] == 8
 
 
 def test_model_registry_versions(tmp_path, monkeypatch):

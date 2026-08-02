@@ -15,9 +15,13 @@ _MODEL_DIR = Path(__file__).resolve().parent / "model"
 
 # Named PPO checkpoints (ONNX for free CPU hosting; .pt kept as training sources).
 # Tags shown in the UI come from these keys (v1, v2, …). Add entries to restore multi-version.
+# v1/v2: legacy ride feat dim 8 (no per-ride pref column). Recommend slices the live
+# dim-9 obs before ONNX. v3: ride feat dim 9 with unfinished sharpened pref — place
+# companion/model/v3.pt then run tools/export_companion_onnx.py --only v3.
 MODELS: dict[str, Path] = {
     "v1": _MODEL_DIR / "v1.onnx",
     "v2": _MODEL_DIR / "v2.onnx",
+    "v3": _MODEL_DIR / "v3.onnx",
 }
 
 # Default tag when the client does not specify one.
