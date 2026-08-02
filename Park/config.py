@@ -220,7 +220,7 @@ BC_LR = 3e-4
 # ---------------------------------------------------------------------------
 PPO_SAVE_DIR = "checkpoints/ppo"
 PPO_SAVE_EVERY = 5_000           # save checkpoint every N routing steps
-PPO_LEARNING_RATE = 1e-4
+PPO_LEARNING_RATE = 1e-5
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
 PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
@@ -257,8 +257,8 @@ PPO_CF_MARGIN = 0.15
 PPO_CF_FRAC = 0.25
 # Soft preference ranking on early route-tail slots (training only; see docs/training.md).
 # Encourages slots k∈PPO_PREF_RANK_SLOTS to put mass on unfinished high-pref / must-do rides.
-PPO_PREF_RANK_COEF = 0.15
-PPO_PREF_RANK_SLOTS = (1, 2)  # 0-indexed; slot 0 already has CF + primary reward
+PPO_PREF_RANK_COEF = 0.025
+PPO_PREF_RANK_SLOTS = (1, 2, 3, 4, 5)  # 0-indexed; slot 0 already has CF + primary reward
 PPO_PREF_RANK_MUST_DO_BONUS = 0.5  # added to soft-target score for remaining must-dos
 MODEL_ARCH_VERSION = "route_v1"
 
