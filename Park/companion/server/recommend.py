@@ -10,7 +10,6 @@ import numpy as np
 
 from Park.companion import settings
 from Park.companion.server.obs import ACTION_LABELS, action_label
-from Park import config as park_config
 from Park.training.features import (
     CLOSE_DRAIN_SEC,
     DAY_SECONDS,
@@ -106,31 +105,6 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
     return (e / e.sum()).astype(np.float32)
 
 
-def _close_call_sample(probs: np.ndarray) -> int | None:
-    """If top-2 gap is small, sample with temperature / top-p; else return None."""
-    margin = float(getattr(park_config, "INFER_CLOSE_MARGIN", 0.12))
-    temp = float(getattr(park_config, "INFER_TEMP", 0.8))
-    top_p = float(getattr(park_config, "INFER_TOP_P", 0.9))
-    p = np.asarray(probs, dtype=np.float64).reshape(-1)
-    if p.size < 2:
-        return None
-    order = np.argsort(-p)
-    gap = float(p[order[0]] - p[order[1]])
-    if gap >= margin:
-        return None
-    logits = np.log(np.clip(p, 1e-12, None)) / max(temp, 1e-6)
-    scaled = _softmax(logits)
-    # Nucleus filter
-    order = np.argsort(-scaled)
-    cumsum = np.cumsum(scaled[order])
-    keep = cumsum <= top_p
-    keep[0] = True
-    filtered = np.zeros_like(scaled)
-    filtered[order[keep]] = scaled[order[keep]]
-    filtered = filtered / max(filtered.sum(), 1e-12)
-    return int(np.random.choice(filtered.size, p=filtered))
-
-
 def _read_meta(path: Path) -> dict:
     meta_path = path.with_suffix(path.suffix + ".json")
     if not meta_path.is_file():
@@ -201,6 +175,7 @@ class Recommender:
         self._onnx_has_route = False
         self._onnx_has_slots = False
         self._onnx_has_force = False
+        self._onnx_has_force_any_slot = False
         self._onnx_outputs: list[str] = []
         self.ride_feat_dim = RIDE_DYNAMIC_FEAT_DIM
         self.route_k = default_route_k()
@@ -261,7 +236,8 @@ class Recommender:
         self._onnx_outputs = outs
         self._onnx_has_route = "route" in outs and "slot0_logits" in outs
         self._onnx_has_slots = "slot_logits" in outs and "slot_masks" in outs
-        self._onnx_has_force = "force_first" in ins
+        self._onnx_has_force_any_slot = "force_slot" in ins and "force_action" in ins
+        self._onnx_has_force = self._onnx_has_force_any_slot or "force_first" in ins
         ride_dim = self.meta.get("ride_dynamic_feat_dim")
         if ride_dim is None and "ride" in ins:
             shape = ins["ride"].shape
@@ -326,14 +302,15 @@ class Recommender:
                     super().__init__()
                     self.model = m
 
-                def forward(self, guest, ride, env, force_first):
+                def forward(self, guest, ride, env, force_slot, force_action):
                     out = self.model.forward_route(
                         guest,
                         ride,
                         env,
                         routes=None,
                         deterministic=True,
-                        force_first=force_first,
+                        force_slot=force_slot,
+                        force_action=force_action,
                     )
                     return (
                         out.routes.to(dtype=torch.int64),
@@ -349,13 +326,14 @@ class Recommender:
             ride[..., RIDE_FEAT_OPEN] = 1.0
             ride[..., 5] = 0.1
             env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM)
-            force = torch.full((1,), -1, dtype=torch.int64)
+            force_slot = torch.full((1,), -1, dtype=torch.int64)
+            force_action = torch.full((1,), -1, dtype=torch.int64)
             with torch.inference_mode():
                 torch.onnx.export(
                     _Wrap(model),
-                    (guest, ride, env, force),
+                    (guest, ride, env, force_slot, force_action),
                     str(path),
-                    input_names=["guest", "ride", "env", "force_first"],
+                    input_names=["guest", "ride", "env", "force_slot", "force_action"],
                     output_names=["route", "slot0_logits", "slot_logits", "slot_masks"],
                     opset_version=17,
                     dynamo=False,
@@ -392,6 +370,9 @@ class Recommender:
             "backend": self._backend,
             "available": self.checkpoint_path.is_file() and not self.is_stub,
             "supports_force_first": self._backend == "torch" or self._onnx_has_force,
+            "supports_force_any_slot": (
+                self._backend == "torch" or self._onnx_has_force_any_slot
+            ),
             "supports_slot_distributions": (
                 self._backend == "torch" or self._onnx_has_slots
             ),
@@ -399,11 +380,29 @@ class Recommender:
             "ride_dynamic_feat_dim": int(self.ride_feat_dim),
         }
 
+    def _force_feeds(self, slot: int | None, action: int | None) -> dict[str, np.ndarray]:
+        """Build ONNX force inputs, preferring force_slot/force_action, falling
+        back to the legacy single force_first input (slot 0 only)."""
+        if self._onnx_has_force_any_slot:
+            return {
+                "force_slot": np.asarray(
+                    [slot if slot is not None else -1], dtype=np.int64
+                ),
+                "force_action": np.asarray(
+                    [action if action is not None else -1], dtype=np.int64
+                ),
+            }
+        if self._onnx_has_force:
+            ff = action if (slot == 0 and action is not None) else -1
+            return {"force_first": np.asarray([ff], dtype=np.int64)}
+        return {}
+
     def recommend(
         self,
         obs_flat: np.ndarray,
         *,
-        force_first: int | None = None,
+        force_slot: int | None = None,
+        force_action: int | None = None,
     ) -> dict:
         guest, ride, env = _split_flat_obs(obs_flat)
         # Masking uses the full live ride tensor; models may expect a legacy width.
@@ -413,17 +412,36 @@ class Recommender:
         slot_logits_np: np.ndarray | None = None
         slot_masks_np: np.ndarray | None = None
 
-        if force_first is not None:
-            force_first = int(force_first)
-            if force_first < 0 or force_first >= NUM_ACTIONS:
+        if force_slot is not None or force_action is not None:
+            if force_slot is None or force_action is None:
+                raise ValueError("force_slot and force_action must be set together")
+            force_slot = int(force_slot)
+            force_action = int(force_action)
+            if force_slot < 0 or force_slot >= self.route_k:
                 raise ValueError(
-                    f"force_first must be in [0, {NUM_ACTIONS}), got {force_first}"
+                    f"force_slot must be in [0, {self.route_k}), got {force_slot}"
                 )
-            if not bool(legal[force_first]):
+            if force_action < 0 or force_action >= NUM_ACTIONS:
                 raise ValueError(
-                    f"force_first action {force_first} ({action_label(force_first)}) "
+                    f"force_action must be in [0, {NUM_ACTIONS}), got {force_action}"
+                )
+            if force_slot > 0 and force_action >= NUM_RIDES:
+                raise ValueError(
+                    "force_action must be a ride (not exit/idle) for slots after the first"
+                )
+            if force_slot == 0 and not bool(legal[force_action]):
+                raise ValueError(
+                    f"force_action {force_action} ({action_label(force_action)}) "
                     "is not legal under the current mask"
                 )
+            if force_slot > 0 and not self._onnx_has_force_any_slot and self._session is not None:
+                raise RuntimeError(
+                    "This model can only force route slot 0; re-export with "
+                    "Park/tools/export_companion_onnx.py to force later stops."
+                )
+        else:
+            force_slot = None
+            force_action = None
 
         if self._session is not None:
             feeds: dict[str, np.ndarray] = {
@@ -431,16 +449,12 @@ class Recommender:
                 "ride": model_ride,
                 "env": env,
             }
-            if force_first is not None and not self._onnx_has_force:
+            if force_slot is not None and not self._onnx_has_force:
                 raise RuntimeError(
-                    "This ONNX model does not support force_first; re-export with "
+                    "This ONNX model does not support force pins; re-export with "
                     "Park/tools/export_companion_onnx.py (arch rank_route_v1)."
                 )
-            if self._onnx_has_force:
-                feeds["force_first"] = np.asarray(
-                    [force_first if force_first is not None else -1],
-                    dtype=np.int64,
-                )
+            feeds.update(self._force_feeds(force_slot, force_action))
 
             if getattr(self, "_onnx_has_route", False):
                 if self._onnx_has_slots:
@@ -470,10 +484,14 @@ class Recommender:
                 g = torch.tensor(guest, dtype=torch.float32, device=self.device)
                 r = torch.tensor(model_ride, dtype=torch.float32, device=self.device)
                 e = torch.tensor(env, dtype=torch.float32, device=self.device)
-                ff = None
-                if force_first is not None:
-                    ff = torch.tensor(
-                        [force_first], dtype=torch.long, device=self.device
+                fs = None
+                fa = None
+                if force_slot is not None:
+                    fs = torch.tensor(
+                        [force_slot], dtype=torch.long, device=self.device
+                    )
+                    fa = torch.tensor(
+                        [force_action], dtype=torch.long, device=self.device
                     )
                 out = self._torch_forward_route(
                     self._torch_model,
@@ -482,14 +500,13 @@ class Recommender:
                     e,
                     routes=None,
                     deterministic=True,
-                    force_first=ff,
-                    temperature=float(getattr(park_config, "INFER_TEMP", 0.8)),
-                    close_margin=float(
-                        getattr(park_config, "INFER_CLOSE_MARGIN", 0.12)
-                    )
-                    if force_first is None
-                    else 0.0,
-                    top_p=float(getattr(park_config, "INFER_TOP_P", 0.9)),
+                    force_slot=fs,
+                    force_action=fa,
+                    # Always fully deterministic: any two requests with the same
+                    # inputs must agree on the plan, so a route slot shown to the
+                    # guest is guaranteed still reachable if they force-pick it
+                    # (or a later slot) in a follow-up request.
+                    close_margin=0.0,
                 )
                 logits = out.slot0_logits[0].cpu().numpy()
                 legal = out.slot0_mask[0].cpu().numpy().astype(bool)
@@ -506,48 +523,18 @@ class Recommender:
         probs = _softmax(logits)
         natural_action = int(probs.argmax())
         if not route_ids:
-            route_ids = [force_first if force_first is not None else natural_action]
-
-        # Close-call diversity for ONNX (torch path samples inside forward_route).
-        if (
-            force_first is None
-            and self._session is not None
-            and self._onnx_has_force
-        ):
-            sampled = _close_call_sample(probs)
-            if sampled is not None and sampled != int(route_ids[0]) and bool(legal[sampled]):
-                feeds_ff = {
-                    "guest": guest,
-                    "ride": model_ride,
-                    "env": env,
-                    "force_first": np.asarray([sampled], dtype=np.int64),
-                }
-                if self._onnx_has_slots:
-                    route_out, logits2, slot_logits_np, slot_masks_np = self._session.run(
-                        ["route", "slot0_logits", "slot_logits", "slot_masks"],
-                        feeds_ff,
-                    )
-                    slot_logits_np = np.asarray(slot_logits_np, dtype=np.float32)
-                    slot_masks_np = np.asarray(slot_masks_np, dtype=np.float32) > 0.5
-                else:
-                    route_out, logits2 = self._session.run(
-                        ["route", "slot0_logits"], feeds_ff
-                    )
-                route_ids = [
-                    int(x)
-                    for x in np.asarray(route_out).reshape(-1).tolist()
-                    if int(x) >= 0
-                ]
-                # Keep natural Stage A logits for the distribution UI.
-                del logits2
+            forced_slot0 = force_action if (force_slot == 0 and force_action is not None) else None
+            route_ids = [forced_slot0 if forced_slot0 is not None else natural_action]
 
         # Recommended follows the plan's committed next action (forced when set).
         action = int(route_ids[0])
-        if force_first is not None and action != force_first:
-            raise RuntimeError(
-                f"Model did not honor force_first={force_first} "
-                f"(got route[0]={action}); re-export ONNX as rank_route_v1."
-            )
+        if force_slot is not None:
+            if force_slot >= len(route_ids) or route_ids[force_slot] != force_action:
+                raise RuntimeError(
+                    f"Model did not honor force at slot {force_slot} "
+                    f"action={force_action} ({action_label(force_action)}); it may not "
+                    "be reachable as a candidate at that stop, or the export is stale."
+                )
 
         distribution = _dist_rows(logits, legal, action_dim=NUM_ACTIONS)
 
@@ -605,7 +592,8 @@ class Recommender:
                 "prob": float(probs[natural_action]),
                 "legal": bool(legal[natural_action]),
             },
-            "forced_first": force_first,
+            "forced_slot": force_slot,
+            "forced_action": force_action,
             "route": route,
             "distribution": distribution,
             "distributions_by_slot": distributions_by_slot,
@@ -644,6 +632,7 @@ class ModelRegistry:
                     "backend": "onnxruntime" if p.suffix.lower() == ".onnx" else "torch",
                     "available": exists,
                     "supports_force_first": False,
+                    "supports_force_any_slot": False,
                     "supports_slot_distributions": False,
                     "route_k": int(_read_meta(p).get("route_k", default_route_k()))
                     if exists

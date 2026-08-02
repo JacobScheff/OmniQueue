@@ -106,10 +106,14 @@ def test_recommender_stub_smoke(tmp_path):
     assert abs(sum(r["prob"] for r in out["distribution"]) - 1.0) < 1e-3
     assert len(out["distributions_by_slot"]) >= 1
     assert out["distributions_by_slot"][0] == out["distribution"]
-    assert out["forced_first"] is None
-    # Close-call sampling may pick a non-argmax commit; natural is always Stage A argmax.
+    assert out["forced_slot"] is None
+    assert out["forced_action"] is None
+    # Companion inference is always deterministic argmax (no close-call sampling),
+    # so the committed pick matches the natural Stage A argmax when nothing is forced.
     assert out["natural_recommended"]["action_id"] in range(NUM_ACTIONS)
+    assert out["recommended"]["action_id"] == out["natural_recommended"]["action_id"]
     assert out["model"]["supports_force_first"] is True
+    assert out["model"]["supports_force_any_slot"] is True
     assert out["model"]["supports_slot_distributions"] is True
 
     natural0 = out["natural_recommended"]["action_id"]
@@ -118,12 +122,27 @@ def test_recommender_stub_smoke(tmp_path):
     legal_ids = [r["action_id"] for r in out["distribution"] if r["legal"] and r["is_ride"]]
     if force_id not in legal_ids and legal_ids:
         force_id = legal_ids[0] if legal_ids[0] != natural0 else legal_ids[-1]
-    forced = rec.recommend(flat, force_first=force_id)
-    assert forced["forced_first"] == force_id
+    forced = rec.recommend(flat, force_slot=0, force_action=force_id)
+    assert forced["forced_slot"] == 0
+    assert forced["forced_action"] == force_id
     assert forced["route"][0]["action_id"] == force_id
     assert forced["recommended"]["action_id"] == force_id
     assert forced["natural_recommended"]["action_id"] == natural0
     assert len(forced["distributions_by_slot"]) == len(forced["route"])
+
+    # Force a tail slot (any stop after the first) if the route is long enough
+    # and that stop has a legal alternative under the *natural* continuation —
+    # decoding is deterministic, so slot 0 here will match the unforced `out`
+    # response, keeping the slot-1 candidate set consistent between calls.
+    route_k = len(out["distributions_by_slot"])
+    if route_k > 1:
+        tail_dist = out["distributions_by_slot"][1]
+        tail_legal = [r["action_id"] for r in tail_dist if r["legal"] and r["is_ride"]]
+        if tail_legal:
+            tail_forced = rec.recommend(flat, force_slot=1, force_action=tail_legal[0])
+            assert tail_forced["forced_slot"] == 1
+            assert tail_forced["forced_action"] == tail_legal[0]
+            assert tail_forced["route"][1]["action_id"] == tail_legal[0]
 
 
 def test_adapt_ride_feat_dim_identity():

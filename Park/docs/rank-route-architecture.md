@@ -66,7 +66,9 @@ BC clones heuristic next-ride into **Stage A only**.
 
 Config: `INFER_TEMP`, `INFER_TOP_P`, `INFER_CLOSE_MARGIN`.
 
-When top-1 vs top-2 Stage A probability gap `< INFER_CLOSE_MARGIN`, sample with temperature / top-p (companion torch path inside `forward_route`; ONNX path re-forces sampled slot 0). Otherwise argmax. Full Stage A distribution is always returned for UI alternatives.
+When top-1 vs top-2 Stage A probability gap `< INFER_CLOSE_MARGIN`, `forward_route`'s `_sample_or_argmax` samples with temperature / top-p instead of taking the argmax (used by `router/ppo.py` for live play/watch rollouts). Otherwise argmax. Full Stage A distribution is always returned for UI alternatives.
+
+The companion server (`companion/server/recommend.py`) always requests `close_margin=0` (pure argmax, no sampling) for both the torch and ONNX backends — a guest's plan must be a deterministic function of their preferences/waits/must-dos, otherwise a route slot shown in one request could stop being reachable by the time they force-pick it in the next (see `docs/companion.md`).
 
 ---
 

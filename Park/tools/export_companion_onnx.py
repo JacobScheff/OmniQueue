@@ -34,7 +34,7 @@ from Park.training.features import (
 
 
 class _CompanionExportWrapper(torch.nn.Module):
-    """Companion forward: guest/ride/env/force_first → route + slot logits."""
+    """Companion forward: guest/ride/env/force_slot/force_action → route + slot logits."""
 
     def __init__(self, model: ParkRouterModel) -> None:
         super().__init__()
@@ -45,7 +45,8 @@ class _CompanionExportWrapper(torch.nn.Module):
         guest: torch.Tensor,
         ride: torch.Tensor,
         env: torch.Tensor,
-        force_first: torch.Tensor,
+        force_slot: torch.Tensor,
+        force_action: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         out = self.model.forward_route(
             guest,
@@ -53,7 +54,8 @@ class _CompanionExportWrapper(torch.nn.Module):
             env,
             routes=None,
             deterministic=True,
-            force_first=force_first,
+            force_slot=force_slot,
+            force_action=force_action,
         )
         return (
             out.routes.to(dtype=torch.int64),
@@ -82,15 +84,16 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     ride[..., 5] = 0.1
     env = torch.zeros(1, ENV_DYNAMIC_FEAT_DIM, dtype=torch.float32)
     # Export with no-force; force branch still traced via always-on tensor ops.
-    force_first = torch.full((1,), -1, dtype=torch.int64)
+    force_slot = torch.full((1,), -1, dtype=torch.int64)
+    force_action = torch.full((1,), -1, dtype=torch.int64)
 
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     with torch.inference_mode():
         torch.onnx.export(
             wrapped,
-            (guest, ride, env, force_first),
+            (guest, ride, env, force_slot, force_action),
             str(onnx_path),
-            input_names=["guest", "ride", "env", "force_first"],
+            input_names=["guest", "ride", "env", "force_slot", "force_action"],
             output_names=["route", "slot0_logits", "slot_logits", "slot_masks"],
             opset_version=opset,
             dynamo=False,
@@ -110,15 +113,17 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     # Open all rides so masks are non-degenerate for the smoke compare.
     r[..., 2] = 1.0
     r[..., 5] = 0.1
-    ff_none = np.asarray([-1], dtype=np.int64)
-    feeds = {"guest": g, "ride": r, "env": e, "force_first": ff_none}
+    fs_none = np.asarray([-1], dtype=np.int64)
+    fa_none = np.asarray([-1], dtype=np.int64)
+    feeds = {"guest": g, "ride": r, "env": e, "force_slot": fs_none, "force_action": fa_none}
     ort_route, ort_logits, ort_slot_logits, ort_slot_masks = sess.run(None, feeds)
     with torch.inference_mode():
         torch_route, torch_logits, torch_slot_logits, torch_slot_masks = wrapped(
             torch.from_numpy(g),
             torch.from_numpy(r),
             torch.from_numpy(e),
-            torch.from_numpy(ff_none),
+            torch.from_numpy(fs_none),
+            torch.from_numpy(fa_none),
         )
         torch_route = torch_route.numpy()
         torch_logits = torch_logits.numpy()
@@ -130,18 +135,48 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
     ort_rides = [int(x) for x in np.asarray(ort_route).reshape(-1).tolist() if int(x) >= 0]
     unique_rides = len(ort_rides) == len(set(ort_rides))
 
-    # Force-first smoke: pin a legal ride that is not the natural opener when possible.
+    # Force-slot-0 smoke: pin a legal ride that is not the natural opener when possible.
     natural0 = int(ort_rides[0]) if ort_rides else 0
     force_id = 0 if natural0 != 0 else 1
-    ff_force = np.asarray([force_id], dtype=np.int64)
     ort_forced_route, _, _, _ = sess.run(
-        None, {"guest": g, "ride": r, "env": e, "force_first": ff_force}
+        None,
+        {
+            "guest": g,
+            "ride": r,
+            "env": e,
+            "force_slot": np.asarray([0], dtype=np.int64),
+            "force_action": np.asarray([force_id], dtype=np.int64),
+        },
     )
     forced_rides = [
         int(x) for x in np.asarray(ort_forced_route).reshape(-1).tolist() if int(x) >= 0
     ]
     force_ok = bool(forced_rides) and forced_rides[0] == force_id
     force_unique = len(forced_rides) == len(set(forced_rides))
+
+    # Force-tail-slot smoke: pin whatever's legal at slot 1 (any route position
+    # beyond the first) under the natural slot masks, if the route is long enough.
+    tail_force_ok = True
+    tail_slot = 1
+    if int(model.route_k) > tail_slot:
+        sm = np.asarray(ort_slot_masks)[0]  # (K, A)
+        legal_at_slot = np.where(sm[tail_slot, :NUM_RIDES] > 0.5)[0]
+        if legal_at_slot.size > 0:
+            tail_force_id = int(legal_at_slot[0])
+            ort_tail_route, _, _, _ = sess.run(
+                None,
+                {
+                    "guest": g,
+                    "ride": r,
+                    "env": e,
+                    "force_slot": np.asarray([tail_slot], dtype=np.int64),
+                    "force_action": np.asarray([tail_force_id], dtype=np.int64),
+                },
+            )
+            tail_rides = [
+                int(x) for x in np.asarray(ort_tail_route).reshape(-1).tolist() if int(x) >= 0
+            ]
+            tail_force_ok = len(tail_rides) > tail_slot and tail_rides[tail_slot] == tail_force_id
 
     size_mb = onnx_path.stat().st_size / (1024 * 1024)
     meta = {
@@ -163,7 +198,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
         f"(step={step}, {size_mb:.1f} MiB, max_abs_delta={max_abs:.3e}, "
         f"slot_max_abs={slot_max_abs:.3e}, route_match={route_match}, "
         f"unique_rides={unique_rides}, force_ok={force_ok}, "
-        f"stub={bool(extra.get('stub'))})"
+        f"tail_force_ok={tail_force_ok}, stub={bool(extra.get('stub'))})"
     )
     if max_abs > 1e-4 or slot_max_abs > 1e-4:
         raise SystemExit(
@@ -178,11 +213,15 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
         )
     if not force_ok:
         raise SystemExit(
-            f"ONNX force_first failed for {pt_path}: wanted {force_id}, got {forced_rides}"
+            f"ONNX force_slot=0 failed for {pt_path}: wanted {force_id}, got {forced_rides}"
         )
     if len(forced_rides) > 1 and not force_unique:
         raise SystemExit(
             f"ONNX forced route repeats rides ({pt_path}): {forced_rides}"
+        )
+    if not tail_force_ok:
+        raise SystemExit(
+            f"ONNX force_slot={tail_slot} failed for {pt_path}"
         )
     # slot_masks should be float 0/1; ignore unused exit/idle on tail slots.
     if ort_slot_masks.shape != torch_slot_masks.shape:

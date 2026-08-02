@@ -4,7 +4,7 @@
 
 ## Overview
 
-Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the **committed next action**, a short **planned route** (`route[0..K-1]`), and **per-slot** masked probability distributions. Guests can **force a legal first ride** (`force_first`) so the autoregressive decoder continues the rest of the plan from that pin.
+Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the **committed next action**, a short **planned route** (`route[0..K-1]`), and **per-slot** masked probability distributions. Guests can **pin any legal stop in the route** (`force_slot` + `force_action`, not just the first) so the autoregressive decoder continues the rest of the plan from that pin while every other slot keeps deciding naturally.
 
 This does **not** run the C++ DES or Watch pygame UI. The simulator is unused at request time; only the exported ONNX policy, walk times from `park_graph`, and `config.RIDES` are reused on the server.
 
@@ -15,7 +15,7 @@ Edit `companion/settings.py`:
 | Setting | Default | Meaning |
 |---------|---------|---------|
 | `MODELS` | `v1`/`v2` → `v1.onnx`/`v2.onnx` | Named checkpoints (UI tags; add keys for more versions) |
-| `DEFAULT_MODEL_VERSION` | `"v1"` | Tag used when the client omits one |
+| `DEFAULT_MODEL_VERSION` | `"v2"` | Tag used when the client omits one |
 | `DEVICE` / `COMPANION_DEVICE` | `"cpu"` | Device hint (ONNX Runtime uses CPU in deploy) |
 | `WAIT_CACHE_TTL_SEC` | `45` | Live-wait cache lifetime |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address (`PORT` overridden by hosts) |
@@ -32,7 +32,7 @@ pip install torch onnx onnxruntime
 PYTHONPATH=. python Park/tools/export_companion_onnx.py
 ```
 
-Route models export ONNX (`arch_version=route_v2`) with inputs `guest`, `ride`, `env`, `force_first` (int64, `-1` = no pin) and outputs `route` (int64, length K), `slot0_logits`, `slot_logits` `(1,K,A)`, `slot_masks` `(1,K,A)` float 0/1. Older `route`+`slot0_logits` ONNX still loads (slot-0 distribution only; `force_first` requests fail until re-export). Single-`logits` ONNX still loads as a length-1 route from argmax. Export uses a mid-day open-park example (non-zero `time_left`) so the autoregressive ride-update path is traced; the smoke check requires Torch/ORT route equality, no repeated rides, and a working `force_first` pin.
+Route models export ONNX (`arch_version=rank_route_v1`) with inputs `guest`, `ride`, `env`, `force_slot` + `force_action` (both int64, `-1` = no pin) and outputs `route` (int64, length K), `slot0_logits`, `slot_logits` `(1,K,A)`, `slot_masks` `(1,K,A)` float 0/1. Older exports with a single `force_first` input still load, but only support pinning slot 0 (`Recommender.info().supports_force_any_slot` is `False` for those — re-export to pin later stops). Older `route`+`slot0_logits` ONNX still loads (slot-0 distribution only; force requests fail until re-export). Single-`logits` ONNX still loads as a length-1 route from argmax. Export uses a mid-day open-park example (non-zero `time_left`) so the autoregressive ride-update path is traced; the smoke check requires Torch/ORT route equality, no repeated rides, a working slot-0 force, and a working tail-slot force.
 
 ## Run (dev)
 
@@ -85,7 +85,7 @@ Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX
 | GET | `/api/health` | Model + wait cache status |
 | GET | `/api/catalog` | Ride/hub list + default prefs |
 | GET | `/api/waits` | Cached live board (`?force=true`) |
-| POST | `/api/recommend` | Body: prefs, must-dos, history, location, optional `force_first` → `recommended`, `route`, `distribution` (slot 0), `distributions_by_slot`, `natural_recommended`, `forced_first` |
+| POST | `/api/recommend` | Body: prefs, must-dos, history, location, optional `force_slot`+`force_action` → `recommended`, `route`, `distribution` (slot 0), `distributions_by_slot`, `natural_recommended`, `forced_slot`, `forced_action` |
 
 ## Observation mapping
 
@@ -106,15 +106,19 @@ Live features are built in `companion/server/obs.py` to match training (`FLAT_OB
 
 Newer torch/ONNX graphs also refresh inter-ride walk features along the decoded path inside `forward_route` (no extra API inputs). Re-export after pulling decoder changes.
 
-## What-if force-first + slot distributions
+## What-if force-pick + slot distributions
 
-- Request field `force_first` (action id) pins route slot 0 when legal; the decoder GRU then continues slots `1..K-1` under the tail mask (open ∧ unfinished ∧ not already picked). Slot-0 logits stay the natural policy — only the chosen action changes.
-- Response includes `distributions_by_slot[k]` (softmax over that step's mask), `natural_recommended` (slot-0 argmax without the pin), and `forced_first`.
-- UI: tap a legal ride in the **Next** distribution to pin/unpin; slot tabs switch which step's distribution is shown. Force state is ephemeral (not in `localStorage`).
+- Request fields `force_slot` (0..`route_k`-1) + `force_action` pin **one** stop in the route to a specific legal action; every other slot — earlier or later — keeps deciding autoregressively/naturally. Slot 0 may be any legal action (including exit/idle); slots after the first must be a ride id that's a live Stage-B candidate at that stop (i.e. `legal: true` in that slot's distribution).
+  - `force_slot=0`: pins the opener; the decoder then continues slots `1..K-1` under the tail mask (open ∧ unfinished ∧ not already picked). Slot-0 logits stay the natural policy — only the chosen action changes.
+  - `force_slot>0`: slot 0 and any slots before the pin decode naturally first (this determines which rides are even reachable as Stage-B candidates); the pin only overrides the one requested stop. If the requested ride isn't a candidate there (e.g. it wasn't among the model's top-`candidate_m` picks conditioned on the natural opener), the API returns a 400 rather than silently ignoring the pin.
+- Response includes `distributions_by_slot[k]` (softmax over that step's mask), `natural_recommended` (slot-0 argmax without any pin), and `forced_slot`/`forced_action`.
+- The plan is a **deterministic** function of the request (prefs/must-dos/history/location/leave/arrival/model, all unchanged) — `recommend()` always decodes with `close_margin=0` (no close-call sampling) for both backends, specifically so a stop shown as pinnable in one response stays reachable if the guest immediately pins it in the next request.
+- Models exported before this feature only support `force_slot=0` (`supports_force_any_slot: false` in `/api/catalog` and the recommend response's `model` block); the UI hides pinning for later stops on those models.
+- UI: tap a legal stop anywhere in the route timeline to see its alternatives, then tap one to pin/unpin it. Force state is ephemeral (not in `localStorage`) and clears when switching model versions.
 
 ## Persistence
 
-All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. The API is stateless per request. Force-first exploration is UI-only and is cleared when switching model versions.
+All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. The API is stateless per request. Force-pick exploration is UI-only and is cleared when switching model versions.
 
 ## Notes
 

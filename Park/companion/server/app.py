@@ -45,12 +45,21 @@ class RecommendRequest(BaseModel):
         default=None,
         description="Model tag from settings.MODELS (e.g. v1, v2). Defaults to DEFAULT_MODEL_VERSION.",
     )
-    force_first: int | None = Field(
+    force_slot: int | None = Field(
         default=None,
         description=(
-            "Optional action id to pin as route slot 0; the autoregressive decoder "
-            "then greedily continues the remaining slots. Must be legal under the "
-            "current slot-0 mask."
+            "Optional route position (0..route_k-1) to pin to force_action; earlier "
+            "and later slots still decode autoregressively/naturally. Must be set "
+            "together with force_action."
+        ),
+        ge=0,
+    )
+    force_action: int | None = Field(
+        default=None,
+        description=(
+            "Action id to pin at force_slot. For slot 0 this may be any legal "
+            "action (including exit/idle); for later slots it must be a ride id "
+            "that is legal at that stop."
         ),
         ge=0,
         le=NUM_RIDES + 1,
@@ -232,7 +241,9 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"obs build failed: {exc}") from exc
 
         try:
-            result = rec.recommend(flat, force_first=body.force_first)
+            result = rec.recommend(
+                flat, force_slot=body.force_slot, force_action=body.force_action
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:

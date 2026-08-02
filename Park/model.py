@@ -329,12 +329,19 @@ class RankRouteModel(nn.Module):
         routes: torch.Tensor | None = None,
         *,
         deterministic: bool = False,
-        force_first: torch.Tensor | None = None,
+        force_slot: torch.Tensor | None = None,
+        force_action: torch.Tensor | None = None,
         temperature: float = 1.0,
         close_margin: float = 0.0,
         top_p: float = 1.0,
     ) -> RouteOutput:
-        """Stage A commit + Stage B candidate route decode."""
+        """Stage A commit + Stage B candidate route decode.
+
+        ``force_slot``/``force_action`` pin a single route position (any slot
+        0..K-1, live-inference only) to a specific legal action id; all other
+        slots — including earlier ones when a tail slot is forced — still
+        decode naturally. ``force_slot == -1`` (the default) forces nothing.
+        """
         guest_ctx, ride_ctx, values = self._encode_context(
             guest_dynamic_features,
             ride_dynamic_features,
@@ -362,10 +369,14 @@ class RankRouteModel(nn.Module):
         log_prob = torch.zeros(batch, device=device, dtype=dtype)
         entropy = torch.zeros(batch, device=device, dtype=dtype)
 
-        if force_first is None:
-            force_first = torch.full((batch,), -1, dtype=torch.long, device=device)
+        if force_slot is None:
+            force_slot = torch.full((batch,), -1, dtype=torch.long, device=device)
         else:
-            force_first = force_first.to(device=device, dtype=torch.long).reshape(batch)
+            force_slot = force_slot.to(device=device, dtype=torch.long).reshape(batch)
+        if force_action is None:
+            force_action = torch.full((batch,), -1, dtype=torch.long, device=device)
+        else:
+            force_action = force_action.to(device=device, dtype=torch.long).reshape(batch)
 
         # ---- Slot 0 from Stage A ----
         a_logits = slot0_logits
@@ -387,11 +398,11 @@ class RankRouteModel(nn.Module):
                 close_margin=close_margin,
                 top_p=top_p,
             )
-            forced = force_first.clamp(0, self.num_actions - 1)
-            use_force = (force_first >= 0) & slot0_mask.gather(
-                1, forced.unsqueeze(1)
+            forced0 = force_action.clamp(0, self.num_actions - 1)
+            use_force0 = (force_slot == 0) & slot0_mask.gather(
+                1, forced0.unsqueeze(1)
             ).squeeze(1)
-            action0 = torch.where(use_force, forced, natural)
+            action0 = torch.where(use_force0, forced0, natural)
 
         log_prob = log_prob + dist_a.log_prob(action0)
         entropy = entropy + dist_a.entropy()  # Stage A entropy (full weight)
@@ -491,9 +502,25 @@ class RankRouteModel(nn.Module):
                 action_pos = cand_pos
             else:
                 if deterministic:
-                    action_pos = cand_logits_m.argmax(dim=-1)
+                    natural_pos = cand_logits_m.argmax(dim=-1)
                 else:
-                    action_pos = dist.sample()
+                    natural_pos = dist.sample()
+
+                # Pin this slot to force_action if it's a live Stage-B
+                # candidate and legal here; otherwise decode naturally
+                # (no "first legal" fallback, unlike the teacher-forced path
+                # above — an unreachable force is simply not honored).
+                forced_ride = force_action.clamp(0, self.num_rides - 1)
+                match = cand_idx == forced_ride.unsqueeze(1)
+                has_candidate = match.any(dim=-1)
+                forced_pos = match.float().argmax(dim=-1)
+                forced_legal = cand_ride_legal.gather(
+                    1, forced_pos.unsqueeze(1)
+                ).squeeze(1)
+                use_force_here = (
+                    (force_slot == step) & has_candidate & forced_legal
+                )
+                action_pos = torch.where(use_force_here, forced_pos, natural_pos)
 
             action = cand_idx.gather(1, action_pos.unsqueeze(1)).squeeze(1)
             step_logp = dist.log_prob(action_pos)
@@ -638,7 +665,8 @@ def forward_route_with_mask(
     routes: torch.Tensor | None = None,
     *,
     deterministic: bool = False,
-    force_first: torch.Tensor | None = None,
+    force_slot: torch.Tensor | None = None,
+    force_action: torch.Tensor | None = None,
     temperature: float = 1.0,
     close_margin: float = 0.0,
     top_p: float = 1.0,
@@ -650,7 +678,8 @@ def forward_route_with_mask(
         env,
         routes=routes,
         deterministic=deterministic,
-        force_first=force_first,
+        force_slot=force_slot,
+        force_action=force_action,
         temperature=temperature,
         close_margin=close_margin,
         top_p=top_p,

@@ -73,16 +73,29 @@ def test_walk_refresh_changes_tail_logits():
         model.ride_walk_norm[0, 1] = 0.01
         model.ride_walk_norm[0, 2] = 0.9
     guest, ride, env = _open_obs(1)
-    force = torch.tensor([0], dtype=torch.long)
+    force_slot = torch.tensor([0], dtype=torch.long)
+    force_action = torch.tensor([0], dtype=torch.long)
     out_a = forward_route_with_mask(
-        model, guest, ride, env, deterministic=True, force_first=force
+        model,
+        guest,
+        ride,
+        env,
+        deterministic=True,
+        force_slot=force_slot,
+        force_action=force_action,
     )
     logits_a = out_a.slot_logits[0, 1, :NUM_RIDES].detach().clone()
     with torch.no_grad():
         model.ride_walk_norm[0, 1] = 0.9
         model.ride_walk_norm[0, 2] = 0.01
     out_b = forward_route_with_mask(
-        model, guest, ride, env, deterministic=True, force_first=force
+        model,
+        guest,
+        ride,
+        env,
+        deterministic=True,
+        force_slot=force_slot,
+        force_action=force_action,
     )
     logits_b = out_b.slot_logits[0, 1, :NUM_RIDES]
     assert int(out_a.routes[0, 0].item()) == 0
@@ -120,13 +133,55 @@ def test_force_first_pins_slot0_and_continues():
         ride,
         env,
         deterministic=True,
-        force_first=torch.tensor([force_id], dtype=torch.long),
+        force_slot=torch.tensor([0], dtype=torch.long),
+        force_action=torch.tensor([force_id], dtype=torch.long),
     )
     assert int(forced.routes[0, 0].item()) == force_id
     rides = [int(a) for a in forced.routes[0].tolist() if 0 <= int(a) < NUM_RIDES]
     assert rides[0] == force_id
     assert len(rides) == len(set(rides))
     assert torch.allclose(forced.slot0_logits, natural.slot0_logits)
+
+
+def test_force_tail_slot_pins_only_that_stop():
+    """force_slot > 0 pins one tail position; other slots keep deciding naturally."""
+    guest, ride, env = _open_obs(1)
+    model = None
+    slot0 = None
+    natural = None
+    # A fresh random-init model's slot-0 argmax may land on exit/idle rather than
+    # a ride; retry a few seeds so the tail-decode path (which requires an
+    # active ride at slot 0) actually runs.
+    for _ in range(25):
+        candidate = default_model("cpu")
+        candidate.candidate_m = NUM_RIDES  # every ride reachable as a Stage-B candidate
+        out = forward_route_with_mask(candidate, guest, ride, env, deterministic=True)
+        s0 = int(out.routes[0, 0].item())
+        if 0 <= s0 < NUM_RIDES:
+            model, slot0, natural = candidate, s0, out
+            break
+    assert model is not None, "expected some random-init model to open on a ride"
+    assert model.route_k > 1
+
+    # Legal at slot 1 under the natural continuation: any open ride not yet picked.
+    legal_at_slot1 = [i for i in range(NUM_RIDES) if i != slot0]
+    assert legal_at_slot1
+    force_id = legal_at_slot1[0]
+
+    forced = forward_route_with_mask(
+        model,
+        guest,
+        ride,
+        env,
+        deterministic=True,
+        force_slot=torch.tensor([1], dtype=torch.long),
+        force_action=torch.tensor([force_id], dtype=torch.long),
+    )
+    assert int(forced.routes[0, 1].item()) == force_id
+    # Slot 0 is untouched by a tail force — it still decodes naturally.
+    assert int(forced.routes[0, 0].item()) == slot0
+    rides = [int(a) for a in forced.routes[0].tolist() if 0 <= int(a) < NUM_RIDES]
+    assert len(rides) == len(set(rides))
 
 
 def test_exit_pads_route():
