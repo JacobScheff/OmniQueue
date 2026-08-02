@@ -1,0 +1,8 @@
+{
+  "step": 0,
+  "stub": true,
+  "path": "C:\\Users\\jacob\\Documents\\VSC\\OmniQueue\\Park\\companion\\model\\_test_rank.onnx",
+  "arch_version": "rank_route_v1",
+  "route_k": 5,
+  "ride_dynamic_feat_dim": 11
+}

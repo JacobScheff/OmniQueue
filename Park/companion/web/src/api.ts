@@ -112,7 +112,6 @@ export type UserState = {
   location: string;
   leave_hour: number | null;
   arrival_hour: number | null;
-  party_size: number;
   model_version: string;
 };
 
@@ -147,7 +146,6 @@ export async function postRecommend(
       location: state.location,
       leave_hour: state.leave_hour,
       arrival_hour: state.arrival_hour,
-      party_size: state.party_size,
       model_version: state.model_version,
       force_refresh_waits: forceRefreshWaits,
       force_first: forceFirst,

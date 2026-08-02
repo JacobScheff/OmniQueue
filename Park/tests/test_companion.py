@@ -68,7 +68,6 @@ def test_build_live_observation_shape_and_mask_inputs():
         location_node_id=config.NODE_FANTASY_HUB,
         leave_sec=config.DAY_SECONDS,
         spawn_sec=0,
-        party_size=2,
     )
     flat, meta = build_live_observation(state, _board_all_open(), now_sec=3 * 3600)
     assert flat.shape == (FLAT_OBS_DIM,)

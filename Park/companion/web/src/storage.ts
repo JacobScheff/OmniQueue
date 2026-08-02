@@ -18,7 +18,6 @@ function cloneState(state: UserState): UserState {
     location: state.location,
     leave_hour: state.leave_hour,
     arrival_hour: state.arrival_hour,
-    party_size: state.party_size,
     model_version: state.model_version,
   };
 }
@@ -32,7 +31,6 @@ export function defaultUserState(catalog: Catalog): UserState {
     location: "entrance",
     leave_hour: catalog.day_end_hour,
     arrival_hour: catalog.day_start_hour,
-    party_size: 2,
     model_version: catalog.default_model_version,
   };
 }
@@ -80,7 +78,6 @@ function normalizeState(state: UserState, n: number, catalog: Catalog): UserStat
     location: state.location || "entrance",
     leave_hour: state.leave_hour ?? catalog.day_end_hour,
     arrival_hour: state.arrival_hour ?? catalog.day_start_hour,
-    party_size: Math.min(16, Math.max(1, state.party_size || 2)),
     model_version: version,
   };
 }

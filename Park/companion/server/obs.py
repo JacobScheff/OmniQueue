@@ -33,7 +33,6 @@ class CompanionState:
     location_node_id: int  # park graph node id (hub or ride node)
     leave_sec: int | None = None  # seconds since park open; None → stay until close
     spawn_sec: int = 0  # arrival time since open
-    party_size: int = 2  # retained for UI; not an obs feature
     walking_speed: float = float(config.BASE_WALKING_SPEED)
 
 

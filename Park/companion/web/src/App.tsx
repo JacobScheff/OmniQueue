@@ -37,7 +37,6 @@ function cloneState(state: UserState): UserState {
     location: state.location,
     leave_hour: state.leave_hour,
     arrival_hour: state.arrival_hour,
-    party_size: state.party_size,
     model_version: state.model_version,
   };
 }
@@ -548,27 +547,6 @@ export default function App() {
                     ))}
                   </optgroup>
                 </select>
-              </div>
-
-              <div className="field">
-                <label htmlFor="party">Party size</label>
-                <input
-                  id="party"
-                  type="number"
-                  min={1}
-                  max={16}
-                  value={edit.party_size}
-                  onChange={(e) =>
-                    setDraft((d) =>
-                      d
-                        ? {
-                            ...d,
-                            party_size: Math.min(16, Math.max(1, Number(e.target.value) || 1)),
-                          }
-                        : d,
-                    )
-                  }
-                />
               </div>
 
               <div className="field">

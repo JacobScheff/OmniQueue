@@ -41,7 +41,6 @@ class RecommendRequest(BaseModel):
     arrival_hour: float | None = Field(
         default=None, description="Local hour of arrival; default park open"
     )
-    party_size: int = Field(default=2, ge=1, le=16)
     model_version: str | None = Field(
         default=None,
         description="Model tag from settings.MODELS (e.g. v1, v2). Defaults to DEFAULT_MODEL_VERSION.",
@@ -225,7 +224,6 @@ def create_app(
             location_node_id=location_node_id,
             leave_sec=leave_sec,
             spawn_sec=spawn_sec,
-            party_size=body.party_size,
         )
         board = app.state.waits.get_board(force=body.force_refresh_waits)
         try:
