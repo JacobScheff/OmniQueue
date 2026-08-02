@@ -10,12 +10,25 @@ from Park.training.features import (
     GUEST_FEAT_DIM,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
+    RIDE_FEAT_WALK,
     ROUTE_PAD,
     apply_action_mask,
     build_action_mask,
     build_tail_ride_mask,
     route_k as default_route_k,
 )
+
+
+def _ride_walk_norm_matrix() -> torch.Tensor:
+    """(R, R) walk features in obs units (sec/3600, capped), at BASE_WALKING_SPEED."""
+    try:
+        from Park.training.route_reward import ride_walk_matrix_sec
+
+        mat = ride_walk_matrix_sec()
+        t = torch.as_tensor(mat, dtype=torch.float32)
+        return t.clamp(min=0.0, max=3600.0) / 3600.0
+    except Exception:
+        return torch.zeros(NUM_RIDES, NUM_RIDES, dtype=torch.float32)
 
 
 @dataclass
@@ -83,25 +96,32 @@ class ParkRouterModel(nn.Module):
             nn.Linear(d_model, 1),
         )
 
+        # Inter-ride walk for AR path refresh (obs units). Not learned; re-filled in __init__.
+        walk = _ride_walk_norm_matrix()
+        if walk.shape != (num_rides, num_rides):
+            walk = torch.zeros(num_rides, num_rides, dtype=torch.float32)
+        self.register_buffer("ride_walk_norm", walk, persistent=True)
+
+    def _encode_rides(self, ride_dynamic_features: torch.Tensor) -> torch.Tensor:
+        batch_size = ride_dynamic_features.size(0)
+        num_rides = ride_dynamic_features.size(1)
+        ride_ids = torch.arange(num_rides, device=ride_dynamic_features.device)
+        ride_ids = ride_ids.view(1, num_rides).expand(batch_size, -1)
+        return self.ride_norm(
+            self.ride_id_embed(ride_ids) + self.ride_feat_proj(ride_dynamic_features)
+        )
+
     def _encode(
         self,
         guest_dynamic_features: torch.Tensor,
         ride_dynamic_features: torch.Tensor,
         environment_dynamic_features: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        batch_size = guest_dynamic_features.size(0)
-        num_rides = ride_dynamic_features.size(1)
-
         guest_inputs = torch.cat(
             [guest_dynamic_features, environment_dynamic_features], dim=-1
         )
         guest_embeddings = self.guest_norm(self.guest_proj(guest_inputs))
-
-        ride_ids = torch.arange(num_rides, device=ride_dynamic_features.device)
-        ride_ids = ride_ids.view(1, num_rides).expand(batch_size, -1)
-        ride_embeddings = self.ride_norm(
-            self.ride_id_embed(ride_ids) + self.ride_feat_proj(ride_dynamic_features)
-        )
+        ride_embeddings = self._encode_rides(ride_dynamic_features)
 
         avg_ride = ride_embeddings.mean(dim=1)
         critic_input = torch.cat(
@@ -181,6 +201,10 @@ class ParkRouterModel(nn.Module):
         dtype = guest_embeddings.dtype
         k = self.route_k
 
+        # Mutable ride feats for path-conditioned walk refresh (slots k>=1).
+        ride_feats = ride_dynamic_features.to(dtype=dtype).clone()
+        walk_table = self.ride_walk_norm.to(device=device, dtype=dtype)
+
         slot0_mask = build_action_mask(
             guest_dynamic_features,
             ride_dynamic_features,
@@ -216,10 +240,10 @@ class ParkRouterModel(nn.Module):
                 pad_mask = mask
             else:
                 ride_logits = self._pointer_logits(hidden, ride_embeddings)
-                mask_r = build_tail_ride_mask(ride_dynamic_features, picked)
+                mask_r = build_tail_ride_mask(ride_feats, picked)
                 # If nothing legal remains, allow any unfinished open ride (still masked by picked).
                 none = ~mask_r.any(dim=-1)
-                fallback = (ride_dynamic_features[..., 2] > 0.5) & (~picked)
+                fallback = (ride_feats[..., 2] > 0.5) & (~picked)
                 # Always blend (identity when any legal) so ONNX traces the path;
                 # use &/| not bool torch.where — ORT has no Where(bool).
                 none_b = none.unsqueeze(-1)
@@ -298,6 +322,21 @@ class ParkRouterModel(nn.Module):
             emb = self.action_embed(action.clamp(0, self.num_actions - 1))
             new_hidden = self.decoder_rnn(emb, hidden)
             hidden = torch.where(is_ride.unsqueeze(-1), new_hidden, hidden)
+
+            # Refresh walk features as if the party were at the just-chosen ride,
+            # then re-encode ride keys for the next pointer step.
+            # Clone so scatter does not write through into the shared walk buffer.
+            walk_row = walk_table[ride_actions].clone()
+            zero_here = torch.zeros(batch, 1, device=device, dtype=dtype)
+            walk_row = walk_row.scatter(1, ride_actions.unsqueeze(1), zero_here)
+            old_walk = ride_feats[..., RIDE_FEAT_WALK]
+            new_walk = torch.where(is_ride.unsqueeze(-1), walk_row, old_walk)
+            ride_feats = ride_feats.clone()
+            ride_feats[..., RIDE_FEAT_WALK] = new_walk
+            new_ride_emb = self._encode_rides(ride_feats)
+            ride_embeddings = torch.where(
+                is_ride.view(batch, 1, 1), new_ride_emb, ride_embeddings
+            )
 
             # Exit/idle (or inactive) → stop; only ride commits continue.
             active = is_ride

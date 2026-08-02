@@ -22,10 +22,11 @@ MODELS: dict[str, Path] = {
     "v1": _MODEL_DIR / "v1.onnx",
     "v2": _MODEL_DIR / "v2.onnx",
     "v3": _MODEL_DIR / "v3.onnx",
+    "v4": _MODEL_DIR / "v4.onnx"
 }
 
 # Default tag when the client does not specify one.
-DEFAULT_MODEL_VERSION = "v1"
+DEFAULT_MODEL_VERSION = "v4"
 
 # Inference device hint ("cpu" or "cuda"). Free hosts are CPU-only.
 # ONNX Runtime always uses CPUExecutionProvider in the companion image.

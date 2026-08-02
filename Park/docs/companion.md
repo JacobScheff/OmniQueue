@@ -104,6 +104,8 @@ Live features are built in `companion/server/obs.py` to match training (`FLAT_OB
 
 **Model versions:** `v1` / `v2` keep legacy ONNX with ride feat dim 8 — `recommend.py` slices off column 8 before inference. `v3` expects dim 9 (place `companion/model/v3.pt`, export with `tools/export_companion_onnx.py --only v3`).
 
+Newer torch/ONNX graphs also refresh inter-ride walk features along the decoded path inside `forward_route` (no extra API inputs). Re-export after pulling decoder changes.
+
 ## What-if force-first + slot distributions
 
 - Request field `force_first` (action id) pins route slot 0 when legal; the decoder GRU then continues slots `1..K-1` under the tail mask (open ∧ unfinished ∧ not already picked). Slot-0 logits stay the natural policy — only the chosen action changes.

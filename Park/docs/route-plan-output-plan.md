@@ -265,10 +265,27 @@ L_cf = (relu(PPO_CF_MARGIN - js))²
 | `PPO_CF_FRAC` | `0.25` | Fraction of mb samples that get a CF pair |
 | Apply to | **slot 0 only** (v1) | Optional later: light weight on slot 1 |
 
+### 7.6 Tail preference ranking (added)
+
+Soft CE on early tail slots so unfinished high-pref / must-do rides keep probability mass after slot 0 (primary reward still only executes `a_0`):
+
+```
+target_r ∝ unfinished_pref[r] + PPO_PREF_RANK_MUST_DO_BONUS · must_do[r]   # under slot mask
+L_rank = mean_s∈SLOTS soft_CE(π_s, target)
+```
+
+| Knob | Default | Notes |
+|------|---------|--------|
+| `PPO_PREF_RANK_COEF` | `0.05` | Multiplier on `L_rank` |
+| `PPO_PREF_RANK_SLOTS` | `(1, 2)` | 0-indexed route slots |
+| `PPO_PREF_RANK_MUST_DO_BONUS` | `0.5` | Added to soft-target score for remaining must-dos |
+
+**Path walk refresh:** after each ride pick in `forward_route`, rewrite walk feats from the inter-ride matrix as if at that ride and re-encode ride keys (companion/ONNX included).
+
 Total update loss:
 
 ```
-L = L_ppo - ent_coef * H_weighted + vf_coef * L_v + PPO_CF_COEF * L_cf
+L = L_ppo - ent_coef * H_weighted + vf_coef * L_v + PPO_CF_COEF * L_cf + PPO_PREF_RANK_COEF * L_rank
 ```
 
 ### 7.4 Why hinge JS (not max KL)
@@ -344,7 +361,7 @@ Do not enable consistency/walk at full suggested coefs until slot-0 must-do rate
 | Consistency crystallizes a global Fantasyland loop | Front-weighted only; coef ≪ must-do; CF KL on `a_0`; consistency is vs **party’s own** prev plan |
 | Walk terms dominate → land camping, ignore prefs | Tiny coefs; normalize by `WALK_NORM_SEC`; watch component logs |
 | CF KL too strong → ignore waits | Hinge margin + modest `PPO_CF_COEF`; never unmasked KL maximize |
-| Tail slots meaningless / noisy | Low entropy weight on tail; low consist weight; accept tails as soft lookahead; unfinished sharpened pref is now ride feat 8 so pointer keys stay pref-aware after slot 0 |
+| Tail slots meaningless / noisy | Pref on ride keys (feat 8); path-conditioned walk refresh; soft pref-rank CE on slots 1–2; low entropy/consist weight on far tail |
 | BC gap / cold decoder | Encoder warm-start; optional synthetic route BC later |
 | ONNX / companion break | Version meta; ship decoder wrapper; refuse old single-logit models |
 | Credit assignment longer | Unchanged DES horizon; route is action representation, not open-loop multi-commit |

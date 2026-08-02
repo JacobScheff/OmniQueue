@@ -15,9 +15,11 @@ from Park.training.features import (
     RIDE_FEAT_HISTORY,
     RIDE_FEAT_MUST_DO,
     RIDE_FEAT_OPEN,
+    RIDE_FEAT_UNFINISHED_PREF,
     RIDE_FEAT_WALK,
     ROUTE_PAD,
     js_divergence,
+    pref_rank_aux_loss,
     rewrite_prefs_must_dos,
     top_must_do_or_pref,
 )
@@ -53,6 +55,55 @@ def test_route_decode_shape_and_no_repeat():
     for b in range(4):
         rides = [int(a) for a in out.routes[b].tolist() if 0 <= int(a) < NUM_RIDES]
         assert len(rides) == len(set(rides))
+
+
+def test_walk_refresh_changes_tail_logits():
+    """Slot-1 logits should depend on inter-ride walks from the forced slot-0 ride."""
+    model = default_model("cpu")
+    with torch.no_grad():
+        model.ride_walk_norm.fill_(0.5)
+        model.ride_walk_norm[0, 1] = 0.01
+        model.ride_walk_norm[0, 2] = 0.9
+    guest, ride, env = _open_obs(1)
+    force = torch.tensor([0], dtype=torch.long)
+    out_a = forward_route_with_mask(
+        model, guest, ride, env, deterministic=True, force_first=force
+    )
+    logits_a = out_a.slot_logits[0, 1, :NUM_RIDES].detach().clone()
+    with torch.no_grad():
+        model.ride_walk_norm[0, 1] = 0.9
+        model.ride_walk_norm[0, 2] = 0.01
+    out_b = forward_route_with_mask(
+        model, guest, ride, env, deterministic=True, force_first=force
+    )
+    logits_b = out_b.slot_logits[0, 1, :NUM_RIDES]
+    assert int(out_a.routes[0, 0].item()) == 0
+    assert int(out_b.routes[0, 0].item()) == 0
+    assert not torch.allclose(logits_a, logits_b)
+
+
+def test_pref_rank_aux_loss_finite_and_prefers_aligned_logits():
+    guest, ride, env = _open_obs(2)
+    ride[..., RIDE_FEAT_UNFINISHED_PREF] = 0.0
+    ride[:, 3, RIDE_FEAT_UNFINISHED_PREF] = 1.0
+    ride[:, 3, RIDE_FEAT_MUST_DO] = 1.0
+    k = 6
+    slot_logits = torch.zeros(2, k, NUM_ACTIONS)
+    slot_masks = torch.zeros(2, k, NUM_ACTIONS, dtype=torch.bool)
+    slot_masks[:, :, :NUM_RIDES] = True
+    # Aligned: high logit on ride 3 for slots 1–2
+    slot_logits[:, 1, 3] = 5.0
+    slot_logits[:, 2, 3] = 5.0
+    good = pref_rank_aux_loss(slot_logits, slot_masks, ride)
+    # Misaligned: high logit on a zero-pref ride
+    bad_logits = slot_logits.clone()
+    bad_logits[:, 1, 3] = 0.0
+    bad_logits[:, 2, 3] = 0.0
+    bad_logits[:, 1, 7] = 5.0
+    bad_logits[:, 2, 7] = 5.0
+    bad = pref_rank_aux_loss(bad_logits, slot_masks, ride)
+    assert torch.isfinite(good) and torch.isfinite(bad)
+    assert float(good.item()) < float(bad.item())
 
 
 def test_force_first_pins_slot0_and_continues():

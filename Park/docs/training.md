@@ -86,6 +86,10 @@ Crowd completions do not write into the pending preference buffer when hybrid pe
 
 **Anti-collapse regularizer (training only):** hinge Jensen–Shannon between slot-0 distributions under the real pref/must-do vector vs a counterfactual resample (`PPO_CF_COEF`, `PPO_CF_MARGIN`, `PPO_CF_FRAC`). See `docs/route-plan-output-plan.md`.
 
+**Tail preference ranking (training only):** soft cross-entropy on early route-tail slots (`PPO_PREF_RANK_SLOTS`, default 1–2) toward unfinished sharpened pref (+ must-do bonus), masked by each slot’s legal rides (`PPO_PREF_RANK_COEF`). Primary commit reward still only uses `route[0]`.
+
+**Path-conditioned walk:** during AR decode, after each ride pick the model rewrites `RIDE_FEAT_WALK` as if the party were at that ride (inter-ride matrix buffer) and re-encodes ride keys for the next slot. Slot 0 still uses observation walks from the true current location.
+
 ## Evaluate a checkpoint
 
 ```bash
@@ -113,8 +117,8 @@ Warm-start from an 8-feat checkpoint: `--init-checkpoint` loads matching tensors
 
 - **`d_model=256`** single-party encoder (no guest transformer / no G axis).
 - Ride encoder: ride-id embedding + MLP over the 9 dynamic feats.
-- **Autoregressive pointer decoder:** slot 0 uses guest query × ride keys + exit/idle head; slots `1..K-1` continue with a GRU cell + no-replacement ride pointer (open + unfinished only).
-- Critic head over guest + mean ride embedding + env (single scalar).
+- **Autoregressive pointer decoder:** slot 0 uses guest query × ride keys + exit/idle head; slots `1..K-1` continue with a GRU cell + no-replacement ride pointer (open + unfinished only), with walk features refreshed along the planned path.
+- Critic head over guest + mean ride embedding + env (single scalar; decision-time encode only).
 - **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal on slot 0.
 - Entropy bonus uses early-slot weights (`PPO_ROUTE_ENTROPY_WEIGHTS`); no softmax temperature annealing.
 
@@ -126,6 +130,7 @@ Related knobs in `config.py`:
 | `PPO_ROUTE_K` | 6 | Emitted route length |
 | `PPO_ENT_COEF` | 0.03 | Entropy bonus (slot-weighted) |
 | `PPO_CF_COEF` / `MARGIN` / `FRAC` | `0.1` / `0.15` / `0.25` | Counterfactual pref JS hinge |
+| `PPO_PREF_RANK_COEF` / `SLOTS` | `0.05` / `(1, 2)` | Soft pref ranking on early tail slots |
 | `BC_BATCH_SIZE` | 256 | Individual decisions per BC minibatch |
 | `PPO_INFERENCE_BATCH_SIZE` | 256 | Max pending focals per `exchange_batch` |
 | `PPO_UPDATE_MB_SIZE` | 256 | Transitions per optimizer step |

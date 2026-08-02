@@ -255,6 +255,11 @@ PPO_ROUTE_ENTROPY_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.15, 0.1)
 PPO_CF_COEF = 0.1
 PPO_CF_MARGIN = 0.15
 PPO_CF_FRAC = 0.25
+# Soft preference ranking on early route-tail slots (training only; see docs/training.md).
+# Encourages slots k∈PPO_PREF_RANK_SLOTS to put mass on unfinished high-pref / must-do rides.
+PPO_PREF_RANK_COEF = 0.05
+PPO_PREF_RANK_SLOTS = (1, 2)  # 0-indexed; slot 0 already has CF + primary reward
+PPO_PREF_RANK_MUST_DO_BONUS = 0.5  # added to soft-target score for remaining must-dos
 MODEL_ARCH_VERSION = "route_v1"
 
 # PPO reward shaping (mirrored in park_sim.hpp)
@@ -277,6 +282,7 @@ MODEL_ARCH_VERSION = "route_v1"
 #   + PPO_ROUTE_CONSIST_COEF * Σ w_i * 1[new[i]==old[i+1]]
 #   - PPO_ROUTE_PLANNED_WALK_COEF * mean_inter_ride_walk / WALK_NORM
 #   - PPO_ROUTE_REALIZED_WALK_COEF * walk_to_commit / WALK_NORM
+# Training-only aux (ppo_train.py): PPO_PREF_RANK_COEF * soft CE on early tail slots
 #
 # EXP > 1 makes one high-pref completion dominate several low-pref fillers
 # (e.g. raw 80 vs 3×5 → ~85× under EXP=2 after L1 normalize). SCALE is

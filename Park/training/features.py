@@ -244,6 +244,60 @@ def top_must_do_or_pref(guest: torch.Tensor, ride: torch.Tensor) -> torch.Tensor
     return out
 
 
+def pref_rank_aux_loss(
+    slot_logits: "torch.Tensor",
+    slot_masks: "torch.Tensor",
+    ride: "torch.Tensor",
+    *,
+    slots: tuple[int, ...] = (1, 2),
+    must_do_bonus: float = 0.5,
+) -> "torch.Tensor":
+    """Soft CE encouraging early tail slots toward unfinished high-pref rides.
+
+    slot_logits / slot_masks: (B, K, A); ride: (B, R, F).
+    Uses unfinished sharpened pref (feat 8) plus a must-do bonus as soft targets,
+    renormalized under each slot's legal ride mask. Returns a scalar (0 if no
+    valid rows).
+    """
+    import torch
+    import torch.nn.functional as F
+
+    try:
+        import Park.config as config
+
+        slots = tuple(getattr(config, "PPO_PREF_RANK_SLOTS", slots))
+        must_do_bonus = float(
+            getattr(config, "PPO_PREF_RANK_MUST_DO_BONUS", must_do_bonus)
+        )
+    except Exception:
+        pass
+
+    prefs = ride[..., RIDE_FEAT_UNFINISHED_PREF].clamp(min=0.0)
+    must = (ride[..., RIDE_FEAT_MUST_DO] > 0.5).to(prefs.dtype)
+    scores = prefs + must_do_bonus * must
+
+    slot_losses: list[torch.Tensor] = []
+    k_max = int(slot_logits.size(1))
+    for s in slots:
+        if s <= 0 or s >= k_max:
+            continue
+        logits = slot_logits[:, s, :NUM_RIDES]
+        mask = slot_masks[:, s, :NUM_RIDES]
+        legal_scores = scores * mask.to(scores.dtype)
+        mass = legal_scores.sum(dim=-1)
+        valid = (mass > 1e-8) & mask.any(dim=-1)
+        if not bool(valid.any()):
+            continue
+        target = legal_scores / mass.clamp(min=1e-8).unsqueeze(-1)
+        log_probs = F.log_softmax(apply_action_mask(logits, mask), dim=-1)
+        ce = -(target * log_probs).sum(dim=-1)
+        slot_losses.append(ce[valid].mean())
+
+    if not slot_losses:
+        return slot_logits.new_zeros(())
+    return torch.stack(slot_losses).mean()
+
+
 def js_divergence(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Jensen–Shannon divergence for rows of categorical probs. Returns (B,)."""
     import torch

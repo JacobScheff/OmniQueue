@@ -30,6 +30,7 @@ from Park.training.features import (
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
     js_divergence,
+    pref_rank_aux_loss,
     rewrite_prefs_must_dos,
     route_k,
     top_must_do_or_pref,
@@ -113,6 +114,7 @@ class PPOConfig:
     cf_coef: float = getattr(config, "PPO_CF_COEF", 0.1)
     cf_margin: float = getattr(config, "PPO_CF_MARGIN", 0.15)
     cf_frac: float = getattr(config, "PPO_CF_FRAC", 0.25)
+    pref_rank_coef: float = getattr(config, "PPO_PREF_RANK_COEF", 0.05)
     route_k: int = getattr(config, "PPO_ROUTE_K", 6)
 
 
@@ -144,6 +146,7 @@ class PPOStats:
     approx_kl: float
     clipfrac: float
     cf_loss: float
+    pref_rank_loss: float
     update_sec: float
 
 
@@ -173,7 +176,15 @@ class Agent(nn.Module):
             routes=action,
             deterministic=deterministic,
         )
-        return out.routes, out.log_prob, out.entropy, out.values.flatten()
+        return (
+            out.routes,
+            out.log_prob,
+            out.entropy,
+            out.values.flatten(),
+            out.slot_logits,
+            out.slot_masks,
+            ride,
+        )
 
 
 def _collect_episode(
@@ -301,7 +312,7 @@ def _collect_episode(
 
         obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device)
         with torch.no_grad():
-            routes_t, logprobs, _, values = agent.get_action_and_value(obs_t)
+            routes_t, logprobs, _, values, *_ = agent.get_action_and_value(obs_t)
 
         routes_np = routes_t.detach().cpu().numpy().astype(np.int64)
         emit_shaping = np.zeros(routes_np.shape[0], dtype=np.float32)
@@ -463,6 +474,7 @@ def _ppo_update(
     last_approx_kl = 0.0
     last_clipfrac = 0.0
     last_cf_loss = 0.0
+    last_pref_rank_loss = 0.0
     update_t0 = time.perf_counter()
     steps_per_epoch = max(1, (n + mb_size - 1) // mb_size)
     total_mb = cfg.update_epochs * steps_per_epoch
@@ -480,7 +492,15 @@ def _ppo_update(
             adv = mb_adv.index_select(0, idx)
             ret = batch.returns.index_select(0, idx)
 
-            _, new_logprob, entropy, new_value = agent.get_action_and_value(obs, actions)
+            (
+                _,
+                new_logprob,
+                entropy,
+                new_value,
+                slot_logits,
+                slot_masks,
+                ride_mb,
+            ) = agent.get_action_and_value(obs, actions)
             logratio = new_logprob - old_logprob
             ratio = logratio.exp()
 
@@ -490,11 +510,13 @@ def _ppo_update(
             v_loss = 0.5 * ((new_value - ret) ** 2).mean()
             entropy_loss = entropy.mean()
             cf_loss = _counterfactual_kl_loss(agent, obs, cfg)
+            rank_loss = pref_rank_aux_loss(slot_logits, slot_masks, ride_mb)
             loss = (
                 pg_loss
                 - cfg.ent_coef * entropy_loss
                 + cfg.vf_coef * v_loss
                 + float(cfg.cf_coef) * cf_loss
+                + float(cfg.pref_rank_coef) * rank_loss
             )
 
             optimizer.zero_grad()
@@ -512,6 +534,7 @@ def _ppo_update(
             last_approx_kl = float(approx_kl.item())
             last_clipfrac = float(clipfrac.item())
             last_cf_loss = float(cf_loss.item())
+            last_pref_rank_loss = float(rank_loss.item())
 
             mb_done += 1
             now = time.perf_counter()
@@ -536,6 +559,7 @@ def _ppo_update(
         approx_kl=last_approx_kl,
         clipfrac=last_clipfrac,
         cf_loss=last_cf_loss,
+        pref_rank_loss=last_pref_rank_loss,
         update_sec=time.perf_counter() - update_t0,
     )
 
@@ -577,7 +601,8 @@ def train(cfg: PPOConfig) -> None:
     )
     _log(
         "Primary metrics (focals only): must_do rate, pref/guest; "
-        "wait_var is diagnostic only; CF hinge JS on slot-0"
+        "wait_var is diagnostic only; CF hinge JS on slot-0; "
+        f"pref-rank aux on slots {getattr(config, 'PPO_PREF_RANK_SLOTS', (1, 2))}"
     )
     if init_extra:
         _log(f"Init checkpoint metadata: {init_extra}")
@@ -688,6 +713,7 @@ def train(cfg: PPOConfig) -> None:
             f"rides={batch.rides_completed:,} rides/focal={batch.rides_per_party:.2f} "
             f"pg_loss={stats.pg_loss:.4f} v_loss={stats.v_loss:.4f} "
             f"entropy={stats.entropy:.3f} cf={stats.cf_loss:.4f} "
+            f"pref_rank={stats.pref_rank_loss:.4f} "
             f"kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
             f"rollout={rollout_sec:.1f}s update={stats.update_sec:.1f}s total={elapsed:.1f}s "
             f"eta={eta_sec / 60.0:.1f}m for {remaining_days} day(s)"
