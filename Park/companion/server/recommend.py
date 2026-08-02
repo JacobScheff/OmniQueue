@@ -10,6 +10,7 @@ import numpy as np
 
 from Park.companion import settings
 from Park.companion.server.obs import ACTION_LABELS, action_label
+from Park import config as park_config
 from Park.training.features import (
     CLOSE_DRAIN_SEC,
     DAY_SECONDS,
@@ -21,7 +22,6 @@ from Park.training.features import (
     NUM_ACTIONS,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
-    RIDE_DYNAMIC_FEAT_DIM_LEGACY,
     RIDE_FEAT_DURATION,
     RIDE_FEAT_OPEN,
     RIDE_FEAT_WAIT,
@@ -104,6 +104,31 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
     x = x - np.max(x)
     e = np.exp(x)
     return (e / e.sum()).astype(np.float32)
+
+
+def _close_call_sample(probs: np.ndarray) -> int | None:
+    """If top-2 gap is small, sample with temperature / top-p; else return None."""
+    margin = float(getattr(park_config, "INFER_CLOSE_MARGIN", 0.12))
+    temp = float(getattr(park_config, "INFER_TEMP", 0.8))
+    top_p = float(getattr(park_config, "INFER_TOP_P", 0.9))
+    p = np.asarray(probs, dtype=np.float64).reshape(-1)
+    if p.size < 2:
+        return None
+    order = np.argsort(-p)
+    gap = float(p[order[0]] - p[order[1]])
+    if gap >= margin:
+        return None
+    logits = np.log(np.clip(p, 1e-12, None)) / max(temp, 1e-6)
+    scaled = _softmax(logits)
+    # Nucleus filter
+    order = np.argsort(-scaled)
+    cumsum = np.cumsum(scaled[order])
+    keep = cumsum <= top_p
+    keep[0] = True
+    filtered = np.zeros_like(scaled)
+    filtered[order[keep]] = scaled[order[keep]]
+    filtered = filtered / max(filtered.sum(), 1e-12)
+    return int(np.random.choice(filtered.size, p=filtered))
 
 
 def _read_meta(path: Path) -> dict:
@@ -244,7 +269,7 @@ class Recommender:
                 last = shape[-1]
                 if isinstance(last, int) and last > 0:
                     ride_dim = last
-        self.ride_feat_dim = int(ride_dim or RIDE_DYNAMIC_FEAT_DIM_LEGACY)
+        self.ride_feat_dim = int(ride_dim or RIDE_DYNAMIC_FEAT_DIM)
 
     def _load_torch(self, path: Path) -> None:
         import torch
@@ -341,7 +366,7 @@ class Recommender:
                         "step": 0,
                         "stub": True,
                         "path": str(path),
-                        "arch_version": "route_v2",
+                        "arch_version": "rank_route_v1",
                         "route_k": int(model.route_k),
                         "ride_dynamic_feat_dim": int(RIDE_DYNAMIC_FEAT_DIM),
                     },
@@ -409,7 +434,7 @@ class Recommender:
             if force_first is not None and not self._onnx_has_force:
                 raise RuntimeError(
                     "This ONNX model does not support force_first; re-export with "
-                    "Park/tools/export_companion_onnx.py (arch route_v2)."
+                    "Park/tools/export_companion_onnx.py (arch rank_route_v1)."
                 )
             if self._onnx_has_force:
                 feeds["force_first"] = np.asarray(
@@ -458,6 +483,13 @@ class Recommender:
                     routes=None,
                     deterministic=True,
                     force_first=ff,
+                    temperature=float(getattr(park_config, "INFER_TEMP", 0.8)),
+                    close_margin=float(
+                        getattr(park_config, "INFER_CLOSE_MARGIN", 0.12)
+                    )
+                    if force_first is None
+                    else 0.0,
+                    top_p=float(getattr(park_config, "INFER_TOP_P", 0.9)),
                 )
                 logits = out.slot0_logits[0].cpu().numpy()
                 legal = out.slot0_mask[0].cpu().numpy().astype(bool)
@@ -476,12 +508,45 @@ class Recommender:
         if not route_ids:
             route_ids = [force_first if force_first is not None else natural_action]
 
+        # Close-call diversity for ONNX (torch path samples inside forward_route).
+        if (
+            force_first is None
+            and self._session is not None
+            and self._onnx_has_force
+        ):
+            sampled = _close_call_sample(probs)
+            if sampled is not None and sampled != int(route_ids[0]) and bool(legal[sampled]):
+                feeds_ff = {
+                    "guest": guest,
+                    "ride": model_ride,
+                    "env": env,
+                    "force_first": np.asarray([sampled], dtype=np.int64),
+                }
+                if self._onnx_has_slots:
+                    route_out, logits2, slot_logits_np, slot_masks_np = self._session.run(
+                        ["route", "slot0_logits", "slot_logits", "slot_masks"],
+                        feeds_ff,
+                    )
+                    slot_logits_np = np.asarray(slot_logits_np, dtype=np.float32)
+                    slot_masks_np = np.asarray(slot_masks_np, dtype=np.float32) > 0.5
+                else:
+                    route_out, logits2 = self._session.run(
+                        ["route", "slot0_logits"], feeds_ff
+                    )
+                route_ids = [
+                    int(x)
+                    for x in np.asarray(route_out).reshape(-1).tolist()
+                    if int(x) >= 0
+                ]
+                # Keep natural Stage A logits for the distribution UI.
+                del logits2
+
         # Recommended follows the plan's committed next action (forced when set).
         action = int(route_ids[0])
         if force_first is not None and action != force_first:
             raise RuntimeError(
                 f"Model did not honor force_first={force_first} "
-                f"(got route[0]={action}); re-export ONNX as route_v2."
+                f"(got route[0]={action}); re-export ONNX as rank_route_v1."
             )
 
         distribution = _dist_rows(logits, legal, action_dim=NUM_ACTIONS)

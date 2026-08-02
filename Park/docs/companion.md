@@ -89,7 +89,7 @@ Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX
 
 ## Observation mapping
 
-Live features are built in `companion/server/obs.py` to match training (`FLAT_OBS_DIM=356`):
+Live features are built in `companion/server/obs.py` to match training (`FLAT_OBS_DIM=420`, `rank_route_v1`):
 
 | Slot | Source |
 |------|--------|

@@ -21,15 +21,16 @@ constexpr int kBreakdownRepairMaxSec = 60 * 60;
 constexpr int kMetricsSampleIntervalSec = 300;
 constexpr int kMinDwellSec = 2 * 3600;
 
-// Guest feats: 0..33 preferences, 34 remaining sharpened pref mass
-// (Σ preference**kPrefRewardExp over unfinished rides), 35..44 party state,
-// 45 elapsed_since_spawn / DAY_SECONDS.
-constexpr int kGuestFeatDim = 46;
-// Per-ride dynamic feats (party-relative walk/history/must-do/pref included):
+// Guest feats (rank_route_v1): 0..33 preferences, 34 remaining sharpened pref mass
+// (Σ preference**kPrefRewardExp over unfinished rides), 35 speed/2, 36 time_left,
+// 37 loc, 38 rides_completed, 39 must_do_count/5, 40 at_ride_node, 41 state/16,
+// 42 elapsed_since_spawn / DAY_SECONDS. (party_size / balk / walk_target removed)
+constexpr int kGuestFeatDim = 43;
+// Per-ride dynamic feats:
 // 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do,
-// 8 unfinished sharpened pref (preference**kPrefRewardExp, else 0 if already ridden)
-constexpr int kRideDynamicFeatDim = 9;
-constexpr int kEnvDynamicFeatDim = 4;
+// 8 unfinished sharpened pref, 9 eta=(walk+wait), 10 wait_vs_mean
+constexpr int kRideDynamicFeatDim = 11;
+constexpr int kEnvDynamicFeatDim = 3;  // time_of_day, mean_wait, broken_fraction
 constexpr int kNumActions = 36;  // 34 rides + exit + idle
 constexpr int kFlatObsDim = kGuestFeatDim + kNumRides * kRideDynamicFeatDim + kEnvDynamicFeatDim;
 
@@ -77,12 +78,11 @@ constexpr double kShortWaitSlackSec = 2.0 * 60.0; // Pass 3 relative-to-best sla
 // Pref mass is raised to kPrefRewardExp so high-preference completions dominate
 // many low-preference fillers (see config.PPO_PREF_REWARD_EXP).
 constexpr float kPrefRewardExp = 2.0f;
-constexpr float kPrefRewardScale = 0.2f;
-constexpr float kMustDoCompletionBonus = 0.15f;
+constexpr float kPrefRewardScale = 0.15f;
+constexpr float kMustDoCompletionBonus = 0.35f;
 constexpr float kTimeDecay = 0.75f;
 constexpr float kMustDoUrgencyCoef = 2e-5f;
 constexpr float kPrefUrgencyCoef = 1e-5f;
-constexpr bool kWeightByPartySize = true;
 constexpr float kUnfulfilledMustDoPenalty = 2.0f;
 
 enum class EventType : uint8_t {

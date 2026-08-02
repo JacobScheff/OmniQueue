@@ -9,8 +9,9 @@ from pathlib import Path
 import torch
 
 import Park.config as config
-from Park.model import ParkRouterModel
+from Park.model import RankRouteModel
 from Park.training.features import (
+    CANDIDATE_M,
     D_MODEL,
     ENV_DYNAMIC_FEAT_DIM,
     GUEST_FEAT_DIM,
@@ -26,54 +27,32 @@ class TrainConfig:
     ride_dynamic_feat_dim: int = RIDE_DYNAMIC_FEAT_DIM
     environment_dynamic_feat_dim: int = ENV_DYNAMIC_FEAT_DIM
     d_model: int = D_MODEL
-    route_k: int = 6
-    arch_version: str = "route_v1"
+    route_k: int = 5
+    candidate_m: int = CANDIDATE_M
+    arch_version: str = "rank_route_v1"
 
     def __post_init__(self) -> None:
         self.route_k = int(getattr(config, "PPO_ROUTE_K", self.route_k))
+        self.candidate_m = int(getattr(config, "PPO_CANDIDATE_M", self.candidate_m))
         self.arch_version = str(getattr(config, "MODEL_ARCH_VERSION", self.arch_version))
 
 
-def default_model(device: str | torch.device = "cpu") -> ParkRouterModel:
+def default_model(device: str | torch.device = "cpu") -> RankRouteModel:
     cfg = TrainConfig()
-    model = ParkRouterModel(
+    model = RankRouteModel(
         guest_feat_dim=cfg.guest_feat_dim,
         num_rides=cfg.num_rides,
         ride_dynamic_feat_dim=cfg.ride_dynamic_feat_dim,
         environment_dynamic_feat_dim=cfg.environment_dynamic_feat_dim,
         d_model=cfg.d_model,
         route_k=cfg.route_k,
+        candidate_m=cfg.candidate_m,
     )
     return model.to(device)
 
 
-def _try_widen_ride_feat_proj(model: ParkRouterModel, state: dict) -> bool:
-    """Copy a narrower ``ride_feat_proj.0`` into a wider first linear; zero new columns.
-
-    Used when warm-starting from checkpoints trained with fewer ride dynamic feats
-    (e.g. 8 → 9 after adding unfinished-pref). Returns True if a widen was applied.
-    """
-    key_w = "ride_feat_proj.0.weight"
-    key_b = "ride_feat_proj.0.bias"
-    if key_w not in state:
-        return False
-    layer = model.ride_feat_proj[0]
-    tw = layer.weight
-    sw = state[key_w]
-    if tw.ndim != 2 or sw.ndim != 2:
-        return False
-    if tw.shape[0] != sw.shape[0] or tw.shape[1] <= sw.shape[1]:
-        return False
-    with torch.no_grad():
-        tw.zero_()
-        tw[:, : sw.shape[1]].copy_(sw.to(device=tw.device, dtype=tw.dtype))
-        if key_b in state and layer.bias is not None:
-            layer.bias.copy_(state[key_b].to(device=layer.bias.device, dtype=layer.bias.dtype))
-    return True
-
-
-def _load_state_flexible(model: ParkRouterModel, state: dict) -> list[str]:
-    """Load matching tensors; allow encoder warm-start from single-action checkpoints."""
+def _load_state_flexible(model: RankRouteModel, state: dict) -> list[str]:
+    """Load matching tensors; skip incompatible keys (no legacy widen bridges)."""
     model_state = model.state_dict()
     filtered = {
         k: v
@@ -89,14 +68,12 @@ def _load_state_flexible(model: ParkRouterModel, state: dict) -> list[str]:
         notes.append(f"missing={len(missing)}")
     if unexpected:
         notes.append(f"unexpected={len(unexpected)}")
-    if _try_widen_ride_feat_proj(model, state):
-        notes.append("widened_ride_feat_proj")
     return notes
 
 
 def save_checkpoint(
     path: str | Path,
-    model: ParkRouterModel,
+    model: RankRouteModel,
     optimizer: torch.optim.Optimizer | None,
     step: int,
     extra: dict | None = None,
@@ -107,6 +84,7 @@ def save_checkpoint(
     meta_extra = {
         "arch_version": cfg.arch_version,
         "route_k": cfg.route_k,
+        "candidate_m": cfg.candidate_m,
         **(extra or {}),
     }
     payload = {
@@ -131,17 +109,19 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     *,
     strict: bool = False,
-) -> tuple[ParkRouterModel, int, dict]:
+) -> tuple[RankRouteModel, int, dict]:
     payload = torch.load(path, map_location=device, weights_only=False)
     cfg_raw = payload.get("config", asdict(TrainConfig()))
-    route_k = int(cfg_raw.get("route_k", getattr(config, "PPO_ROUTE_K", 6)))
-    model = ParkRouterModel(
+    route_k = int(cfg_raw.get("route_k", getattr(config, "PPO_ROUTE_K", 5)))
+    candidate_m = int(cfg_raw.get("candidate_m", getattr(config, "PPO_CANDIDATE_M", CANDIDATE_M)))
+    model = RankRouteModel(
         guest_feat_dim=cfg_raw["guest_feat_dim"],
         num_rides=cfg_raw["num_rides"],
         ride_dynamic_feat_dim=cfg_raw["ride_dynamic_feat_dim"],
         environment_dynamic_feat_dim=cfg_raw["environment_dynamic_feat_dim"],
         d_model=cfg_raw.get("d_model", D_MODEL),
         route_k=route_k,
+        candidate_m=candidate_m,
     )
     state = payload["model_state_dict"]
     extra = dict(payload.get("extra", {}) or {})

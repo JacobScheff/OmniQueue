@@ -1,4 +1,4 @@
-"""Python-side route consistency / walk shaping for multi-ride plans."""
+"""Python-side walk shaping for multi-ride rank-then-route plans."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Sequence
 import numpy as np
 
 import Park.config as config
-from Park.training.features import NUM_RIDES, RIDE_FEAT_OPEN, RIDE_FEAT_WALK
+from Park.training.features import NUM_RIDES, RIDE_FEAT_WALK
 
 ROUTE_PAD = -1
 
@@ -15,7 +15,7 @@ _ride_walk_sec: np.ndarray | None = None
 
 
 def route_k() -> int:
-    return int(getattr(config, "PPO_ROUTE_K", 6))
+    return int(getattr(config, "PPO_ROUTE_K", 5))
 
 
 def ride_walk_matrix_sec() -> np.ndarray:
@@ -60,39 +60,6 @@ def commit_action(route: np.ndarray | Sequence[int]) -> int:
     return int(route[0])
 
 
-def consistency_bonus(
-    new_route: np.ndarray,
-    prev_route: np.ndarray | None,
-    *,
-    ride_open: np.ndarray | None = None,
-    ride_history_done: np.ndarray | None = None,
-) -> float:
-    """Front-weighted shifted consistency: new[i] vs prev[i+1]."""
-    if prev_route is None:
-        return 0.0
-    prev = np.asarray(prev_route, dtype=np.int64).reshape(-1)
-    new = np.asarray(new_route, dtype=np.int64).reshape(-1)
-    if not is_ride_action(int(new[0])) or not is_ride_action(int(prev[0])):
-        return 0.0
-    weights = tuple(getattr(config, "PPO_ROUTE_CONSIST_WEIGHTS", (1.0, 0.5, 0.25, 0.1, 0.05)))
-    coef = float(getattr(config, "PPO_ROUTE_CONSIST_COEF", 0.02))
-    score = 0.0
-    for i, w in enumerate(weights):
-        if i >= new.shape[0] or (i + 1) >= prev.shape[0]:
-            break
-        cand = int(new[i])
-        old = int(prev[i + 1])
-        if not is_ride_action(cand) or not is_ride_action(old):
-            continue
-        if ride_open is not None and float(ride_open[cand]) <= 0.5:
-            continue
-        if ride_history_done is not None and float(ride_history_done[cand]) > 0.5:
-            continue
-        if cand == old:
-            score += float(w)
-    return coef * score
-
-
 def planned_walk_penalty(route: np.ndarray) -> float:
     """Mean inter-ride walk along the emitted ride route, normalized."""
     route = np.asarray(route, dtype=np.int64).reshape(-1)
@@ -135,19 +102,12 @@ def route_shaping_delta(
 ) -> tuple[float, float]:
     """Return (emit_shaping, realized_walk_sec_to_apply_later).
 
-    emit_shaping = consistency - planned_walk (applied when reward for this
-    transition arrives). realized_walk_sec is stored and converted with
-    ``realized_walk_penalty`` at the same time.
+    emit_shaping = -planned_walk (applied when reward for this transition arrives).
+    ``prev_route`` is accepted for API stability but unused (consistency removed).
+    realized_walk_sec is stored and converted with ``realized_walk_penalty`` later.
     """
-    open_flags = ride_feats[:, RIDE_FEAT_OPEN]
-    history = ride_feats[:, 6]
-    consist = consistency_bonus(
-        new_route,
-        prev_route,
-        ride_open=open_flags,
-        ride_history_done=history,
-    )
+    del prev_route  # consistency shaping removed in rank_route_v1
     planned = planned_walk_penalty(new_route)
     commit = commit_action(new_route)
     walk_sec = walk_sec_to_commit(ride_feats, commit)
-    return consist - planned, walk_sec
+    return -planned, walk_sec

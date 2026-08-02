@@ -11,6 +11,7 @@ from Park.training.features import (
     ENV_DYNAMIC_FEAT_DIM,
     FLAT_OBS_DIM,
     GUEST_FEAT_DIM,
+    GUEST_FEAT_TIME_LEFT,
     NUM_ACTIONS,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
@@ -49,7 +50,7 @@ def test_obs_flat_to_tensors():
 
 def test_action_mask_closes_broken_and_soft_close():
     guest = torch.zeros(1, GUEST_FEAT_DIM)
-    guest[..., 37] = 0.5  # time left
+    guest[..., GUEST_FEAT_TIME_LEFT] = 0.5
     ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     ride[..., RIDE_FEAT_OPEN] = 1.0
     ride[..., 0, RIDE_FEAT_OPEN] = 0.0  # ride 0 closed
@@ -93,7 +94,7 @@ def test_masked_cross_entropy_keeps_label_legal():
 def test_forward_with_mask_sets_illegal_logits():
     model = default_model("cpu")
     guest = torch.zeros(1, GUEST_FEAT_DIM)
-    guest[..., 37] = 0.5
+    guest[..., GUEST_FEAT_TIME_LEFT] = 0.5
     ride = torch.zeros(1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     ride[..., RIDE_FEAT_OPEN] = 1.0
     ride[..., 0, RIDE_FEAT_OPEN] = 0.0
@@ -106,44 +107,9 @@ def test_forward_with_mask_sets_illegal_logits():
 
 def test_train_config_defaults():
     cfg = TrainConfig()
-    assert cfg.d_model == 256
+    assert cfg.d_model == 384
     assert cfg.ride_dynamic_feat_dim == RIDE_DYNAMIC_FEAT_DIM
-
-
-def test_warm_start_widens_ride_feat_proj_from_legacy_dim(tmp_path):
-    """8-feat checkpoints widen ride_feat_proj.0 into the current 9-feat model."""
-    from Park.model import ParkRouterModel
-    from Park.training.checkpoint import _load_state_flexible
-    from Park.training.features import (
-        D_MODEL,
-        ENV_DYNAMIC_FEAT_DIM,
-        GUEST_FEAT_DIM,
-        NUM_RIDES,
-        RIDE_DYNAMIC_FEAT_DIM,
-        RIDE_DYNAMIC_FEAT_DIM_LEGACY,
-    )
-
-    device = torch.device("cpu")
-    legacy = ParkRouterModel(
-        guest_feat_dim=GUEST_FEAT_DIM,
-        num_rides=NUM_RIDES,
-        ride_dynamic_feat_dim=RIDE_DYNAMIC_FEAT_DIM_LEGACY,
-        environment_dynamic_feat_dim=ENV_DYNAMIC_FEAT_DIM,
-        d_model=D_MODEL,
-    ).to(device)
-    with torch.no_grad():
-        legacy.ride_feat_proj[0].weight.fill_(0.5)
-        legacy.ride_feat_proj[0].bias.fill_(0.1)
-        legacy.q_proj.weight.fill_(0.3)
-
-    target = default_model(device)
-    notes = _load_state_flexible(target, legacy.state_dict())
-    assert any("widened_ride_feat_proj" in n for n in notes)
-    w = target.ride_feat_proj[0].weight.detach()
-    assert w.shape == (D_MODEL, RIDE_DYNAMIC_FEAT_DIM)
-    assert torch.allclose(w[:, :RIDE_DYNAMIC_FEAT_DIM_LEGACY], torch.full_like(w[:, :8], 0.5))
-    assert torch.allclose(w[:, RIDE_DYNAMIC_FEAT_DIM_LEGACY:], torch.zeros_like(w[:, 8:]))
-    assert torch.allclose(target.q_proj.weight, torch.full_like(target.q_proj.weight, 0.3))
+    assert cfg.arch_version == "rank_route_v1"
 
 
 def test_ppo_warm_start_keeps_optimizer_linked(tmp_path):

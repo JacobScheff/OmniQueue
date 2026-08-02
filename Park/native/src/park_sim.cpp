@@ -1596,9 +1596,6 @@ private:
             if (was_must_do) {
                 bonus += kMustDoCompletionBonus * time_factor;
             }
-            if (kWeightByPartySize) {
-                bonus *= static_cast<float>(size);
-            }
             pending_pref_reward_[static_cast<size_t>(party_id)] += bonus;
         }
         if (was_must_do) {
@@ -1865,23 +1862,18 @@ private:
             }
         }
         obs.guest[34] = remaining_pref;
-        obs.guest[35] = parties_.party_size[party_id] / 8.0f;
-        obs.guest[36] = parties_.effective_speed[party_id] / 2.0f;
-        obs.guest[37] = static_cast<float>(parties_.leave_sec[party_id] - now_sec) / static_cast<float>(kDaySeconds);
-        obs.guest[38] = static_cast<float>(parties_.location_node_idx[party_id]) / static_cast<float>(gd::kNumNodes);
-        obs.guest[39] = parties_.rides_completed[party_id] / 20.0f;
+        obs.guest[35] = parties_.effective_speed[party_id] / 2.0f;
+        obs.guest[36] = static_cast<float>(parties_.leave_sec[party_id] - now_sec) / static_cast<float>(kDaySeconds);
+        obs.guest[37] = static_cast<float>(parties_.location_node_idx[party_id]) / static_cast<float>(gd::kNumNodes);
+        obs.guest[38] = parties_.rides_completed[party_id] / 20.0f;
         int must_count = 0;
-        float balk_sum = 0.0f;
         for (int i = 0; i < kNumRides; ++i) {
             must_count += parties_.must_do_remaining[party_id][i];
-            balk_sum += parties_.balk_sec[party_id][i];
         }
-        obs.guest[40] = static_cast<float>(must_count) / 5.0f;
-        obs.guest[41] = gd::kNodeIdxToRide[parties_.location_node_idx[party_id]] >= 0 ? 1.0f : 0.0f;
-        obs.guest[42] = parties_.state[party_id] / 16.0f;
-        obs.guest[43] = balk_sum / static_cast<float>(kNumRides) / 3600.0f;
-        obs.guest[44] = parties_.walk_target_ride[party_id] >= 0 ? 1.0f : 0.0f;
-        obs.guest[45] = static_cast<float>(std::max(0, now_sec - parties_.spawn_sec[party_id])) /
+        obs.guest[39] = static_cast<float>(must_count) / 5.0f;
+        obs.guest[40] = gd::kNodeIdxToRide[parties_.location_node_idx[party_id]] >= 0 ? 1.0f : 0.0f;
+        obs.guest[41] = parties_.state[party_id] / 16.0f;
+        obs.guest[42] = static_cast<float>(std::max(0, now_sec - parties_.spawn_sec[party_id])) /
                         static_cast<float>(kDaySeconds);
 
         const int node_idx = parties_.location_node_idx[party_id];
@@ -1891,27 +1883,6 @@ private:
             speed = 0.1f;
         }
         const double walk_scale = kBaseWalkingSpeed / static_cast<double>(speed);
-        for (int r = 0; r < kNumRides; ++r) {
-            const size_t base = static_cast<size_t>(r * kRideDynamicFeatDim);
-            obs.ride[base + 0] = std::min(wait_arr_[r], 3600.0f) / 3600.0f;
-            obs.ride[base + 1] = static_cast<float>(rides_[r].incoming) / 100.0f;
-            obs.ride[base + 2] = open_mask_[r] ? 1.0f : 0.0f;
-            obs.ride[base + 3] = static_cast<float>(duration_arr_[r]) / 900.0f;
-            obs.ride[base + 4] = static_cast<float>(gd::kRideCapacityPerSec[r]);
-            if (current_ride == r) {
-                obs.ride[base + 5] = 0.0f;  // already at this ride entrance
-            } else {
-                const float walk_sec = static_cast<float>(
-                    std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][r] * walk_scale))));
-                obs.ride[base + 5] = std::min(walk_sec, 3600.0f) / 3600.0f;
-            }
-            obs.ride[base + 6] =
-                std::min(static_cast<float>(parties_.ride_history[party_id][r]), 10.0f) / 10.0f;
-            obs.ride[base + 7] = parties_.must_do_remaining[party_id][r] != 0 ? 1.0f : 0.0f;
-            obs.ride[base + 8] = parties_.ride_history[party_id][r] == 0
-                                     ? pref_value(parties_.preferences[party_id][static_cast<size_t>(r)])
-                                     : 0.0f;
-        }
 
         double mean = 0.0;
         int broken = 0;
@@ -1928,11 +1899,38 @@ private:
         if (valid > 0) {
             mean /= valid;
         }
+        const float mean_wait_feat = static_cast<float>(mean / 3600.0);
+
+        for (int r = 0; r < kNumRides; ++r) {
+            const size_t base = static_cast<size_t>(r * kRideDynamicFeatDim);
+            const float wait_feat = std::min(wait_arr_[r], 3600.0f) / 3600.0f;
+            obs.ride[base + 0] = wait_feat;
+            obs.ride[base + 1] = static_cast<float>(rides_[r].incoming) / 100.0f;
+            obs.ride[base + 2] = open_mask_[r] ? 1.0f : 0.0f;
+            obs.ride[base + 3] = static_cast<float>(duration_arr_[r]) / 900.0f;
+            obs.ride[base + 4] = static_cast<float>(gd::kRideCapacityPerSec[r]);
+            float walk_feat = 0.0f;
+            if (current_ride == r) {
+                walk_feat = 0.0f;  // already at this ride entrance
+            } else {
+                const float walk_sec = static_cast<float>(
+                    std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][r] * walk_scale))));
+                walk_feat = std::min(walk_sec, 3600.0f) / 3600.0f;
+            }
+            obs.ride[base + 5] = walk_feat;
+            obs.ride[base + 6] =
+                std::min(static_cast<float>(parties_.ride_history[party_id][r]), 10.0f) / 10.0f;
+            obs.ride[base + 7] = parties_.must_do_remaining[party_id][r] != 0 ? 1.0f : 0.0f;
+            obs.ride[base + 8] = parties_.ride_history[party_id][r] == 0
+                                     ? pref_value(parties_.preferences[party_id][static_cast<size_t>(r)])
+                                     : 0.0f;
+            obs.ride[base + 9] = std::min(walk_feat + wait_feat, 2.0f);
+            obs.ride[base + 10] = std::max(-1.0f, std::min(1.0f, wait_feat - mean_wait_feat));
+        }
+
         obs.env[0] = static_cast<float>(now_sec) / static_cast<float>(kDaySeconds);
-        obs.env[1] = static_cast<float>(mean / 3600.0);
-        // Wait variance withheld from the policy (preference objective); keep slot for layout.
-        obs.env[2] = 0.0f;
-        obs.env[3] = static_cast<float>(broken) / static_cast<float>(kNumRides);
+        obs.env[1] = mean_wait_feat;
+        obs.env[2] = static_cast<float>(broken) / static_cast<float>(kNumRides);
         return obs;
     }
 

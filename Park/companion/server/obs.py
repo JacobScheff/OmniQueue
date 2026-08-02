@@ -1,4 +1,4 @@
-"""Build ParkRouterModel observations from live waits + user state."""
+"""Build RankRouteModel observations from live waits + user state."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class CompanionState:
     location_node_id: int  # park graph node id (hub or ride node)
     leave_sec: int | None = None  # seconds since park open; None → stay until close
     spawn_sec: int = 0  # arrival time since open
-    party_size: int = 2
+    party_size: int = 2  # retained for UI; not an obs feature
     walking_speed: float = float(config.BASE_WALKING_SPEED)
 
 
@@ -128,20 +128,16 @@ def build_live_observation(
     pref_exp = float(getattr(config, "PPO_PREF_REWARD_EXP", 1.0))
     unfinished = prefs[history == 0]
     guest[34] = float(np.power(np.clip(unfinished, 0.0, None), pref_exp).sum())
-    guest[35] = float(np.clip(state.party_size, 1, 16)) / 8.0
-    guest[36] = float(state.walking_speed) / 2.0
-    guest[37] = float(leave_sec - now_sec) / float(config.DAY_SECONDS)
+    guest[35] = float(state.walking_speed) / 2.0
+    guest[36] = float(leave_sec - now_sec) / float(config.DAY_SECONDS)
     loc_idx = park.node_to_idx(state.location_node_id)
-    guest[38] = float(loc_idx) / float(park.num_nodes)
-    guest[39] = float(min(int(history.sum()), 40)) / 20.0
-    guest[40] = float(must_remaining.sum()) / 5.0
+    guest[37] = float(loc_idx) / float(park.num_nodes)
+    guest[38] = float(min(int(history.sum()), 40)) / 20.0
+    guest[39] = float(must_remaining.sum()) / 5.0
     at_ride = int(park.node_idx_to_ride[loc_idx])
-    guest[41] = 1.0 if at_ride >= 0 else 0.0
-    guest[42] = _STATE_WALKING / 16.0
-    balk = compute_balk_sec(prefs)
-    guest[43] = float(balk.mean()) / 3600.0
-    guest[44] = 0.0  # not mid-walk toward a target
-    guest[45] = float(max(0, now_sec - int(state.spawn_sec))) / float(config.DAY_SECONDS)
+    guest[40] = 1.0 if at_ride >= 0 else 0.0
+    guest[41] = _STATE_WALKING / 16.0
+    guest[42] = float(max(0, now_sec - int(state.spawn_sec))) / float(config.DAY_SECONDS)
 
     ride = np.zeros((NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
     walk_secs = park.walk_times_to_rides(state.location_node_id, state.walking_speed)
@@ -151,6 +147,7 @@ def build_live_observation(
     wait_n = 0
     broken = 0
     warnings: list[str] = []
+    wait_feats = np.zeros(NUM_RIDES, dtype=np.float32)
 
     for r in range(NUM_RIDES):
         live = by_id.get(r)
@@ -171,30 +168,37 @@ def build_live_observation(
             wait_sum += wait_sec
             wait_n += 1
 
-        ride[r, 0] = min(wait_sec, 3600.0) / 3600.0
+        wait_feat = min(wait_sec, 3600.0) / 3600.0
+        wait_feats[r] = wait_feat
+        ride[r, 0] = wait_feat
         ride[r, 1] = 0.0  # incoming unavailable from public APIs
         ride[r, 2] = 1.0 if is_open else 0.0
         ride[r, 3] = float(config.RIDES[r]["duration_sec"]) / 900.0
         ride[r, 4] = float(config.RIDES[r]["capacity_per_hour"]) / 3600.0
         if at_ride == r:
-            ride[r, 5] = 0.0
+            walk_feat = 0.0
         else:
-            ride[r, 5] = min(float(walk_secs[r]), 3600.0) / 3600.0
+            walk_feat = min(float(walk_secs[r]), 3600.0) / 3600.0
+        ride[r, 5] = walk_feat
         ride[r, 6] = min(float(history[r]), 10.0) / 10.0
         ride[r, 7] = 1.0 if must_remaining[r] else 0.0
         if history[r] == 0:
             ride[r, 8] = float(np.power(max(float(prefs[r]), 0.0), pref_exp))
         else:
             ride[r, 8] = 0.0
+        ride[r, 9] = min(walk_feat + wait_feat, 2.0)
 
     warnings.append("incoming queue pressure set to 0 (not provided by wait API)")
 
+    mean_wait = (wait_sum / wait_n) if wait_n else 0.0
+    mean_wait_feat = float(mean_wait / 3600.0)
+    for r in range(NUM_RIDES):
+        ride[r, 10] = float(np.clip(wait_feats[r] - mean_wait_feat, -1.0, 1.0))
+
     env = np.zeros(ENV_DYNAMIC_FEAT_DIM, dtype=np.float32)
     env[0] = float(now_sec) / float(config.DAY_SECONDS)
-    mean_wait = (wait_sum / wait_n) if wait_n else 0.0
-    env[1] = float(mean_wait / 3600.0)
-    env[2] = 0.0
-    env[3] = float(broken) / float(NUM_RIDES)
+    env[1] = mean_wait_feat
+    env[2] = float(broken) / float(NUM_RIDES)
 
     flat = np.concatenate([guest, ride.reshape(-1), env]).astype(np.float32)
     assert flat.shape == (FLAT_OBS_DIM,), flat.shape

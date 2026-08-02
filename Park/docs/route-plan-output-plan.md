@@ -1,7 +1,7 @@
 # Plan: Multi-Ride Route Output + Consistency / Walk Shaping
 
-**Status:** implemented (model, PPO shaping + CF KL, companion route API; retrain + re-export ONNX required)  
-**Goal:** Change the personal planner from a **single next-ride** action to a **length-K route** (default K=6). Execute only `route[0]`; keep the existing preference / must-do reward as primary; add front-weighted **route consistency**, **planned walk**, and **realized walk** shaping; fight mode collapse (universal opener) with a **counterfactual preference KL** regularizer.
+**Status:** superseded by [`rank-route-architecture.md`](rank-route-architecture.md) (`rank_route_v1`)  
+**Goal (historical):** Change the personal planner from a **single next-ride** action to a **length-K route** (default K=6). Execute only `route[0]`; keep the existing preference / must-do reward as primary; add front-weighted **route consistency**, **planned walk**, and **realized walk** shaping; fight mode collapse (universal opener) with a **counterfactual preference KL** regularizer.
 
 Related code today: `model.py` (`ParkRouterModel`), `training/features.py`, `training/ppo_train.py`, `training/bc_train.py`, `router/ppo.py`, `native/src/park_sim.cpp` (`env_reward_delta`, `handle_ride_complete`, `ParkEnv`), `config.py`, `companion/server/recommend.py`, `docs/training.md`, `docs/pref-mustdo-reward-plan.md` (reward baseline — remains in force).
 

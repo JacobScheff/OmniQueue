@@ -1,44 +1,50 @@
-"""Tests for multi-ride route decoder, shaping, and CF helpers."""
+"""Tests for rank-then-route model, walk shaping, and CF helpers."""
 
-import numpy as np
 import torch
 
-from Park.model import ParkRouterModel, forward_route_with_mask
+from Park.model import ParkRouterModel, RankRouteModel, forward_route_with_mask
 from Park.training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from Park.training.features import (
     D_MODEL,
     ENV_DYNAMIC_FEAT_DIM,
     GUEST_FEAT_DIM,
+    GUEST_FEAT_TIME_LEFT,
     NUM_ACTIONS,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
+    RIDE_FEAT_ETA,
     RIDE_FEAT_HISTORY,
     RIDE_FEAT_MUST_DO,
     RIDE_FEAT_OPEN,
     RIDE_FEAT_UNFINISHED_PREF,
+    RIDE_FEAT_WAIT,
     RIDE_FEAT_WALK,
     ROUTE_PAD,
     js_divergence,
     pref_rank_aux_loss,
     rewrite_prefs_must_dos,
+    rewrite_waits,
     top_must_do_or_pref,
 )
 from Park.training.route_reward import (
-    consistency_bonus,
     pad_route,
     planned_walk_penalty,
     realized_walk_penalty,
+    route_shaping_delta,
 )
 
 
 def _open_obs(batch: int = 2):
     guest = torch.zeros(batch, GUEST_FEAT_DIM)
-    guest[..., 37] = 0.5
+    guest[..., GUEST_FEAT_TIME_LEFT] = 0.5
     guest[..., :NUM_RIDES] = 1.0 / NUM_RIDES
     ride = torch.zeros(batch, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     ride[..., RIDE_FEAT_OPEN] = 1.0
     ride[..., RIDE_FEAT_WALK] = 0.1
+    ride[..., RIDE_FEAT_WAIT] = 0.1
+    ride[..., RIDE_FEAT_ETA] = 0.2
     env = torch.zeros(batch, ENV_DYNAMIC_FEAT_DIM)
+    env[..., 1] = 0.1
     return guest, ride, env
 
 
@@ -52,6 +58,7 @@ def test_route_decode_shape_and_no_repeat():
     assert out.slot0_logits.shape == (4, NUM_ACTIONS)
     assert out.slot_logits.shape == (4, model.route_k, NUM_ACTIONS)
     assert out.slot_masks.shape == (4, model.route_k, NUM_ACTIONS)
+    assert isinstance(model, RankRouteModel)
     for b in range(4):
         rides = [int(a) for a in out.routes[b].tolist() if 0 <= int(a) < NUM_RIDES]
         assert len(rides) == len(set(rides))
@@ -60,6 +67,7 @@ def test_route_decode_shape_and_no_repeat():
 def test_walk_refresh_changes_tail_logits():
     """Slot-1 logits should depend on inter-ride walks from the forced slot-0 ride."""
     model = default_model("cpu")
+    model.candidate_m = NUM_RIDES  # all rides visible so walk edits affect keys
     with torch.no_grad():
         model.ride_walk_norm.fill_(0.5)
         model.ride_walk_norm[0, 1] = 0.01
@@ -87,21 +95,15 @@ def test_pref_rank_aux_loss_finite_and_prefers_aligned_logits():
     ride[..., RIDE_FEAT_UNFINISHED_PREF] = 0.0
     ride[:, 3, RIDE_FEAT_UNFINISHED_PREF] = 1.0
     ride[:, 3, RIDE_FEAT_MUST_DO] = 1.0
-    k = 6
-    slot_logits = torch.zeros(2, k, NUM_ACTIONS)
-    slot_masks = torch.zeros(2, k, NUM_ACTIONS, dtype=torch.bool)
-    slot_masks[:, :, :NUM_RIDES] = True
-    # Aligned: high logit on ride 3 for slots 1–2
-    slot_logits[:, 1, 3] = 5.0
-    slot_logits[:, 2, 3] = 5.0
-    good = pref_rank_aux_loss(slot_logits, slot_masks, ride)
-    # Misaligned: high logit on a zero-pref ride
-    bad_logits = slot_logits.clone()
-    bad_logits[:, 1, 3] = 0.0
-    bad_logits[:, 2, 3] = 0.0
-    bad_logits[:, 1, 7] = 5.0
-    bad_logits[:, 2, 7] = 5.0
-    bad = pref_rank_aux_loss(bad_logits, slot_masks, ride)
+    stage_logits = torch.zeros(2, NUM_ACTIONS)
+    stage_mask = torch.zeros(2, NUM_ACTIONS, dtype=torch.bool)
+    stage_mask[:, :NUM_RIDES] = True
+    stage_logits[:, 3] = 5.0
+    good = pref_rank_aux_loss(stage_logits, stage_mask, ride)
+    bad_logits = stage_logits.clone()
+    bad_logits[:, 3] = 0.0
+    bad_logits[:, 7] = 5.0
+    bad = pref_rank_aux_loss(bad_logits, stage_mask, ride)
     assert torch.isfinite(good) and torch.isfinite(bad)
     assert float(good.item()) < float(bad.item())
 
@@ -124,16 +126,14 @@ def test_force_first_pins_slot0_and_continues():
     rides = [int(a) for a in forced.routes[0].tolist() if 0 <= int(a) < NUM_RIDES]
     assert rides[0] == force_id
     assert len(rides) == len(set(rides))
-    # Slot-0 logits are the natural policy (force only changes the chosen action).
     assert torch.allclose(forced.slot0_logits, natural.slot0_logits)
 
 
 def test_exit_pads_route():
     model = default_model("cpu")
     guest, ride, env = _open_obs(1)
-    # Soft-close → exit only
     env[..., 0] = 1.0
-    guest[..., 37] = 0.0
+    guest[..., GUEST_FEAT_TIME_LEFT] = 0.0
     out = forward_route_with_mask(model, guest, ride, env, deterministic=True)
     assert int(out.routes[0, 0].item()) == NUM_RIDES  # exit
     assert all(int(x.item()) == ROUTE_PAD for x in out.routes[0, 1:])
@@ -158,7 +158,7 @@ def test_slot0_forward_still_works():
         ride_dynamic_feat_dim=RIDE_DYNAMIC_FEAT_DIM,
         environment_dynamic_feat_dim=ENV_DYNAMIC_FEAT_DIM,
         d_model=D_MODEL,
-        route_k=6,
+        route_k=5,
     )
     guest, ride, env = _open_obs(2)
     logits, value = model(guest, ride, env)
@@ -166,14 +166,17 @@ def test_slot0_forward_still_works():
     assert value.shape == (2, 1)
 
 
-def test_consistency_and_walk_shaping():
-    prev = pad_route([1, 2, 3, 4, 5, 6])
-    new = pad_route([2, 3, 9, 10, 11, 12])  # matches shift on first two
-    bonus = consistency_bonus(new, prev)
-    assert bonus > 0.0
+def test_walk_shaping_no_consistency():
+    new = pad_route([2, 3, 9, 10, 11])
     pen = planned_walk_penalty(new)
     assert pen >= 0.0
     assert realized_walk_penalty(600.0) > 0.0
+    ride = torch.zeros(NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM).numpy()
+    ride[:, RIDE_FEAT_OPEN] = 1.0
+    ride[:, RIDE_FEAT_WALK] = 0.1
+    shaping, walk_sec = route_shaping_delta(new, pad_route([1, 2, 3, 4, 5]), ride)
+    assert shaping <= 0.0  # planned walk only (negative)
+    assert walk_sec > 0.0
 
 
 def test_rewrite_prefs_changes_must_dos():
@@ -181,15 +184,44 @@ def test_rewrite_prefs_changes_must_dos():
     ride[..., 0, RIDE_FEAT_HISTORY] = 1.0
     g2, r2 = rewrite_prefs_must_dos(guest, ride)
     assert not torch.allclose(guest[:, :NUM_RIDES], g2[:, :NUM_RIDES])
-    # Completed ride cannot be a must-do
     assert float(r2[0, 0, RIDE_FEAT_MUST_DO].item()) == 0.0
     top = top_must_do_or_pref(g2, r2)
     assert 0 <= int(top[0].item()) < NUM_RIDES
 
 
+def test_rewrite_waits_changes_eta():
+    guest, ride, env = _open_obs(2)
+    ride2, env2 = rewrite_waits(ride, env)
+    assert not torch.allclose(ride[..., RIDE_FEAT_WAIT], ride2[..., RIDE_FEAT_WAIT])
+    assert torch.isfinite(ride2[..., RIDE_FEAT_ETA]).all()
+
+
 def test_js_divergence_identical_zero():
     p = torch.softmax(torch.randn(2, 5), dim=-1)
     assert float(js_divergence(p, p).max().item()) < 1e-5
+
+
+def test_close_call_can_sample():
+    model = default_model("cpu")
+    guest, ride, env = _open_obs(1)
+    # With a large margin, deterministic path may sample
+    outs = {
+        int(
+            forward_route_with_mask(
+                model,
+                guest,
+                ride,
+                env,
+                deterministic=True,
+                temperature=1.0,
+                close_margin=1.0,
+                top_p=1.0,
+            ).routes[0, 0].item()
+        )
+        for _ in range(20)
+    }
+    # Not a hard assert on diversity (random init may be peaked), but call must work.
+    assert len(outs) >= 1
 
 
 def test_checkpoint_partial_load(tmp_path):
@@ -198,7 +230,7 @@ def test_checkpoint_partial_load(tmp_path):
     save_checkpoint(path, donor, None, step=3, extra={"phase": "ppo"})
     loaded, step, extra = load_checkpoint(path, "cpu")
     assert step == 3
-    assert extra.get("arch_version") == "route_v1"
+    assert extra.get("arch_version") == "rank_route_v1"
     guest, ride, env = _open_obs(1)
     out = forward_route_with_mask(loaded, guest, ride, env, deterministic=True)
     assert out.routes.shape[1] == loaded.route_k

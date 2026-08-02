@@ -32,6 +32,7 @@ from Park.training.features import (
     js_divergence,
     pref_rank_aux_loss,
     rewrite_prefs_must_dos,
+    rewrite_waits,
     route_k,
     top_must_do_or_pref,
 )
@@ -114,8 +115,11 @@ class PPOConfig:
     cf_coef: float = getattr(config, "PPO_CF_COEF", 0.1)
     cf_margin: float = getattr(config, "PPO_CF_MARGIN", 0.15)
     cf_frac: float = getattr(config, "PPO_CF_FRAC", 0.25)
+    cf_wait_coef: float = getattr(config, "PPO_CF_WAIT_COEF", 0.1)
+    cf_wait_margin: float = getattr(config, "PPO_CF_WAIT_MARGIN", 0.12)
+    cf_wait_frac: float = getattr(config, "PPO_CF_WAIT_FRAC", 0.25)
     pref_rank_coef: float = getattr(config, "PPO_PREF_RANK_COEF", 0.05)
-    route_k: int = getattr(config, "PPO_ROUTE_K", 6)
+    route_k: int = getattr(config, "PPO_ROUTE_K", 5)
 
 
 @dataclass
@@ -146,6 +150,7 @@ class PPOStats:
     approx_kl: float
     clipfrac: float
     cf_loss: float
+    cf_wait_loss: float
     pref_rank_loss: float
     update_sec: float
 
@@ -427,8 +432,17 @@ def _compute_gae(
     return advantages, returns
 
 
-def _counterfactual_kl_loss(agent: Agent, obs: torch.Tensor, cfg: PPOConfig) -> torch.Tensor:
-    """Hinge JS between slot-0 dists under real vs resampled prefs (world fixed)."""
+def _stage_a_probs(
+    logits: torch.Tensor, mask: torch.Tensor
+) -> torch.Tensor:
+    masked = logits.masked_fill(~mask, -1.0e9)
+    return torch.softmax(masked, dim=-1)
+
+
+def _counterfactual_pref_loss(
+    agent: Agent, obs: torch.Tensor, cfg: PPOConfig
+) -> torch.Tensor:
+    """Hinge JS between Stage A dists under real vs resampled prefs (world fixed)."""
     n = obs.shape[0]
     m = max(1, int(round(n * float(cfg.cf_frac))))
     idx = torch.randperm(n, device=obs.device)[:m]
@@ -448,13 +462,31 @@ def _counterfactual_kl_loss(agent: Agent, obs: torch.Tensor, cfg: PPOConfig) -> 
         ride_cf[same] = r2
 
     logits_b, _, mask_b = forward_with_mask(agent.model, guest_cf, ride_cf, env)
-
-    def _probs(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        masked = logits.masked_fill(~mask, -1.0e9)
-        return torch.softmax(masked, dim=-1)
-
-    js = js_divergence(_probs(logits_a, mask_a), _probs(logits_b, mask_b))
+    js = js_divergence(
+        _stage_a_probs(logits_a, mask_a), _stage_a_probs(logits_b, mask_b)
+    )
     return torch.relu(float(cfg.cf_margin) - js).pow(2).mean()
+
+
+def _counterfactual_wait_loss(
+    agent: Agent, obs: torch.Tensor, cfg: PPOConfig
+) -> torch.Tensor:
+    """Hinge JS between Stage A dists under real vs perturbed waits (prefs fixed)."""
+    n = obs.shape[0]
+    m = max(1, int(round(n * float(cfg.cf_wait_frac))))
+    idx = torch.randperm(n, device=obs.device)[:m]
+    obs_s = obs.index_select(0, idx)
+    guest, ride, env = obs_flat_to_tensors(obs_s)
+    logits_a, _, mask_a = forward_with_mask(agent.model, guest, ride, env)
+    ride_cf, env_cf = rewrite_waits(ride, env)
+    logits_b, _, mask_b = forward_with_mask(agent.model, guest, ride_cf, env_cf)
+    js = js_divergence(
+        _stage_a_probs(logits_a, mask_a), _stage_a_probs(logits_b, mask_b)
+    )
+    return torch.relu(float(cfg.cf_wait_margin) - js).pow(2).mean()
+
+# Back-compat name used in older call sites / docs
+_counterfactual_kl_loss = _counterfactual_pref_loss
 
 
 def _ppo_update(
@@ -474,6 +506,7 @@ def _ppo_update(
     last_approx_kl = 0.0
     last_clipfrac = 0.0
     last_cf_loss = 0.0
+    last_cf_wait_loss = 0.0
     last_pref_rank_loss = 0.0
     update_t0 = time.perf_counter()
     steps_per_epoch = max(1, (n + mb_size - 1) // mb_size)
@@ -509,13 +542,17 @@ def _ppo_update(
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
             v_loss = 0.5 * ((new_value - ret) ** 2).mean()
             entropy_loss = entropy.mean()
-            cf_loss = _counterfactual_kl_loss(agent, obs, cfg)
-            rank_loss = pref_rank_aux_loss(slot_logits, slot_masks, ride_mb)
+            cf_loss = _counterfactual_pref_loss(agent, obs, cfg)
+            cf_wait_loss = _counterfactual_wait_loss(agent, obs, cfg)
+            rank_loss = pref_rank_aux_loss(
+                slot_logits[:, 0], slot_masks[:, 0], ride_mb
+            )
             loss = (
                 pg_loss
                 - cfg.ent_coef * entropy_loss
                 + cfg.vf_coef * v_loss
                 + float(cfg.cf_coef) * cf_loss
+                + float(cfg.cf_wait_coef) * cf_wait_loss
                 + float(cfg.pref_rank_coef) * rank_loss
             )
 
@@ -534,6 +571,7 @@ def _ppo_update(
             last_approx_kl = float(approx_kl.item())
             last_clipfrac = float(clipfrac.item())
             last_cf_loss = float(cf_loss.item())
+            last_cf_wait_loss = float(cf_wait_loss.item())
             last_pref_rank_loss = float(rank_loss.item())
 
             mb_done += 1
@@ -559,6 +597,7 @@ def _ppo_update(
         approx_kl=last_approx_kl,
         clipfrac=last_clipfrac,
         cf_loss=last_cf_loss,
+        cf_wait_loss=last_cf_wait_loss,
         pref_rank_loss=last_pref_rank_loss,
         update_sec=time.perf_counter() - update_t0,
     )
@@ -712,8 +751,8 @@ def train(cfg: PPOConfig) -> None:
             f"{best_marker} pref/guest={batch.avg_preference_score_per_guest:.4f} "
             f"rides={batch.rides_completed:,} rides/focal={batch.rides_per_party:.2f} "
             f"pg_loss={stats.pg_loss:.4f} v_loss={stats.v_loss:.4f} "
-            f"entropy={stats.entropy:.3f} cf={stats.cf_loss:.4f} "
-            f"pref_rank={stats.pref_rank_loss:.4f} "
+            f"entropy={stats.entropy:.3f} cf_pref={stats.cf_loss:.4f} "
+            f"cf_wait={stats.cf_wait_loss:.4f} pref_rank={stats.pref_rank_loss:.4f} "
             f"kl={stats.approx_kl:.4f} clipfrac={stats.clipfrac:.3f} "
             f"rollout={rollout_sec:.1f}s update={stats.update_sec:.1f}s total={elapsed:.1f}s "
             f"eta={eta_sec / 60.0:.1f}m for {remaining_days} day(s)"

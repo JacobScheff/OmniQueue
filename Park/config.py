@@ -209,7 +209,7 @@ MACRO_EDGES.extend([
 # ---------------------------------------------------------------------------
 BC_SAVE_DIR = "checkpoints/bc"
 BC_SAVE_EVERY = 5_000      # save checkpoint every N optimizer steps
-BC_EPOCHS = 10
+BC_EPOCHS = 1
 # Batch size is in individual routing decisions (single-party model, no G axis).
 BC_BATCH_SIZE = 256
 BC_LR = 3e-4
@@ -242,28 +242,36 @@ PPO_UPDATE_MB_SIZE = 256
 PPO_UPDATE_YIELD_SEC = 0.05
 PPO_LOG_EVERY = 5_000             # rollout progress log interval (0 = disabled)
 
-# Multi-ride route output (see docs/route-plan-output-plan.md)
-PPO_ROUTE_K = 6
-PPO_ROUTE_CONSIST_COEF = 0.02
-PPO_ROUTE_CONSIST_WEIGHTS = (1.0, 0.5, 0.25, 0.1, 0.05)  # len K-1; new[i] vs old[i+1]
+# Rank-then-route personal planner (see docs/rank-route-architecture.md)
+PPO_ROUTE_K = 5
+PPO_CANDIDATE_M = 8
 PPO_ROUTE_PLANNED_WALK_COEF = 0.01
 PPO_ROUTE_REALIZED_WALK_COEF = 0.02
 PPO_ROUTE_WALK_NORM_SEC = 600.0
-# Entropy weights per route slot (early slots explore more)
-PPO_ROUTE_ENTROPY_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.15, 0.1)
-# Counterfactual preference KL (hinge on JS divergence of slot-0 dists)
+# Entropy weights per route slot (Stage A uses full weight separately; these weight decoder)
+PPO_ROUTE_ENTROPY_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.15)
+# Counterfactual preference hinge on Stage A (JS divergence)
 PPO_CF_COEF = 0.1
 PPO_CF_MARGIN = 0.15
 PPO_CF_FRAC = 0.25
-# Soft preference ranking on early route-tail slots (training only; see docs/training.md).
-# Encourages slots k∈PPO_PREF_RANK_SLOTS to put mass on unfinished high-pref / must-do rides.
+# Counterfactual wait hinge on Stage A (perturb waits; ranking must move)
+PPO_CF_WAIT_COEF = 0.1
+PPO_CF_WAIT_MARGIN = 0.12
+PPO_CF_WAIT_FRAC = 0.25
+PPO_CF_WAIT_SCALE_LOW = 0.25
+PPO_CF_WAIT_SCALE_HIGH = 2.5
+# Soft preference ranking on Stage A (training only)
 PPO_PREF_RANK_COEF = 0.025
-PPO_PREF_RANK_SLOTS = (1, 2, 3, 4, 5)  # 0-indexed; slot 0 already has CF + primary reward
-PPO_PREF_RANK_MUST_DO_BONUS = 0.5  # added to soft-target score for remaining must-dos
-MODEL_ARCH_VERSION = "route_v1"
+PPO_PREF_RANK_MUST_DO_BONUS = 0.5
+MODEL_ARCH_VERSION = "rank_route_v1"
+
+# Inference diversity (companion / watch / play)
+INFER_TEMP = 0.8
+INFER_TOP_P = 0.9
+INFER_CLOSE_MARGIN = 0.12  # sample when top1-top2 gap < margin
 
 # PPO reward shaping (mirrored in park_sim.hpp)
-# Objective: preferred + must-do rides done quickly per party (guest-weighted).
+# Objective: preferred + must-do rides done quickly per party.
 # Wait variance is KPI/logging only — not in the training reward.
 #
 # On RideComplete (pending, flushed on that party's next routing step):
@@ -271,7 +279,6 @@ MODEL_ARCH_VERSION = "route_v1"
 #   pref_value = preference[ride] ** PPO_PREF_REWARD_EXP
 #   bonus = (PPO_PREF_REWARD_SCALE * pref_value
 #            + PPO_MUST_DO_COMPLETION_BONUS if must-do) * time_factor
-#   if PPO_WEIGHT_BY_PARTY_SIZE: bonus *= party_size
 # Every routing step (party-local):
 #   -PPO_MUST_DO_URGENCY_COEF * remaining_must_dos
 #   -PPO_PREF_URGENCY_COEF * sum(pref**EXP for history==0)
@@ -279,21 +286,17 @@ MODEL_ARCH_VERSION = "route_v1"
 #   -PPO_UNFULFILLED_MUST_DO_PENALTY * (focal_remaining / max(1, focal_assigned))
 #   + flush remaining pending bonuses for learners
 # Python route shaping (added on top of C++ delta; see training/route_reward.py):
-#   + PPO_ROUTE_CONSIST_COEF * Σ w_i * 1[new[i]==old[i+1]]
 #   - PPO_ROUTE_PLANNED_WALK_COEF * mean_inter_ride_walk / WALK_NORM
 #   - PPO_ROUTE_REALIZED_WALK_COEF * walk_to_commit / WALK_NORM
-# Training-only aux (ppo_train.py): PPO_PREF_RANK_COEF * soft CE on early tail slots
+# Training-only aux (ppo_train.py): Stage A pref/wait CF + pref-rank
 #
-# EXP > 1 makes one high-pref completion dominate several low-pref fillers
-# (e.g. raw 80 vs 3×5 → ~85× under EXP=2 after L1 normalize). SCALE is
-# raised vs the linear era so typical top-pref bonuses stay O(same) magnitude.
+# Must-do bonus dominates per-ride pref scale so assigned must-dos are prioritized.
 PPO_PREF_REWARD_EXP = 2.0
-PPO_PREF_REWARD_SCALE = 0.2
-PPO_MUST_DO_COMPLETION_BONUS = 0.15
+PPO_PREF_REWARD_SCALE = 0.15
+PPO_MUST_DO_COMPLETION_BONUS = 0.35
 PPO_TIME_DECAY = 0.75
 PPO_MUST_DO_URGENCY_COEF = 2e-5
 PPO_PREF_URGENCY_COEF = 1e-5
-PPO_WEIGHT_BY_PARTY_SIZE = True
 PPO_UNFULFILLED_MUST_DO_PENALTY = 2.0
 
 

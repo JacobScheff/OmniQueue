@@ -52,7 +52,7 @@ python training/ppo_train.py \
   --device cpu
 ```
 
-`--init-checkpoint` loads matching weight tensors into the PPO agent (fresh Adam). Old single-action checkpoints warm-start the shared encoder / pointer projections; the GRU decoder starts fresh. An 8-feat ride encoder widens into the current 9-feat first linear (new unfinished-pref column zeroed). Checkpoints carry `arch_version=route_v1`.
+`--init-checkpoint` loads matching weight tensors into the PPO agent (fresh Adam). `rank_route_v1` has **no legacy widen bridges** — use a fresh BC checkpoint trained on the current obs layout. Checkpoints carry `arch_version=rank_route_v1`. See [`rank-route-architecture.md`](rank-route-architecture.md).
 
 Each day calls `ParkEnv.reset_personal(seed, n_focals)`:
 
@@ -78,17 +78,16 @@ Rewards are emitted **only on focal routing decisions**. Components:
 | **Dense urgency** | Every focal routing step | `-PPO_MUST_DO_URGENCY_COEF × remaining_must_dos` `- PPO_PREF_URGENCY_COEF × Σ preference[r]**PPO_PREF_REWARD_EXP` (unfinished only) |
 | Preference / must-do | Focal’s next routing step after a real `RideComplete` | `time_factor × (PPO_PREF_REWARD_SCALE × preference[ride]**PPO_PREF_REWARD_EXP + PPO_MUST_DO_COMPLETION_BONUS if must-do)` |
 | Terminal must-do | Last routing step of the day | `-PPO_UNFULFILLED_MUST_DO_PENALTY × (focal_remaining / focal_assigned)` + flush leftover **focal** pending bonuses |
-| Route consistency | Python shaping on the transition | `PPO_ROUTE_CONSIST_COEF × Σ w_i · 1[new[i]==prev[i+1]]` (front-weighted; skips illegal) |
 | Planned walk | Python shaping at emission | `-PPO_ROUTE_PLANNED_WALK_COEF × mean_inter_ride_walk / PPO_ROUTE_WALK_NORM_SEC` |
 | Realized walk | Python shaping with the reward | `-PPO_ROUTE_REALIZED_WALK_COEF × walk_to_commit / PPO_ROUTE_WALK_NORM_SEC` |
 
-Crowd completions do not write into the pending preference buffer when hybrid personal mode is active.
+Crowd completions do not write into the pending preference buffer when hybrid personal mode is active. Route-consistency shaping and party-size reward weighting are **removed** in `rank_route_v1`.
 
-**Anti-collapse regularizer (training only):** hinge Jensen–Shannon between slot-0 distributions under the real pref/must-do vector vs a counterfactual resample (`PPO_CF_COEF`, `PPO_CF_MARGIN`, `PPO_CF_FRAC`). See `docs/route-plan-output-plan.md`.
+**Counterfactual regularizers (training only, Stage A):** hinge Jensen–Shannon under (1) resampled prefs/must-dos (`PPO_CF_*`) and (2) perturbed waits (`PPO_CF_WAIT_*`). See [`rank-route-architecture.md`](rank-route-architecture.md).
 
-**Tail preference ranking (training only):** soft cross-entropy on early route-tail slots (`PPO_PREF_RANK_SLOTS`, default 1–2) toward unfinished sharpened pref (+ must-do bonus), masked by each slot’s legal rides (`PPO_PREF_RANK_COEF`). Primary commit reward still only uses `route[0]`.
+**Stage A preference ranking (training only):** soft CE of Stage A toward unfinished sharpened pref (+ must-do bonus) via `PPO_PREF_RANK_COEF`. Primary commit reward still only uses `route[0]`.
 
-**Path-conditioned walk:** during AR decode, after each ride pick the model rewrites `RIDE_FEAT_WALK` as if the party were at that ride (inter-ride matrix buffer) and re-encodes ride keys for the next slot. Slot 0 still uses observation walks from the true current location.
+**Path-conditioned walk:** during Stage B decode, after each ride pick the model rewrites walk/ETA as if the party were at that ride and re-encodes candidate keys. Slot 0 (Stage A) still uses observation walks from the true current location.
 
 ## Evaluate a checkpoint
 
@@ -103,34 +102,30 @@ python training/eval_policy.py \
 
 | Tensor | Shape | Content |
 |--------|-------|---------|
-| Guest features | `(B, 46)` | Prefs `0..33`, remaining sharpened pref mass `34` (`Σ pref**PPO_PREF_REWARD_EXP` unfinished), party state `35..44`, elapsed since spawn `45` |
-| Ride features | `(B, 34, 9)` | Wait, incoming, open, duration, capacity, walk, history, must-do, unfinished sharpened pref (`pref**PPO_PREF_REWARD_EXP`, else 0 if already ridden) |
-| Env features | `(B, 4)` | Time of day, mean wait, **wait-variance slot zeroed**, broken fraction |
-| Route actions | `(B, K)` | `K=PPO_ROUTE_K` (default 6); rides `0–33`, or exit `34` / idle `35` in slot 0 only; later slots `-1` pad after exit/idle |
+| Guest features | `(B, 43)` | Prefs `0..33`, remaining pref mass `34`, speed `35`, time left `36`, loc `37`, rides completed `38`, must-do count `39`, at-ride `40`, state `41`, elapsed `42` |
+| Ride features | `(B, 34, 11)` | Wait, incoming, open, duration, capacity, walk, history, must-do, unfinished pref, ETA, wait_vs_mean |
+| Env features | `(B, 3)` | Time of day, mean wait, broken fraction |
+| Route actions | `(B, K)` | `K=PPO_ROUTE_K` (default 5); rides `0–33`, or exit `34` / idle `35` in slot 0 only; later slots `-1` pad after exit/idle |
 | Commit | scalar | `route[0]` applied in the DES / companion |
 
-Flat observation size: **356** (`FLAT_OBS_DIM` = 46 + 34×9 + 4).
+Flat observation size: **420** (`FLAT_OBS_DIM` = 43 + 34×11 + 3).
 
-Warm-start from an 8-feat checkpoint: `--init-checkpoint` loads matching tensors and **widens** `ride_feat_proj.0` (copies old columns, zeros the new unfinished-pref column). Fresh Adam.
+### Architecture (`RankRouteModel` / `ParkRouterModel` alias)
 
-### Architecture (`ParkRouterModel`)
-
-- **`d_model=256`** single-party encoder (no guest transformer / no G axis).
-- Ride encoder: ride-id embedding + MLP over the 9 dynamic feats.
-- **Autoregressive pointer decoder:** slot 0 uses guest query × ride keys + exit/idle head; slots `1..K-1` continue with a GRU cell + no-replacement ride pointer (open + unfinished only), with walk features refreshed along the planned path.
-- Critic head over guest + mean ride embedding + env (single scalar; decision-time encode only).
-- **Action masking** before CE / `Categorical`: closed rides, already-at ride, time-infeasible rides, and soft-close (exit-only) are illegal on slot 0.
-- Entropy bonus uses early-slot weights (`PPO_ROUTE_ENTROPY_WEIGHTS`); no softmax temperature annealing.
+See [`rank-route-architecture.md`](rank-route-architecture.md): `d_model=384`, 4-head guest→ride cross-attn, Stage A MLP scorer, top-M candidate Stage B GRU+pointer. Inference may sample Stage A when top-2 probs are within `INFER_CLOSE_MARGIN`.
 
 Related knobs in `config.py`:
 
 | Knob | Default | Notes |
 |------|---------|--------|
 | `PPO_NUM_FOCALS` | 24 | Focal parties per training day |
-| `PPO_ROUTE_K` | 6 | Emitted route length |
-| `PPO_ENT_COEF` | 0.03 | Entropy bonus (slot-weighted) |
-| `PPO_CF_COEF` / `MARGIN` / `FRAC` | `0.1` / `0.15` / `0.25` | Counterfactual pref JS hinge |
-| `PPO_PREF_RANK_COEF` / `SLOTS` | `0.05` / `(1, 2)` | Soft pref ranking on early tail slots |
+| `PPO_ROUTE_K` | 5 | Emitted route length |
+| `PPO_CANDIDATE_M` | 8 | Stage B candidate set size |
+| `PPO_ENT_COEF` | 0.03 | Entropy bonus (Stage A + slot-weighted decoder) |
+| `PPO_CF_COEF` / `MARGIN` / `FRAC` | `0.1` / `0.15` / `0.25` | Pref counterfactual JS hinge |
+| `PPO_CF_WAIT_*` | see config | Wait counterfactual JS hinge |
+| `PPO_PREF_RANK_COEF` | `0.025` | Soft pref ranking on Stage A |
+| `INFER_TEMP` / `TOP_P` / `CLOSE_MARGIN` | `0.8` / `0.9` / `0.12` | Close-call sampling |
 | `BC_BATCH_SIZE` | 256 | Individual decisions per BC minibatch |
 | `PPO_INFERENCE_BATCH_SIZE` | 256 | Max pending focals per `exchange_batch` |
 | `PPO_UPDATE_MB_SIZE` | 256 | Transitions per optimizer step |

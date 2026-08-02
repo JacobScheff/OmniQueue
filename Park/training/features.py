@@ -1,7 +1,15 @@
-"""Feature dimensions shared with the C++ simulator and ParkRouterModel.
+"""Feature dimensions shared with the C++ simulator and RankRouteModel.
 
 Constants are importable without torch (needed by the ONNX companion image).
 Torch is only required for the masking helpers used in training / torch inference.
+
+Obs layout (rank_route_v1):
+  guest[43]: 0..33 prefs, 34 remaining sharpened pref mass,
+             35 speed/2, 36 time_left, 37 loc, 38 rides_completed,
+             39 must_do_count/5, 40 at_ride_node, 41 state/16, 42 elapsed
+  ride[R,11]: wait, incoming, open, duration, capacity, walk, history,
+              must_do, unfinished_pref, eta=(walk+wait), wait_vs_mean
+  env[3]: time_of_day, mean_wait, broken_fraction
 """
 
 from __future__ import annotations
@@ -11,22 +19,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import torch
 
-GUEST_FEAT_DIM = 46
-# 0..33 preferences, 34 remaining sharpened pref mass (Σ pref**EXP unfinished),
-# 35..44 party state, 45 elapsed_since_spawn
-# 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do,
-# 8 unfinished sharpened pref (0 if already ridden)
-RIDE_DYNAMIC_FEAT_DIM = 9
-# Legacy companion ONNX (v1/v2) was trained with 8 ride feats (no pref column).
-RIDE_DYNAMIC_FEAT_DIM_LEGACY = 8
-ENV_DYNAMIC_FEAT_DIM = 4
+GUEST_FEAT_DIM = 43
+RIDE_DYNAMIC_FEAT_DIM = 11
+ENV_DYNAMIC_FEAT_DIM = 3
 NUM_RIDES = 34
 NUM_ACTIONS = 36  # 34 rides + exit + idle
 FLAT_OBS_DIM = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM + ENV_DYNAMIC_FEAT_DIM
 
-# Model architecture defaults
-D_MODEL = 256
-ROUTE_K = 6  # default; overridden by config.PPO_ROUTE_K when available
+# Model architecture defaults (rank_route_v1)
+D_MODEL = 384
+N_CROSS_HEADS = 4
+CANDIDATE_M = 8
+ROUTE_K = 5  # default; overridden by config.PPO_ROUTE_K when available
 ROUTE_PAD = -1
 ACTION_EXIT = NUM_RIDES
 ACTION_IDLE = NUM_RIDES + 1
@@ -36,19 +40,27 @@ CLOSE_DRAIN_SEC = 3.0 * 3600.0
 
 # Ride feature column indices (must match native build_observation)
 RIDE_FEAT_WAIT = 0
+RIDE_FEAT_INCOMING = 1
 RIDE_FEAT_OPEN = 2
 RIDE_FEAT_DURATION = 3
+RIDE_FEAT_CAPACITY = 4
 RIDE_FEAT_WALK = 5
 RIDE_FEAT_HISTORY = 6
 RIDE_FEAT_MUST_DO = 7
 RIDE_FEAT_UNFINISHED_PREF = 8
+RIDE_FEAT_ETA = 9
+RIDE_FEAT_WAIT_VS_MEAN = 10
 
 # Guest feature indices used for masking / diagnostics
 GUEST_FEAT_REMAINING_PREF_MASS = 34
-GUEST_FEAT_TIME_LEFT = 37
-GUEST_FEAT_MUST_DO_COUNT = 40
-GUEST_FEAT_AT_RIDE_NODE = 41
-GUEST_FEAT_ELAPSED_SINCE_SPAWN = 45
+GUEST_FEAT_SPEED = 35
+GUEST_FEAT_TIME_LEFT = 36
+GUEST_FEAT_LOC = 37
+GUEST_FEAT_RIDES_COMPLETED = 38
+GUEST_FEAT_MUST_DO_COUNT = 39
+GUEST_FEAT_AT_RIDE_NODE = 40
+GUEST_FEAT_STATE = 41
+GUEST_FEAT_ELAPSED_SINCE_SPAWN = 42
 
 
 def route_k() -> int:
@@ -58,6 +70,15 @@ def route_k() -> int:
         return int(getattr(config, "PPO_ROUTE_K", ROUTE_K))
     except Exception:
         return ROUTE_K
+
+
+def candidate_m() -> int:
+    try:
+        import Park.config as config
+
+        return int(getattr(config, "PPO_CANDIDATE_M", CANDIDATE_M))
+    except Exception:
+        return CANDIDATE_M
 
 
 def build_action_mask(
@@ -175,7 +196,7 @@ def rewrite_prefs_must_dos(
         must_do_boost = float(getattr(config, "MUST_DO_PREF_BOOST", must_do_boost))
         pref_eps = float(getattr(config, "PREF_RAW_EPS", pref_eps))
     except Exception:
-        pass
+        config = None  # type: ignore[assignment]
 
     batch, num_rides, _ = ride.shape
     device = guest.device
@@ -209,7 +230,9 @@ def rewrite_prefs_must_dos(
                 raw[mid] = raw[mid] * must_do_boost
         prefs = raw / raw.sum().clamp(min=1e-8)
         new_guest[b, :num_rides] = prefs
-        pref_exp = float(getattr(config, "PPO_PREF_REWARD_EXP", 1.0))
+        pref_exp = 2.0
+        if config is not None:
+            pref_exp = float(getattr(config, "PPO_PREF_REWARD_EXP", pref_exp))
         sharpened = prefs.clamp(min=0.0).pow(pref_exp)
         rem = (sharpened * (~history[b]).to(dtype)).sum()
         new_guest[b, GUEST_FEAT_REMAINING_PREF_MASS] = rem
@@ -217,11 +240,61 @@ def rewrite_prefs_must_dos(
         new_ride[b, :, RIDE_FEAT_MUST_DO] = 0.0
         for mid in must_ids:
             new_ride[b, mid, RIDE_FEAT_MUST_DO] = 1.0
-        if new_ride.size(-1) > RIDE_FEAT_UNFINISHED_PREF:
-            new_ride[b, :, RIDE_FEAT_UNFINISHED_PREF] = sharpened * (
-                ~history[b]
-            ).to(dtype)
+        new_ride[b, :, RIDE_FEAT_UNFINISHED_PREF] = sharpened * (~history[b]).to(dtype)
     return new_guest, new_ride
+
+
+def rewrite_waits(
+    ride: torch.Tensor,
+    env: torch.Tensor,
+    *,
+    generator: torch.Generator | None = None,
+    scale_low: float = 0.25,
+    scale_high: float = 2.5,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Clone ride/env with per-ride wait scales; refresh ETA and wait_vs_mean."""
+    import torch
+
+    try:
+        import Park.config as config
+
+        scale_low = float(getattr(config, "PPO_CF_WAIT_SCALE_LOW", scale_low))
+        scale_high = float(getattr(config, "PPO_CF_WAIT_SCALE_HIGH", scale_high))
+    except Exception:
+        pass
+
+    new_ride = ride.clone()
+    new_env = env.clone()
+    batch, num_rides, _ = ride.shape
+    device = ride.device
+    dtype = ride.dtype
+
+    if generator is None:
+        scales = torch.empty(batch, num_rides, device=device, dtype=dtype).uniform_(
+            scale_low, scale_high
+        )
+    else:
+        scales = torch.empty(batch, num_rides, device=device, dtype=dtype)
+        scales.uniform_(scale_low, scale_high, generator=generator)
+
+    open_ok = new_ride[..., RIDE_FEAT_OPEN] > 0.5
+    new_wait = (new_ride[..., RIDE_FEAT_WAIT] * scales).clamp(0.0, 1.0)
+    new_wait = torch.where(open_ok, new_wait, new_ride[..., RIDE_FEAT_WAIT])
+    new_ride[..., RIDE_FEAT_WAIT] = new_wait
+
+    # Recompute park mean wait over open rides (obs units).
+    open_f = open_ok.to(dtype)
+    wait_sum = (new_wait * open_f).sum(dim=-1)
+    open_n = open_f.sum(dim=-1).clamp(min=1.0)
+    mean_wait = wait_sum / open_n
+    new_env[..., 1] = mean_wait
+
+    walk = new_ride[..., RIDE_FEAT_WALK]
+    new_ride[..., RIDE_FEAT_ETA] = (walk + new_wait).clamp(0.0, 2.0)
+    new_ride[..., RIDE_FEAT_WAIT_VS_MEAN] = (new_wait - mean_wait.unsqueeze(-1)).clamp(
+        -1.0, 1.0
+    )
+    return new_ride, new_env
 
 
 def top_must_do_or_pref(guest: torch.Tensor, ride: torch.Tensor) -> torch.Tensor:
@@ -245,19 +318,15 @@ def top_must_do_or_pref(guest: torch.Tensor, ride: torch.Tensor) -> torch.Tensor
 
 
 def pref_rank_aux_loss(
-    slot_logits: "torch.Tensor",
-    slot_masks: "torch.Tensor",
+    stage_a_logits: "torch.Tensor",
+    stage_a_mask: "torch.Tensor",
     ride: "torch.Tensor",
     *,
-    slots: tuple[int, ...] = (1, 2),
     must_do_bonus: float = 0.5,
 ) -> "torch.Tensor":
-    """Soft CE encouraging early tail slots toward unfinished high-pref rides.
+    """Soft CE encouraging Stage A mass on unfinished high-pref / must-do rides.
 
-    slot_logits / slot_masks: (B, K, A); ride: (B, R, F).
-    Uses unfinished sharpened pref (feat 8) plus a must-do bonus as soft targets,
-    renormalized under each slot's legal ride mask. Returns a scalar (0 if no
-    valid rows).
+    stage_a_logits / stage_a_mask: (B, A); ride: (B, R, F).
     """
     import torch
     import torch.nn.functional as F
@@ -265,7 +334,6 @@ def pref_rank_aux_loss(
     try:
         import Park.config as config
 
-        slots = tuple(getattr(config, "PPO_PREF_RANK_SLOTS", slots))
         must_do_bonus = float(
             getattr(config, "PPO_PREF_RANK_MUST_DO_BONUS", must_do_bonus)
         )
@@ -276,26 +344,17 @@ def pref_rank_aux_loss(
     must = (ride[..., RIDE_FEAT_MUST_DO] > 0.5).to(prefs.dtype)
     scores = prefs + must_do_bonus * must
 
-    slot_losses: list[torch.Tensor] = []
-    k_max = int(slot_logits.size(1))
-    for s in slots:
-        if s <= 0 or s >= k_max:
-            continue
-        logits = slot_logits[:, s, :NUM_RIDES]
-        mask = slot_masks[:, s, :NUM_RIDES]
-        legal_scores = scores * mask.to(scores.dtype)
-        mass = legal_scores.sum(dim=-1)
-        valid = (mass > 1e-8) & mask.any(dim=-1)
-        if not bool(valid.any()):
-            continue
-        target = legal_scores / mass.clamp(min=1e-8).unsqueeze(-1)
-        log_probs = F.log_softmax(apply_action_mask(logits, mask), dim=-1)
-        ce = -(target * log_probs).sum(dim=-1)
-        slot_losses.append(ce[valid].mean())
-
-    if not slot_losses:
-        return slot_logits.new_zeros(())
-    return torch.stack(slot_losses).mean()
+    logits = stage_a_logits[:, :NUM_RIDES]
+    mask = stage_a_mask[:, :NUM_RIDES]
+    legal_scores = scores * mask.to(scores.dtype)
+    mass = legal_scores.sum(dim=-1)
+    valid = (mass > 1e-8) & mask.any(dim=-1)
+    if not bool(valid.any()):
+        return stage_a_logits.new_zeros(())
+    target = legal_scores / mass.clamp(min=1e-8).unsqueeze(-1)
+    log_probs = F.log_softmax(apply_action_mask(logits, mask), dim=-1)
+    ce = -(target * log_probs).sum(dim=-1)
+    return ce[valid].mean()
 
 
 def js_divergence(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:

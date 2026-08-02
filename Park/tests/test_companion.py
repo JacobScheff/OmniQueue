@@ -18,7 +18,7 @@ from Park.companion.server.ride_map import (
 )
 from Park.companion.server.waits import LiveBoard, RideLiveStatus
 from Park import config
-from Park.training.features import FLAT_OBS_DIM, NUM_ACTIONS, NUM_RIDES
+from Park.training.features import FLAT_OBS_DIM, NUM_ACTIONS, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
 
 
 def _board_all_open(wait_min: float = 20.0) -> LiveBoard:
@@ -76,11 +76,11 @@ def test_build_live_observation_shape_and_mask_inputs():
     assert meta["must_remaining"][0] == 1
     assert meta["must_remaining"][5] == 0
     # history / must-do / unfinished-pref ride feats
-    from Park.training.features import RIDE_DYNAMIC_FEAT_DIM
+    from Park.training.features import GUEST_FEAT_DIM, RIDE_DYNAMIC_FEAT_DIM
 
-    ride = flat[46 : 46 + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM].reshape(
-        NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM
-    )
+    ride = flat[
+        GUEST_FEAT_DIM : GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM
+    ].reshape(NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM)
     assert ride[5, 6] == pytest.approx(0.2)
     assert ride[0, 7] == pytest.approx(1.0)
     assert ride[5, 8] == pytest.approx(0.0)  # already ridden → no pref mass
@@ -108,11 +108,12 @@ def test_recommender_stub_smoke(tmp_path):
     assert len(out["distributions_by_slot"]) >= 1
     assert out["distributions_by_slot"][0] == out["distribution"]
     assert out["forced_first"] is None
-    assert out["natural_recommended"]["action_id"] == out["recommended"]["action_id"]
+    # Close-call sampling may pick a non-argmax commit; natural is always Stage A argmax.
+    assert out["natural_recommended"]["action_id"] in range(NUM_ACTIONS)
     assert out["model"]["supports_force_first"] is True
     assert out["model"]["supports_slot_distributions"] is True
 
-    natural0 = out["recommended"]["action_id"]
+    natural0 = out["natural_recommended"]["action_id"]
     force_id = 0 if natural0 != 0 else 1
     # Skip if that ride is illegal under the stub mask.
     legal_ids = [r["action_id"] for r in out["distribution"] if r["legal"] and r["is_ride"]]
@@ -126,28 +127,28 @@ def test_recommender_stub_smoke(tmp_path):
     assert len(forced["distributions_by_slot"]) == len(forced["route"])
 
 
-def test_adapt_ride_feat_dim_slices_legacy_width():
+def test_adapt_ride_feat_dim_identity():
     from Park.companion.server.recommend import _adapt_ride_feat_dim
-    from Park.training.features import RIDE_DYNAMIC_FEAT_DIM, RIDE_DYNAMIC_FEAT_DIM_LEGACY
+    from Park.training.features import RIDE_DYNAMIC_FEAT_DIM
 
     ride = np.ones((1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
     ride[..., 8] = 0.42
-    slim = _adapt_ride_feat_dim(ride, RIDE_DYNAMIC_FEAT_DIM_LEGACY)
-    assert slim.shape == (1, NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM_LEGACY)
-    assert slim[..., 7].max() == pytest.approx(1.0)
+    same = _adapt_ride_feat_dim(ride, RIDE_DYNAMIC_FEAT_DIM)
+    assert same.shape == ride.shape
+    assert same[..., 8].max() == pytest.approx(0.42)
 
 
-def test_legacy_onnx_accepts_dim9_live_obs():
-    """Committed v1/v2 ONNX (ride dim 8) must run against the live dim-9 obs."""
+def test_rank_route_stub_onnx_accepts_live_obs():
+    """Stub ONNX built for rank_route_v1 must run against live obs."""
     from pathlib import Path
 
     from Park.companion.server.recommend import Recommender
 
-    onnx_path = Path(__file__).resolve().parents[1] / "companion" / "model" / "v2.onnx"
-    if not onnx_path.is_file():
-        pytest.skip("companion/model/v2.onnx not present")
+    onnx_path = Path(__file__).resolve().parents[1] / "companion" / "model" / "_test_rank.onnx"
+    if onnx_path.is_file():
+        onnx_path.unlink()
     rec = Recommender(checkpoint=onnx_path, device="cpu")
-    assert rec.ride_feat_dim == 8
+    assert rec.ride_feat_dim == RIDE_DYNAMIC_FEAT_DIM
     weights = default_preference_weights()
     state = CompanionState(
         preference_weights=weights,
@@ -158,7 +159,7 @@ def test_legacy_onnx_accepts_dim9_live_obs():
     flat, _ = build_live_observation(state, _board_all_open(), now_sec=3600)
     out = rec.recommend(flat)
     assert out["recommended"]["action_id"] in range(NUM_ACTIONS)
-    assert out["model"]["ride_dynamic_feat_dim"] == 8
+    assert out["model"]["ride_dynamic_feat_dim"] == RIDE_DYNAMIC_FEAT_DIM
 
 
 def test_model_registry_versions(tmp_path, monkeypatch):
