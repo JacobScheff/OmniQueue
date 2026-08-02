@@ -47,8 +47,8 @@ Warm-start from BC (optional; encoder tensors load flexibly into the route decod
 python training/ppo_train.py \
   --seed 42 \
   --init-checkpoint checkpoints/bc/bc_final.pt \
-  --total-days 20 \
-  --num-focals 24 \
+  --total-days 100 \
+  --num-focals 48 \
   --device cpu
 ```
 
@@ -112,16 +112,19 @@ Flat observation size: **420** (`FLAT_OBS_DIM` = 43 + 34×11 + 3).
 
 ### Architecture (`RankRouteModel` / `ParkRouterModel` alias)
 
-See [`rank-route-architecture.md`](rank-route-architecture.md): `d_model=384`, 4-head guest→ride cross-attn, Stage A MLP scorer, top-M candidate Stage B GRU+pointer. Inference may sample Stage A when top-2 probs are within `INFER_CLOSE_MARGIN`.
+See [`rank-route-architecture.md`](rank-route-architecture.md): `d_model=512`, 8-head guest→ride cross-attn, Stage A MLP scorer, top-M candidate Stage B GRU+pointer. Inference may sample Stage A when top-2 probs are within `INFER_CLOSE_MARGIN`.
 
 Related knobs in `config.py`:
 
 | Knob | Default | Notes |
 |------|---------|--------|
-| `PPO_NUM_FOCALS` | 24 | Focal parties per training day |
+| `PPO_NUM_FOCALS` | 48 | Focal parties per training day |
+| `PPO_TOTAL_DAYS` | 100 | Default CLI / run length |
 | `PPO_ROUTE_K` | 5 | Emitted route length |
 | `PPO_CANDIDATE_M` | 8 | Stage B candidate set size |
-| `PPO_ENT_COEF` | 0.03 | Entropy bonus (Stage A + slot-weighted decoder) |
+| `PPO_ENT_COEF` | 0.01 | Entropy bonus (Stage A + slot-weighted decoder) |
+| `PPO_TARGET_KL` | 0.03 | Early-stop PPO update when approx KL exceeds this (`0`=off) |
+| `PPO_LR_ANNEAL_FLOOR` | 0.3 | Min LR fraction under linear anneal |
 | `PPO_CF_COEF` / `MARGIN` / `FRAC` | `0.1` / `0.15` / `0.25` | Pref counterfactual JS hinge |
 | `PPO_CF_WAIT_*` | see config | Wait counterfactual JS hinge |
 | `PPO_PREF_RANK_COEF` | `0.025` | Soft pref ranking on Stage A |

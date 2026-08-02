@@ -107,7 +107,7 @@ def test_forward_with_mask_sets_illegal_logits():
 
 def test_train_config_defaults():
     cfg = TrainConfig()
-    assert cfg.d_model == 384
+    assert cfg.d_model == D_MODEL
     assert cfg.ride_dynamic_feat_dim == RIDE_DYNAMIC_FEAT_DIM
     assert cfg.arch_version == "rank_route_v1"
 

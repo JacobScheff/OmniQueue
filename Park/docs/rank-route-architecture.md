@@ -10,7 +10,7 @@ Supersedes the sticky-route failure modes of [`route-plan-output-plan.md`](route
 ## Architecture
 
 ```
-obs → encoders → guest↔ride cross-attn (4 heads)
+obs → encoders → guest↔ride cross-attn (8 heads)
                 → Stage A MLP scorer → π_A (rides + exit/idle)
                 → top-M candidates (must-dos forced)
                 → Stage B GRU + single-head pointer → route[K]
@@ -19,8 +19,8 @@ obs → encoders → guest↔ride cross-attn (4 heads)
 
 | Piece | Detail |
 |-------|--------|
-| `D_MODEL` | 384 |
-| Cross-attn | Guest queries rides; rides get guest-broadcast residual |
+| `D_MODEL` | 512 |
+| Cross-attn | Guest queries rides (8 heads); rides get guest-broadcast residual |
 | Stage A | Per-ride MLP on `[ride_ctx; guest_ctx; wait; walk; pref; must_do; eta]` |
 | Candidates | `PPO_CANDIDATE_M=8` |
 | Stage B | AR length `PPO_ROUTE_K=5` over candidates |

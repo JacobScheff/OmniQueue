@@ -27,8 +27,8 @@ NUM_ACTIONS = 36  # 34 rides + exit + idle
 FLAT_OBS_DIM = GUEST_FEAT_DIM + NUM_RIDES * RIDE_DYNAMIC_FEAT_DIM + ENV_DYNAMIC_FEAT_DIM
 
 # Model architecture defaults (rank_route_v1)
-D_MODEL = 384
-N_CROSS_HEADS = 4
+D_MODEL = 512
+N_CROSS_HEADS = 8
 CANDIDATE_M = 8
 ROUTE_K = 5  # default; overridden by config.PPO_ROUTE_K when available
 ROUTE_PAD = -1

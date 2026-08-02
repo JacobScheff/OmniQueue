@@ -20,7 +20,7 @@ _MODEL_DIR = Path(__file__).resolve().parent / "model"
 # companion/model/v3.pt then run tools/export_companion_onnx.py --only v3.
 MODELS: dict[str, Path] = {
     "v1": _MODEL_DIR / "v1.onnx",
-    # "v2": _MODEL_DIR / "v2.onnx",
+    "v2": _MODEL_DIR / "v2.onnx",
     # "v3": _MODEL_DIR / "v3.onnx",
     # "v4": _MODEL_DIR / "v4.onnx",
     # "v5": _MODEL_DIR / "v5.onnx",
@@ -28,7 +28,7 @@ MODELS: dict[str, Path] = {
 }
 
 # Default tag when the client does not specify one.
-DEFAULT_MODEL_VERSION = "v1"
+DEFAULT_MODEL_VERSION = "v2"
 
 # Inference device hint ("cpu" or "cuda"). Free hosts are CPU-only.
 # ONNX Runtime always uses CPUExecutionProvider in the companion image.

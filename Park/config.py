@@ -222,18 +222,21 @@ PPO_SAVE_DIR = "checkpoints/ppo"
 PPO_SAVE_EVERY = 5_000           # save checkpoint every N routing steps
 PPO_LEARNING_RATE = 1e-5
 PPO_ANNEAL_LR = True              # linearly decay LR over total_days
+PPO_LR_ANNEAL_FLOOR = 0.3         # min LR fraction when annealing (was 0.05)
 PPO_GAMMA = 0.999                 # discount factor
 PPO_GAE_LAMBDA = 0.95             # GAE lambda
 PPO_NUM_MINIBATCHES = 8           # PPO minibatch count per update
 PPO_UPDATE_EPOCHS = 2             # PPO epochs per day
 PPO_CLIP_COEF = 0.1               # PPO clipping epsilon
-PPO_ENT_COEF = 0.03               # entropy bonus coefficient (early route slots weighted)
+PPO_ENT_COEF = 0.01               # entropy bonus (keep closer to BC prior)
+PPO_TARGET_KL = 0.03              # early-stop update when approx KL exceeds this (0=off)
 PPO_VF_COEF = 0.5                 # value loss coefficient
 PPO_MAX_GRAD_NORM = 0.5           # gradient clipping norm
 PPO_SUBSAMPLE_SIZE = 262_144      # random transitions per day used for update
 PPO_MAX_ROUTING_STEPS = 600_000   # safety cap on routing decisions per day
+PPO_TOTAL_DAYS = 100              # default complete park days per PPO run
 # N focal parties trained against a heuristic crowd on the same day.
-PPO_NUM_FOCALS = 24
+PPO_NUM_FOCALS = 48
 # C++ may return up to this many pending focal observations per exchange.
 PPO_INFERENCE_BATCH_SIZE = 256
 # Transitions packed into one neural forward / optimizer step during PPO update.

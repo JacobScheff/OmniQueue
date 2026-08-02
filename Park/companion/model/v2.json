@@ -1,0 +1,17 @@
+{
+  "step": 104298,
+  "path": "C:\\Users\\jacob\\Documents\\VSC\\OmniQueue\\Park\\companion\\model\\v2.onnx",
+  "source_pt": "C:\\Users\\jacob\\Documents\\VSC\\OmniQueue\\Park\\companion\\model\\v2.pt",
+  "arch_version": "rank_route_v1",
+  "route_k": 5,
+  "candidate_m": 8,
+  "ride_dynamic_feat_dim": 11,
+  "phase": "ppo",
+  "update": 51,
+  "days_done": 51,
+  "num_focals": 48,
+  "must_do_completion_rate": 0.9886363636363636,
+  "avg_preference_score_per_guest": 1.3187535454062527,
+  "avg_wait_variance": 2202092.7597726267,
+  "rides_per_party": 34.4375
+}

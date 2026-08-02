@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 import sys
 import time
@@ -89,18 +90,20 @@ def _ride_feats_from_obs(obs_row: np.ndarray) -> np.ndarray:
 @dataclass
 class PPOConfig:
     seed: int = 42
-    total_days: int = 20
+    total_days: int = getattr(config, "PPO_TOTAL_DAYS", 100)
     num_envs: int = 1
     device: str = "cpu"
     init_checkpoint: str | None = None
     anneal_lr: bool = config.PPO_ANNEAL_LR
     learning_rate: float = config.PPO_LEARNING_RATE
+    lr_anneal_floor: float = getattr(config, "PPO_LR_ANNEAL_FLOOR", 0.3)
     gamma: float = config.PPO_GAMMA
     gae_lambda: float = config.PPO_GAE_LAMBDA
     num_minibatches: int = config.PPO_NUM_MINIBATCHES
     update_epochs: int = config.PPO_UPDATE_EPOCHS
     clip_coef: float = config.PPO_CLIP_COEF
     ent_coef: float = config.PPO_ENT_COEF
+    target_kl: float = getattr(config, "PPO_TARGET_KL", 0.03)
     vf_coef: float = config.PPO_VF_COEF
     max_grad_norm: float = config.PPO_MAX_GRAD_NORM
     subsample_size: int = config.PPO_SUBSAMPLE_SIZE
@@ -514,6 +517,8 @@ def _ppo_update(
     mb_done = 0
     last_log_t = update_t0
     device = batch.obs.device
+    target_kl = float(getattr(cfg, "target_kl", 0.0) or 0.0)
+    early_stop = False
 
     for epoch in range(cfg.update_epochs):
         order = torch.randperm(n, device=device)
@@ -589,6 +594,19 @@ def _ppo_update(
                 if device.type == "cuda":
                     torch.cuda.synchronize()
                 time.sleep(yield_sec)
+
+            if target_kl > 0.0 and (
+                not math.isfinite(last_approx_kl) or last_approx_kl > target_kl
+            ):
+                early_stop = True
+                _log(
+                    f"  PPO early-stop: approx_kl={last_approx_kl:.4f} "
+                    f"> target_kl={target_kl:.4f} "
+                    f"(epoch={epoch + 1}/{cfg.update_epochs}, mb={mb_done}/{total_mb})"
+                )
+                break
+        if early_stop:
+            break
 
     return PPOStats(
         pg_loss=last_pg_loss,
@@ -724,7 +742,8 @@ def train(cfg: PPOConfig) -> None:
 
         if cfg.anneal_lr:
             frac = 1.0 - (days_done / max(1, cfg.total_days))
-            optimizer.param_groups[0]["lr"] = max(frac, 0.05) * cfg.learning_rate
+            floor = float(getattr(cfg, "lr_anneal_floor", 0.3))
+            optimizer.param_groups[0]["lr"] = max(frac, floor) * cfg.learning_rate
 
         lr = optimizer.param_groups[0]["lr"]
         _log(
@@ -809,7 +828,7 @@ def main() -> None:
     parser.add_argument(
         "--total-days",
         type=int,
-        default=20,
+        default=getattr(config, "PPO_TOTAL_DAYS", 100),
         help="Number of complete park days to simulate",
     )
     parser.add_argument("--num-envs", type=int, default=1, help="Parallel full days per update")
