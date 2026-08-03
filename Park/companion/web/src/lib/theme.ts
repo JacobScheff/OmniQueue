@@ -12,12 +12,9 @@ export function getInitialTheme(): Theme {
     const stored = localStorage.getItem(THEME_KEY);
     if (stored === "light" || stored === "dark") return stored;
   } catch {
-    // localStorage unavailable (private mode) — fall through to system preference.
+    // localStorage unavailable (private mode) — fall through to dark default.
   }
-  const prefersLight =
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-color-scheme: light)").matches;
-  return prefersLight ? "light" : "dark";
+  return "dark";
 }
 
 export function applyTheme(theme: Theme): void {

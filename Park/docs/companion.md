@@ -118,7 +118,7 @@ Newer torch/ONNX graphs also refresh inter-ride walk features along the decoded 
 
 ## Persistence
 
-All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. The API is stateless per request. Force-pick exploration is UI-only and is cleared when switching model versions.
+All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. Theme preference is stored separately under `omniqueue-companion-theme` and **defaults to dark** when unset. The API is stateless per request. Force-pick exploration is UI-only and is cleared when switching model versions.
 
 ## Notes
 

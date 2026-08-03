@@ -22,17 +22,13 @@
       rel="stylesheet"
     />
     <script>
-      // Apply the persisted/system theme before paint to avoid a flash of
-      // the wrong palette; App re-applies this once React mounts.
+      // Apply the persisted theme (default dark) before paint to avoid a flash
+      // of the wrong palette; App re-applies this once React mounts.
       (function () {
         try {
           var stored = localStorage.getItem("omniqueue-companion-theme");
           var theme =
-            stored === "light" || stored === "dark"
-              ? stored
-              : window.matchMedia("(prefers-color-scheme: light)").matches
-                ? "light"
-                : "dark";
+            stored === "light" || stored === "dark" ? stored : "dark";
           document.documentElement.setAttribute("data-theme", theme);
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "dark");
