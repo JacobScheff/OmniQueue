@@ -16,6 +16,7 @@ from Park.training.features import (
     NUM_ACTIONS,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
+    inflate_walk_feat,
 )
 
 # PartyState.Walking — typical “about to choose next ride” pose for live use.
@@ -30,10 +31,11 @@ class CompanionState:
     preference_weights: np.ndarray  # raw weights, length NUM_RIDES
     must_dos: np.ndarray  # 0/1 uint8, length NUM_RIDES
     history: np.ndarray  # completion counts, length NUM_RIDES
-    location_node_id: int  # park graph node id (hub or ride node)
+    location_node_id: int  # park graph node id (entrance or ride node)
     leave_sec: int | None = None  # seconds since park open; None → stay until close
     spawn_sec: int = 0  # arrival time since open
     walking_speed: float = float(config.BASE_WALKING_SPEED)
+    distance_preference: float = float(getattr(config, "DISTANCE_PREF_DEFAULT", 0.5))
 
 
 def normalize_preferences(weights: np.ndarray) -> np.ndarray:
@@ -137,6 +139,8 @@ def build_live_observation(
     guest[40] = 1.0 if at_ride >= 0 else 0.0
     guest[41] = _STATE_WALKING / 16.0
     guest[42] = float(max(0, now_sec - int(state.spawn_sec))) / float(config.DAY_SECONDS)
+    dist_pref = float(np.clip(state.distance_preference, 0.0, 1.0))
+    guest[43] = dist_pref
 
     ride = np.zeros((NUM_RIDES, RIDE_DYNAMIC_FEAT_DIM), dtype=np.float32)
     walk_secs = park.walk_times_to_rides(state.location_node_id, state.walking_speed)
@@ -175,9 +179,13 @@ def build_live_observation(
         ride[r, 3] = float(config.RIDES[r]["duration_sec"]) / 900.0
         ride[r, 4] = float(config.RIDES[r]["capacity_per_hour"]) / 3600.0
         if at_ride == r:
-            walk_feat = 0.0
+            # 1s of walk (not 0) so training-style already_here masks inside
+            # ONNX/torch graphs still allow picking the ride you're standing at.
+            walk_feat = 1.0 / 3600.0
         else:
             walk_feat = min(float(walk_secs[r]), 3600.0) / 3600.0
+        # Scoring inflate only — companion mask deflates using guest[43].
+        walk_feat = inflate_walk_feat(walk_feat, dist_pref, cap=1.0)
         ride[r, 5] = walk_feat
         ride[r, 6] = min(float(history[r]), 10.0) / 10.0
         ride[r, 7] = 1.0 if must_remaining[r] else 0.0
@@ -213,6 +221,7 @@ def build_live_observation(
         "broken_fraction": float(broken) / float(NUM_RIDES),
         "preferences": prefs.tolist(),
         "must_remaining": must_remaining.astype(int).tolist(),
+        "distance_preference": dist_pref,
         "warnings": warnings,
         "board_error": board.error,
         "board_age_sec": None,

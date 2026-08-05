@@ -85,24 +85,27 @@ Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX
 | GET | `/api/health` | Model + wait cache status |
 | GET | `/api/catalog` | Ride/hub list + default prefs |
 | GET | `/api/waits` | Cached live board (`?force=true`) |
-| POST | `/api/recommend` | Body: prefs, must-dos, history, location, optional `force_slot`+`force_action` → `recommended`, `route`, `distribution` (slot 0), `distributions_by_slot`, `natural_recommended`, `forced_slot`, `forced_action` |
+| POST | `/api/recommend` | Body: prefs, must-dos, history, location, optional `distance_preference` (0–1 walk tolerance), optional `force_slot`+`force_action` → `recommended`, `route`, `distribution` (slot 0), `distributions_by_slot`, `natural_recommended`, `forced_slot`, `forced_action` |
 
 ## Observation mapping
 
-Live features are built in `companion/server/obs.py` to match training (`FLAT_OBS_DIM=420`, `rank_route_v1`):
+Live features are built in `companion/server/obs.py` to match training (`FLAT_OBS_DIM=421`, `rank_route_v1`):
 
 | Slot | Source |
 |------|--------|
 | Wait / open | ThemeParks.wiki standby + status (`DOWN`/`CLOSED` → closed) |
 | Duration / capacity | `config.RIDES` |
-| Walk | `park_graph.walk_times_to_rides` from user location |
+| Walk | `park_graph.walk_times_to_rides` from user location (scoring-inflated by distance preference) |
 | History / must-do | User inputs |
 | Unfinished pref (ride feat 8) | Sharpened user pref when history is 0; else 0 |
 | Prefs | User weights (L1-normalized) on guest feats |
+| Distance preference | Guest feat 43 — walk tolerance slider (default 0.5) |
 | Incoming | **0** (not available from the public API) |
 | Env mean wait / broken frac | Aggregated from the live board |
 
-**Model versions:** `v1` / `v2` keep legacy ONNX with ride feat dim 8 — `recommend.py` slices off column 8 before inference. `v3` expects dim 9 (place `companion/model/v3.pt`, export with `tools/export_companion_onnx.py --only v3`).
+**Start location:** UI offers **entrance + rides** only (land hubs removed). Legacy `hub:*` keys still resolve on the API. Standing at a ride uses a 1-second walk feat so that ride stays selectable.
+
+**Model versions:** `v1` / `v2` keep legacy ONNX (narrower guest/ride dims) — `recommend.py` slices guest/ride and deflates walk for those graphs. After distance-preference fine-tune, export a new tag (e.g. `v3`) with `guest_feat_dim=44` via `tools/export_companion_onnx.py`.
 
 Newer torch/ONNX graphs also refresh inter-ride walk features along the decoded path inside `forward_route` (no extra API inputs). Re-export after pulling decoder changes.
 
@@ -118,7 +121,7 @@ Newer torch/ONNX graphs also refresh inter-ride walk features along the decoded 
 
 ## Persistence
 
-All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. Theme preference is stored separately under `omniqueue-companion-theme` and **defaults to dark** when unset. The API is stateless per request. Force-pick exploration is UI-only and is cleared when switching model versions.
+All guest state (prefs, must-dos, completions, location, leave time, undo/redo stacks) lives in the browser `localStorage` key `omniqueue-companion-v1`. Theme preference is stored separately under `omniqueue-companion-theme` and **defaults to dark** when unset. The API is stateless per request. Force-pick exploration is UI-only and is cleared when switching model versions. The sticky top bar shows a compact one-button-per-tag model switcher (same tags as Me → Model); changing version updates `model_version` and re-runs recommend.
 
 ## Notes
 

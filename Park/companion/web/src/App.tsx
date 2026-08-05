@@ -162,14 +162,20 @@ export default function App() {
     ...(result
       ? [{ label: `${result.meta.open_rides} open · avg ${Math.round(result.meta.mean_wait_min)} min` }]
       : []),
-    ...(activeModel ? [{ label: `Model ${activeModel.label}` }] : []),
     ...(activeModel?.stub ? [{ label: "Stub weights — replace checkpoint", tone: "warn" as const }] : []),
     ...(waitsError ? [{ label: "Wait feed issue", tone: "bad" as const }] : []),
   ];
 
   return (
     <div className="app">
-      <TopBar theme={theme} onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} pills={pills} />
+      <TopBar
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        pills={pills}
+        models={catalog.models}
+        modelVersion={state.model_version}
+        onModelChange={onModelChange}
+      />
 
       {error && <div className="error">{error}</div>}
 

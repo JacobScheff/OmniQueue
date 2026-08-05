@@ -4,11 +4,13 @@ Constants are importable without torch (needed by the ONNX companion image).
 Torch is only required for the masking helpers used in training / torch inference.
 
 Obs layout (rank_route_v1):
-  guest[43]: 0..33 prefs, 34 remaining sharpened pref mass,
+  guest[44]: 0..33 prefs, 34 remaining sharpened pref mass,
              35 speed/2, 36 time_left, 37 loc, 38 rides_completed,
-             39 must_do_count/5, 40 at_ride_node, 41 state/16, 42 elapsed
+             39 must_do_count/5, 40 at_ride_node, 41 state/16, 42 elapsed,
+             43 distance_preference (walk tolerance ∈ [0, 1])
   ride[R,11]: wait, incoming, open, duration, capacity, walk, history,
               must_do, unfinished_pref, eta=(walk+wait), wait_vs_mean
+              (walk/eta are scoring-inflated by distance_preference; masks deflate)
   env[3]: time_of_day, mean_wait, broken_fraction
 """
 
@@ -19,7 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import torch
 
-GUEST_FEAT_DIM = 43
+GUEST_FEAT_DIM = 44
 RIDE_DYNAMIC_FEAT_DIM = 11
 ENV_DYNAMIC_FEAT_DIM = 3
 NUM_RIDES = 34
@@ -61,6 +63,24 @@ GUEST_FEAT_MUST_DO_COUNT = 39
 GUEST_FEAT_AT_RIDE_NODE = 40
 GUEST_FEAT_STATE = 41
 GUEST_FEAT_ELAPSED_SINCE_SPAWN = 42
+GUEST_FEAT_DISTANCE_PREF = 43
+
+
+def distance_pref_walk_inflate(distance_pref: float, alpha: float | None = None) -> float:
+    """Scoring multiplier for walk/eta: 1 + α·(1−d). Feasibility must deflate."""
+    if alpha is None:
+        try:
+            import Park.config as config
+
+            alpha = float(getattr(config, "DISTANCE_PREF_WALK_INFLATE", 2.0))
+        except Exception:
+            alpha = 2.0
+    d = max(0.0, min(1.0, float(distance_pref)))
+    return 1.0 + float(alpha) * (1.0 - d)
+
+
+def inflate_walk_feat(walk_feat: float, distance_pref: float, *, cap: float = 1.0) -> float:
+    return min(float(walk_feat) * distance_pref_walk_inflate(distance_pref), float(cap))
 
 
 def route_k() -> int:
@@ -101,7 +121,16 @@ def build_action_mask(
     device = ride.device
 
     open_ok = ride[..., RIDE_FEAT_OPEN] > 0.5
-    walk = ride[..., RIDE_FEAT_WALK].clamp(min=0.0) * 3600.0
+    # Obs walk/eta may be scoring-inflated; feasibility uses true walk seconds.
+    try:
+        import Park.config as config
+
+        alpha = float(getattr(config, "DISTANCE_PREF_WALK_INFLATE", 2.0))
+    except Exception:
+        alpha = 2.0
+    d = guest[..., GUEST_FEAT_DISTANCE_PREF].clamp(0.0, 1.0)
+    inflate = (1.0 + alpha * (1.0 - d)).clamp(min=1e-6).unsqueeze(-1)
+    walk = (ride[..., RIDE_FEAT_WALK].clamp(min=0.0) / inflate) * 3600.0
     wait = ride[..., RIDE_FEAT_WAIT].clamp(min=0.0) * 3600.0
     duration = ride[..., RIDE_FEAT_DURATION].clamp(min=0.0) * 900.0
 
@@ -119,6 +148,7 @@ def build_action_mask(
     time_ok = (walk + wait + duration) <= remaining_for_feas
 
     at_ride_node = guest[..., GUEST_FEAT_AT_RIDE_NODE] > 0.5
+    # True walk == 0 when already at the ride (inflate does not change zeros).
     already_here = at_ride_node.unsqueeze(-1) & (ride[..., RIDE_FEAT_WALK] <= 1e-6)
 
     ride_ok = open_ok & time_ok & (~already_here) & (~soft_closed.unsqueeze(-1))

@@ -14,6 +14,14 @@ Shared feasibility checks for every candidate: not the ride the party is already
 
 Remaining time is `leave_sec - now`. Parties staying until official close (`leave_sec == DAY_SECONDS`) may finish a queued/on-ride experience after close, so feasibility uses the post-close drain window (`DAY_SECONDS + CLOSE_DRAIN_SEC - now`). After official close (`now >= DAY_SECONDS`), the router always returns exit (soft close).
 
+**Distance preference (walk tolerance):** Passes 1–3 also skip rides whose walk exceeds a soft threshold that grows with `distance_preference` (`d ∈ [0,1]`):
+
+```
+max_walk = NEAR + (FAR − NEAR) × d     # at d ≥ 0.999 → unlimited
+```
+
+Defaults: `NEAR = DISTANCE_PREF_NEAR_WALK_SEC` (8 min), `FAR = DISTANCE_PREF_FAR_WALK_SEC` (90 min). Pass 4 force-pick / idle ignore this balk (time feasibility only).
+
 Then choose the first matching pass:
 
 ### Pass 1 — Fresh rides

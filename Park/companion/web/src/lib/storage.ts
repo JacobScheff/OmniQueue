@@ -19,6 +19,7 @@ function cloneState(state: UserState): UserState {
     leave_hour: state.leave_hour,
     arrival_hour: state.arrival_hour,
     model_version: state.model_version,
+    distance_preference: state.distance_preference,
   };
 }
 
@@ -32,6 +33,7 @@ export function defaultUserState(catalog: Catalog): UserState {
     leave_hour: catalog.day_end_hour,
     arrival_hour: catalog.day_start_hour,
     model_version: catalog.default_model_version,
+    distance_preference: catalog.distance_preference_default ?? 0.5,
   };
 }
 
@@ -71,14 +73,26 @@ function normalizeState(state: UserState, n: number, catalog: Catalog): UserStat
     state.model_version && known.has(state.model_version)
       ? state.model_version
       : catalog.default_model_version;
+  const dMin = catalog.distance_preference_min ?? 0;
+  const dMax = catalog.distance_preference_max ?? 1;
+  const dDefault = catalog.distance_preference_default ?? 0.5;
+  let distance_preference =
+    typeof state.distance_preference === "number" ? state.distance_preference : dDefault;
+  distance_preference = Math.min(dMax, Math.max(dMin, distance_preference));
+  // Drop legacy land/hub starts — keep entrance + rides only.
+  let location = state.location || "entrance";
+  if (location.startsWith("hub:") && location !== "hub:0") {
+    location = "entrance";
+  }
   return {
     preference_weights: pad(state.preference_weights, 1),
     must_dos: pad(state.must_dos, 0).map((v) => (v ? 1 : 0)),
     history: pad(state.history, 0).map((v) => Math.max(0, Math.floor(v))),
-    location: state.location || "entrance",
+    location,
     leave_hour: state.leave_hour ?? catalog.day_end_hour,
     arrival_hour: state.arrival_hour ?? catalog.day_start_hour,
     model_version: version,
+    distance_preference,
   };
 }
 

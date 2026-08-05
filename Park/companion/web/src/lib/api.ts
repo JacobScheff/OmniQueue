@@ -36,6 +36,9 @@ export type Catalog = {
   default_preference_weights: number[];
   day_start_hour: number;
   day_end_hour: number;
+  distance_preference_default?: number;
+  distance_preference_min?: number;
+  distance_preference_max?: number;
   hubs: HubInfo[];
   rides: RideInfo[];
   default_model_version: string;
@@ -111,6 +114,8 @@ export type UserState = {
   leave_hour: number | null;
   arrival_hour: number | null;
   model_version: string;
+  /** Walk tolerance ∈ [0, 1]: 0 = minimize walking, 1 = allow long walks. */
+  distance_preference: number;
 };
 
 async function getJson<T>(url: string): Promise<T> {
@@ -146,6 +151,7 @@ export async function postRecommend(
       location: state.location,
       leave_hour: state.leave_hour,
       arrival_hour: state.arrival_hour,
+      distance_preference: state.distance_preference,
       model_version: state.model_version,
       force_refresh_waits: forceRefreshWaits,
       force_slot: forcedPick?.slot ?? null,

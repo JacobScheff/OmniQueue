@@ -24,8 +24,8 @@ constexpr int kMinDwellSec = 2 * 3600;
 // Guest feats (rank_route_v1): 0..33 preferences, 34 remaining sharpened pref mass
 // (Σ preference**kPrefRewardExp over unfinished rides), 35 speed/2, 36 time_left,
 // 37 loc, 38 rides_completed, 39 must_do_count/5, 40 at_ride_node, 41 state/16,
-// 42 elapsed_since_spawn / DAY_SECONDS. (party_size / balk / walk_target removed)
-constexpr int kGuestFeatDim = 43;
+// 42 elapsed_since_spawn / DAY_SECONDS, 43 distance_preference (walk tolerance).
+constexpr int kGuestFeatDim = 44;
 // Per-ride dynamic feats:
 // 0 wait, 1 incoming, 2 open, 3 duration, 4 capacity, 5 walk, 6 history, 7 must_do,
 // 8 unfinished sharpened pref, 9 eta=(walk+wait), 10 wait_vs_mean
@@ -62,6 +62,11 @@ constexpr double kMustDoPrefBoost = 10.0;
 constexpr double kPrefPopularityNoise = 0.25;  // mirrored from config.PREF_POPULARITY_NOISE
 // Training-only (BC / personal PPO): i.i.d. U(eps, 1), must-do boost, L1-normalize.
 constexpr double kPrefRawEps = 1e-3;  // mirrored from config.PREF_RAW_EPS
+// Distance preference (walk tolerance) ∈ [0, 1] — mirrored from config.py.
+constexpr float kDistancePrefDefault = 0.5f;
+constexpr float kDistancePrefWalkInflate = 2.0f;  // scoring walk × (1 + α·(1−d))
+constexpr double kDistancePrefNearWalkSec = 8.0 * 60.0;
+constexpr double kDistancePrefFarWalkSec = 90.0 * 60.0;
 constexpr double kIdleWalkProb = 0.5;
 
 // Heuristic ride-repeat dampening (mirrored from config.py)
@@ -255,6 +260,7 @@ struct FocalPartyConfig {
     int leave_sec = kDaySeconds;
     std::array<float, kNumRides> preference_weights{};
     std::array<uint8_t, kNumRides> must_dos{};
+    float distance_preference = kDistancePrefDefault;
 };
 
 /** Per-focal-guest preference / itinerary KPIs for interactive play. */
@@ -315,6 +321,7 @@ struct RouteOneTestInput {
     int leave_sec = kDaySeconds;
     int node_idx = 0;
     float speed = static_cast<float>(kBaseWalkingSpeed);
+    float distance_preference = 1.0f;  // default: no distance balk
     std::array<int16_t, kNumRides> preference_order{};
     std::array<float, kNumRides> preferences{};
     std::array<float, kNumRides> balk_sec{};

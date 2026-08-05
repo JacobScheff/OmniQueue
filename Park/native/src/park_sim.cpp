@@ -128,7 +128,18 @@ struct PartyArrays {
     std::vector<std::array<uint8_t, kNumRides>> must_do_remaining;
     std::vector<std::array<int16_t, kNumRides>> ride_history;
     std::vector<int32_t> rides_completed;
+    std::vector<float> distance_preference;
 };
+
+/** Soft walk balk threshold (seconds). Negative ⇒ unlimited (no distance balk). */
+double max_walk_sec_for_distance_pref(float distance_pref) {
+    const float d = std::clamp(distance_pref, 0.0f, 1.0f);
+    if (d >= 0.999f) {
+        return -1.0;  // unlimited
+    }
+    return kDistancePrefNearWalkSec +
+           (kDistancePrefFarWalkSec - kDistancePrefNearWalkSec) * static_cast<double>(d);
+}
 
 int party_walk_sec(int from_idx, int to_idx, float speed) {
     const int base = gd::kBaseWalkMatrix[from_idx][to_idx];
@@ -277,10 +288,30 @@ int route_one(
     const auto& history = parties.ride_history[party_id];
     const auto& prefs = parties.preferences[party_id];
     const auto& balk = parties.balk_sec[party_id];
+    const float dist_pref =
+        party_id >= 0 && party_id < static_cast<int>(parties.distance_preference.size())
+            ? parties.distance_preference[party_id]
+            : 1.0f;
+    const double max_walk = max_walk_sec_for_distance_pref(dist_pref);
 
-    auto feasible = [&](int ride_id) {
+    auto walk_to = [&](int ride_id) {
+        return std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][ride_id] * scale)));
+    };
+
+    auto feasible_time = [&](int ride_id) {
         return route_candidate_feasible(
             ride_id, current_ride, node_idx, scale, remaining, open_mask, wait_times, durations);
+    };
+
+    // Passes 1–3: time feasibility + soft distance balk (skipped when max_walk < 0).
+    auto feasible = [&](int ride_id) {
+        if (!feasible_time(ride_id)) {
+            return false;
+        }
+        if (max_walk >= 0.0 && static_cast<double>(walk_to(ride_id)) > max_walk) {
+            return false;
+        }
+        return true;
     };
 
     // Pass 1 — fresh rides (never completed by this party).
@@ -358,7 +389,7 @@ int route_one(
         }
     }
 
-    // Pass 4 — idle wander or novelty-aware force-pick.
+    // Pass 4 — idle wander or novelty-aware force-pick (no distance balk).
     if (rand_u01 < kIdleWalkProb) {
         return kRouteIdleCode;
     }
@@ -367,7 +398,7 @@ int route_one(
     int best_hist = std::numeric_limits<int>::max();
     for (int k = 0; k < kNumRides; ++k) {
         const int ride_id = order[k];
-        if (!feasible(ride_id)) {
+        if (!feasible_time(ride_id)) {
             continue;
         }
         const int hist = history[ride_id];
@@ -647,6 +678,7 @@ public:
             std::clamp(cfg.leave_sec, parties_.spawn_sec[0] + kMinDwellSec, kDaySeconds);
         // Deterministic size-1 speed (avoid consuming RNG after spawn_day).
         parties_.effective_speed[0] = static_cast<float>(kBaseWalkingSpeed);
+        parties_.distance_preference[0] = std::clamp(cfg.distance_preference, 0.0f, 1.0f);
         parties_.location_node_idx[0] = gd::kEntranceNodeIdx;
         parties_.state[0] = static_cast<int8_t>(PartyState::Walking);
         parties_.target_ride_id[0] = kRouteIdleCode;
@@ -748,6 +780,7 @@ public:
 
         parties_.preferences[pid] = prefs;
         parties_.must_do_remaining[pid] = must_remaining;
+        parties_.distance_preference[pid] = std::clamp(cfg.distance_preference, 0.0f, 1.0f);
         compute_preference_order(prefs, must_remaining, parties_.preference_order[pid]);
         compute_balk_sec(prefs, parties_.balk_sec[pid]);
 
@@ -1223,6 +1256,7 @@ private:
         std::vector<int32_t> spawns;
         std::vector<int32_t> leaves;
         std::vector<float> speeds;
+        std::vector<float> distance_prefs;
         std::vector<std::array<float, kNumRides>> pref_rows;
         std::vector<std::array<uint8_t, kNumRides>> must_do_rows;
 
@@ -1319,6 +1353,8 @@ private:
             spawns.push_back(spawn_sec);
             leaves.push_back(leave_sec);
             speeds.push_back(party_effective_speed(rng_, size));
+            // Uniform walk tolerance so policies / heuristics must condition on it.
+            distance_prefs.push_back(static_cast<float>(rng_.uniform01()));
             pref_rows.push_back(prefs);
             must_do_rows.push_back(must_do);
             spawn_schedule_.emplace_back(spawn_sec, party_id);
@@ -1332,6 +1368,7 @@ private:
         parties_.leave_sec = std::move(leaves);
         parties_.location_node_idx.assign(n, gd::kEntranceNodeIdx);
         parties_.effective_speed = std::move(speeds);
+        parties_.distance_preference = std::move(distance_prefs);
         parties_.state.assign(n, static_cast<int8_t>(PartyState::Walking));
         parties_.target_ride_id.assign(n, kRouteIdleCode);
         parties_.target_node_idx.assign(n, gd::kEntranceNodeIdx);
@@ -1875,6 +1912,12 @@ private:
         obs.guest[41] = parties_.state[party_id] / 16.0f;
         obs.guest[42] = static_cast<float>(std::max(0, now_sec - parties_.spawn_sec[party_id])) /
                         static_cast<float>(kDaySeconds);
+        const float dist_pref =
+            party_id >= 0 && party_id < static_cast<int>(parties_.distance_preference.size())
+                ? std::clamp(parties_.distance_preference[party_id], 0.0f, 1.0f)
+                : kDistancePrefDefault;
+        obs.guest[43] = dist_pref;
+        const float walk_inflate = 1.0f + kDistancePrefWalkInflate * (1.0f - dist_pref);
 
         const int node_idx = parties_.location_node_idx[party_id];
         const int current_ride = gd::kNodeIdxToRide[node_idx];
@@ -1917,6 +1960,8 @@ private:
                     std::max(1, static_cast<int>(std::ceil(gd::kBaseWalkToRides[node_idx][r] * walk_scale))));
                 walk_feat = std::min(walk_sec, 3600.0f) / 3600.0f;
             }
+            // Scoring inflate only — action masks deflate using guest[43].
+            walk_feat = std::min(walk_feat * walk_inflate, 1.0f);
             obs.ride[base + 5] = walk_feat;
             obs.ride[base + 6] =
                 std::min(static_cast<float>(parties_.ride_history[party_id][r]), 10.0f) / 10.0f;
@@ -2060,6 +2105,7 @@ int route_one_for_test_impl(const RouteOneTestInput& input) {
     parties.leave_sec = {input.leave_sec};
     parties.location_node_idx = {input.node_idx};
     parties.effective_speed = {input.speed};
+    parties.distance_preference = {std::clamp(input.distance_preference, 0.0f, 1.0f)};
     parties.preference_order = {input.preference_order};
     parties.preferences = {input.preferences};
     parties.balk_sec = {input.balk_sec};

@@ -7,7 +7,12 @@ from typing import Sequence
 import numpy as np
 
 import Park.config as config
-from Park.training.features import NUM_RIDES, RIDE_FEAT_WALK
+from Park.training.features import (
+    GUEST_FEAT_DISTANCE_PREF,
+    NUM_RIDES,
+    RIDE_FEAT_WALK,
+    distance_pref_walk_inflate,
+)
 
 ROUTE_PAD = -1
 
@@ -60,8 +65,12 @@ def commit_action(route: np.ndarray | Sequence[int]) -> int:
     return int(route[0])
 
 
-def planned_walk_penalty(route: np.ndarray) -> float:
-    """Mean inter-ride walk along the emitted ride route, normalized."""
+def _clip_distance_pref(distance_pref: float) -> float:
+    return float(np.clip(distance_pref, 0.0, 1.0))
+
+
+def planned_walk_penalty(route: np.ndarray, distance_pref: float = 0.0) -> float:
+    """Mean inter-ride walk along the emitted ride route, scaled by (1−d)."""
     route = np.asarray(route, dtype=np.int64).reshape(-1)
     if not is_ride_action(int(route[0])):
         return 0.0
@@ -76,29 +85,45 @@ def planned_walk_penalty(route: np.ndarray) -> float:
         hops += 1
     norm = float(getattr(config, "PPO_ROUTE_WALK_NORM_SEC", 600.0))
     coef = float(getattr(config, "PPO_ROUTE_PLANNED_WALK_COEF", 0.01))
-    return coef * ((total / max(hops, 1)) / max(norm, 1.0))
+    scale = 1.0 - _clip_distance_pref(distance_pref)
+    return coef * ((total / max(hops, 1)) / max(norm, 1.0)) * scale
 
 
-def realized_walk_penalty(walk_sec: float) -> float:
+def realized_walk_penalty(walk_sec: float, distance_pref: float = 0.0) -> float:
     if walk_sec <= 0.0:
         return 0.0
     norm = float(getattr(config, "PPO_ROUTE_WALK_NORM_SEC", 600.0))
     coef = float(getattr(config, "PPO_ROUTE_REALIZED_WALK_COEF", 0.02))
-    return coef * (float(walk_sec) / max(norm, 1.0))
+    scale = 1.0 - _clip_distance_pref(distance_pref)
+    return coef * (float(walk_sec) / max(norm, 1.0)) * scale
 
 
-def walk_sec_to_commit(ride_feats: np.ndarray, commit: int) -> float:
-    """Walk seconds to committed ride from current obs ride features (feat 5)."""
+def walk_sec_to_commit(
+    ride_feats: np.ndarray,
+    commit: int,
+    distance_pref: float = 0.0,
+) -> float:
+    """True walk seconds to committed ride (deflate scoring-inflated walk feat)."""
     if not is_ride_action(commit):
         return 0.0
     walk_norm = float(ride_feats[commit, RIDE_FEAT_WALK])
-    return max(0.0, walk_norm) * 3600.0
+    inflate = distance_pref_walk_inflate(distance_pref)
+    true_norm = max(0.0, walk_norm) / max(inflate, 1e-6)
+    return true_norm * 3600.0
+
+
+def distance_pref_from_obs(obs_flat: np.ndarray) -> float:
+    flat = np.asarray(obs_flat, dtype=np.float32).reshape(-1)
+    if flat.shape[0] <= GUEST_FEAT_DISTANCE_PREF:
+        return 0.0
+    return _clip_distance_pref(float(flat[GUEST_FEAT_DISTANCE_PREF]))
 
 
 def route_shaping_delta(
     new_route: np.ndarray,
     prev_route: np.ndarray | None,
     ride_feats: np.ndarray,
+    distance_pref: float = 0.0,
 ) -> tuple[float, float]:
     """Return (emit_shaping, realized_walk_sec_to_apply_later).
 
@@ -107,7 +132,23 @@ def route_shaping_delta(
     realized_walk_sec is stored and converted with ``realized_walk_penalty`` later.
     """
     del prev_route  # consistency shaping removed in rank_route_v1
-    planned = planned_walk_penalty(new_route)
+    d = _clip_distance_pref(distance_pref)
+    planned = planned_walk_penalty(new_route, d)
     commit = commit_action(new_route)
-    walk_sec = walk_sec_to_commit(ride_feats, commit)
+    walk_sec = walk_sec_to_commit(ride_feats, commit, d)
     return -planned, walk_sec
+
+
+__all__ = [
+    "ROUTE_PAD",
+    "commit_action",
+    "distance_pref_from_obs",
+    "is_ride_action",
+    "pad_route",
+    "planned_walk_penalty",
+    "realized_walk_penalty",
+    "ride_walk_matrix_sec",
+    "route_k",
+    "route_shaping_delta",
+    "walk_sec_to_commit",
+]

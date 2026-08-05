@@ -212,6 +212,7 @@ PYBIND11_MODULE(_park_sim, m) {
         .def(py::init<>())
         .def_readwrite("spawn_sec", &park::FocalPartyConfig::spawn_sec)
         .def_readwrite("leave_sec", &park::FocalPartyConfig::leave_sec)
+        .def_readwrite("distance_preference", &park::FocalPartyConfig::distance_preference)
         .def_property(
             "preference_weights",
             [](const park::FocalPartyConfig& c) {
@@ -413,7 +414,8 @@ PYBIND11_MODULE(_park_sim, m) {
            const std::vector<uint8_t>& open_mask,
            const std::vector<float>& wait_times,
            const std::vector<int>& durations,
-           double rand_u01) {
+           double rand_u01,
+           float distance_preference) {
             if (preference_order.size() != static_cast<size_t>(park::kNumRides) ||
                 preferences.size() != static_cast<size_t>(park::kNumRides) ||
                 balk_sec.size() != static_cast<size_t>(park::kNumRides) ||
@@ -429,6 +431,7 @@ PYBIND11_MODULE(_park_sim, m) {
             in.node_idx = node_idx;
             in.speed = speed;
             in.rand_u01 = rand_u01;
+            in.distance_preference = distance_preference;
             for (int i = 0; i < park::kNumRides; ++i) {
                 in.preference_order[i] = preference_order[i];
                 in.preferences[i] = preferences[i];
@@ -452,6 +455,7 @@ PYBIND11_MODULE(_park_sim, m) {
         py::arg("wait_times"),
         py::arg("durations"),
         py::arg("rand_u01") = 1.0,
+        py::arg("distance_preference") = 1.0f,
         "Deterministic heuristic routing helper for unit tests.");
     m.def("is_available", []() { return true; });
     m.attr("HAS_EXCHANGE_BATCH") = true;

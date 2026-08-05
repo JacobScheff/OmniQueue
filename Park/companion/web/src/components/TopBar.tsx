@@ -1,3 +1,4 @@
+import type { ModelInfo } from "../lib/api";
 import type { Theme } from "../lib/theme";
 import { MoonIcon, SunIcon } from "./Icons";
 
@@ -10,9 +11,19 @@ type TopBarProps = {
   theme: Theme;
   onToggleTheme: () => void;
   pills: StatusPill[];
+  models: ModelInfo[];
+  modelVersion: string;
+  onModelChange: (version: string) => void;
 };
 
-export default function TopBar({ theme, onToggleTheme, pills }: TopBarProps) {
+export default function TopBar({
+  theme,
+  onToggleTheme,
+  pills,
+  models,
+  modelVersion,
+  onModelChange,
+}: TopBarProps) {
   return (
     <header className="topbar">
       <div className="topbar-row">
@@ -35,6 +46,25 @@ export default function TopBar({ theme, onToggleTheme, pills }: TopBarProps) {
           {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </button>
       </div>
+      {models.length > 0 && (
+        <div className="model-switch" role="group" aria-label="Model version">
+          {models.map((m) => {
+            const active = modelVersion === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                className={`model-switch-btn${active ? " active" : ""}`}
+                aria-pressed={active}
+                title={m.stub ? `${m.label} (stub weights)` : m.label}
+                onClick={() => onModelChange(m.id)}
+              >
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {pills.length > 0 && (
         <div className="pill-row">
           {pills.map((p) => (

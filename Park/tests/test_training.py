@@ -113,10 +113,9 @@ def test_train_config_defaults():
 
 
 def test_ppo_warm_start_keeps_optimizer_linked(tmp_path):
-    """BC init must load into Agent.model in-place so Adam still tracks live params."""
+    """BC init must land in Agent.model before Adam so the optimizer tracks live params."""
     device = torch.device("cpu")
     agent = Agent().to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=1e-3, eps=1e-5)
 
     donor = default_model(device)
     with torch.no_grad():
@@ -128,7 +127,8 @@ def test_ppo_warm_start_keeps_optimizer_linked(tmp_path):
     loaded, step, extra = load_checkpoint(ckpt, device)
     assert step == 7
     assert extra.get("phase") == "bc"
-    agent.model.load_state_dict(loaded.state_dict())
+    agent.model = loaded
+    optimizer = optim.Adam(agent.parameters(), lr=1e-3, eps=1e-5)
 
     opt_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
     agent_ids = {id(p) for p in agent.parameters()}
@@ -151,6 +151,30 @@ def test_ppo_warm_start_keeps_optimizer_linked(tmp_path):
     optimizer.step()
     changed = sum(1 for n, p in agent.named_parameters() if not torch.equal(before[n], p))
     assert changed > 0
+
+
+def test_load_checkpoint_prefers_weight_d_model(tmp_path):
+    """Stale config d_model must not win over ride_id_embed width."""
+    device = torch.device("cpu")
+    donor = ParkRouterModel(
+        guest_feat_dim=GUEST_FEAT_DIM,
+        num_rides=NUM_RIDES,
+        ride_dynamic_feat_dim=RIDE_DYNAMIC_FEAT_DIM,
+        environment_dynamic_feat_dim=ENV_DYNAMIC_FEAT_DIM,
+        d_model=384,
+    )
+    ckpt = tmp_path / "small.pt"
+    save_checkpoint(ckpt, donor, None, step=1)
+    # Corrupt metadata like the buggy BC save did.
+    payload = torch.load(ckpt, map_location=device, weights_only=False)
+    payload["config"]["d_model"] = 512
+    torch.save(payload, ckpt)
+
+    loaded, _, extra = load_checkpoint(ckpt, device)
+    assert int(loaded.d_model) == 384
+    assert extra.get("d_model_from_weights") == 384
+    notes = str(extra.get("load_notes", ""))
+    assert "skipped_incompatible" not in notes
 
 
 def test_compute_gae_bootstraps_when_truncated():

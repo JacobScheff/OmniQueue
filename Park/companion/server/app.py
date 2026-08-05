@@ -41,6 +41,12 @@ class RecommendRequest(BaseModel):
     arrival_hour: float | None = Field(
         default=None, description="Local hour of arrival; default park open"
     )
+    distance_preference: float | None = Field(
+        default=None,
+        description="Walk tolerance ∈ [0, 1]: 0 = minimize walking, 1 = allow long walks",
+        ge=0.0,
+        le=1.0,
+    )
     model_version: str | None = Field(
         default=None,
         description="Model tag from settings.MODELS (e.g. v1, v2). Defaults to DEFAULT_MODEL_VERSION.",
@@ -179,6 +185,11 @@ def create_app(
             "default_preference_weights": default_preference_weights().tolist(),
             "day_start_hour": config.DAY_START_HOUR,
             "day_end_hour": config.DAY_END_HOUR,
+            "distance_preference_default": float(
+                getattr(config, "DISTANCE_PREF_DEFAULT", 0.5)
+            ),
+            "distance_preference_min": 0.0,
+            "distance_preference_max": 1.0,
             "hubs": unique_hubs,
             "rides": rides,
             "default_model_version": reg.default_version,
@@ -226,6 +237,11 @@ def create_app(
         leave_sec = _hour_to_sec_since_open(body.leave_hour, default_sec=config.DAY_SECONDS)
         spawn_sec = _hour_to_sec_since_open(body.arrival_hour, default_sec=0)
 
+        dist_pref = (
+            float(body.distance_preference)
+            if body.distance_preference is not None
+            else float(getattr(config, "DISTANCE_PREF_DEFAULT", 0.5))
+        )
         state = CompanionState(
             preference_weights=np.asarray(body.preference_weights, dtype=np.float32),
             must_dos=np.asarray(body.must_dos, dtype=np.uint8),
@@ -233,6 +249,7 @@ def create_app(
             location_node_id=location_node_id,
             leave_sec=leave_sec,
             spawn_sec=spawn_sec,
+            distance_preference=dist_pref,
         )
         board = app.state.waits.get_board(force=body.force_refresh_waits)
         try:

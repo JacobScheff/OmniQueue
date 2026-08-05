@@ -58,6 +58,13 @@ MUST_DO_PREF_BOOST = 10.0
 PREF_POPULARITY_NOISE = 0.25
 # Training-only spawn (BC / personal PPO): i.i.d. U(PREF_RAW_EPS, 1), must-do boost, L1-normalize.
 PREF_RAW_EPS = 1e-3
+# Distance preference (walk tolerance) ∈ [0, 1]: 0 = minimize walking, 1 = long walks allowed.
+# Mirrored in native/include/park_sim.hpp. Scoring walk/eta are inflated by (1 + α·(1−d));
+# feasibility always uses true walk. Heuristic soft-balks walks above the d-scaled max.
+DISTANCE_PREF_DEFAULT = 0.5
+DISTANCE_PREF_WALK_INFLATE = 2.0  # α: at d=0 scoring walk ×(1+α); at d=1 unchanged
+DISTANCE_PREF_NEAR_WALK_SEC = 8 * 60  # max walk at d=0 (heuristic passes 1–3)
+DISTANCE_PREF_FAR_WALK_SEC = 90 * 60  # max walk as d→1 before unlimited
 IDLE_WALK_PROB = 0.5
 IDLE_MAX_HOPS = 2
 MAX_ROUTE_BATCH = 256

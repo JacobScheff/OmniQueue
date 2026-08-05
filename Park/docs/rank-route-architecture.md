@@ -32,12 +32,13 @@ No ride↔ride self-attention. No transformer decoder.
 
 ## Observation layout
 
-Flat dim = `43 + 34×11 + 3 = 420`.
+Flat dim = `44 + 34×11 + 3 = 421`.
 
-**Guest (43):** prefs `0..33`, remaining pref mass `34`, speed `35`, time left `36`, loc `37`, rides completed `38`, must-do count `39`, at-ride `40`, state `41`, elapsed `42`.  
+**Guest (44):** prefs `0..33`, remaining pref mass `34`, speed `35`, time left `36`, loc `37`, rides completed `38`, must-do count `39`, at-ride `40`, state `41`, elapsed `42`, **distance_preference** `43` (walk tolerance ∈ [0, 1]).  
 Removed vs older layouts: party size, mean balk, walk-target flag.
 
-**Ride (11):** wait, incoming, open, duration, capacity, walk, history, must_do, unfinished pref, **ETA**, **wait_vs_mean**.
+**Ride (11):** wait, incoming, open, duration, capacity, walk, history, must_do, unfinished pref, **ETA**, **wait_vs_mean**.  
+Walk/ETA are **scoring-inflated** by `(1 + α·(1−d))` (`DISTANCE_PREF_WALK_INFLATE`); action masks deflate to true walk for feasibility.
 
 **Env (3):** time of day, mean wait, broken fraction (wait-variance slot removed).
 
@@ -54,7 +55,7 @@ Mirrored in `native/src/park_sim.cpp` `build_observation`, `training/features.py
 | Pref CF (hinge JS) | Swap prefs → `π_A` must move |
 | Wait CF (hinge JS) | Perturb waits → `π_A` must move |
 | Pref-rank soft CE | Stage A mass on high-pref / must-dos |
-| Planned + realized walk | Keep routes compact |
+| Planned + realized walk | Keep routes compact; scaled by `(1−d)` so high walk tolerance removes walk pressure |
 
 **Removed:** route-consistency bonus, party-size reward weighting, legacy ride-feat widen bridges.
 

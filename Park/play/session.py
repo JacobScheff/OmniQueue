@@ -18,6 +18,7 @@ class FocalProfile:
         default_factory=lambda: np.ones(34, dtype=np.float32)
     )
     must_dos: np.ndarray = field(default_factory=lambda: np.zeros(34, dtype=np.uint8))
+    distance_preference: float = 0.5
 
     def copy(self) -> "FocalProfile":
         return FocalProfile(
@@ -25,6 +26,7 @@ class FocalProfile:
             leave_sec=int(self.leave_sec),
             preference_weights=np.array(self.preference_weights, dtype=np.float32, copy=True),
             must_dos=np.array(self.must_dos, dtype=np.uint8, copy=True),
+            distance_preference=float(self.distance_preference),
         )
 
 

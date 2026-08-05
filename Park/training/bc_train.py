@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, Dataset
 import _park_sim
 import Park.config as config
 from Park.model import ParkRouterModel, obs_flat_to_tensors
-from Park.training.checkpoint import default_model, save_checkpoint
+from Park.training.checkpoint import default_model, load_checkpoint, save_checkpoint
 from Park.training.features import build_action_mask, masked_cross_entropy
 
 
@@ -41,6 +41,7 @@ class BCConfig:
     lr: float = config.BC_LR
     save_dir: str = config.BC_SAVE_DIR
     save_every: int = config.BC_SAVE_EVERY
+    init_checkpoint: str | None = None
 
 
 class BCFlatDataset(Dataset):
@@ -89,7 +90,17 @@ def train(cfg: BCConfig) -> None:
         num_workers=0,
     )
 
-    model: ParkRouterModel = default_model(device)
+    if cfg.init_checkpoint:
+        model, _step, extra = load_checkpoint(cfg.init_checkpoint, device)
+        notes = extra.get("load_notes")
+        print(
+            f"Warm-started from {cfg.init_checkpoint}"
+            + (f" ({notes})" if notes else ""),
+            flush=True,
+        )
+    else:
+        model = default_model(device)
+    model = model.to(device)  # type: ignore[assignment]
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     num_params = sum(p.numel() for p in model.parameters())
 
@@ -214,9 +225,23 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bc-days", type=int, default=1, help="Heuristic days to mine for labels")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument(
+        "--init-checkpoint",
+        type=str,
+        default=None,
+        help="Optional .pt to warm-start (supports guest_proj widen for distance_preference)",
+    )
+    parser.add_argument("--save-dir", type=str, default=None)
     args = parser.parse_args()
 
-    cfg = BCConfig(seed=args.seed, bc_days=args.bc_days, device=args.device)
+    cfg = BCConfig(
+        seed=args.seed,
+        bc_days=args.bc_days,
+        device=args.device,
+        init_checkpoint=args.init_checkpoint,
+    )
+    if args.save_dir:
+        cfg.save_dir = args.save_dir
     train(cfg)
 
 

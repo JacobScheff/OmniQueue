@@ -20,6 +20,7 @@ Guests are grouped into **parties** stored in a **struct-of-arrays** layout insi
 | `ride_history` | int16 × N | Completions per ride (drives heuristic repeat dampening) |
 | `rides_completed` | int32 | Total completions for this party |
 | `walk_target_ride` | int32 | Ride id while walking (-1 if none) |
+| `distance_preference` | float32 | Walk tolerance ∈ [0, 1] (0 = avoid long walks, 1 = allow) |
 | `state` | int8 | `PartyState` bitmask value |
 
 Spawn constants live in `native/include/park_sim.hpp` (mirrored from `config.py`).
@@ -74,6 +75,17 @@ preferences[r] = raw[r] / sum(raw)
 ```
 
 Defaults: `PREF_POPULARITY_NOISE = 0.25`, `PREF_RAW_EPS = 1e-3`. Focal guests in play/watch can still override weights via the UI (often popularity-initialized sliders).
+
+## Distance Preference (Walk Tolerance)
+
+Each party draws `distance_preference ~ U(0, 1)` at spawn (focals/companion may override; default `0.5`).
+
+| `d` | Meaning |
+|-----|---------|
+| `0` | Minimize walking — heuristic soft-balks walks above `DISTANCE_PREF_NEAR_WALK_SEC`; scoring walk/eta inflated by `(1+α)`; full PPO walk shaping |
+| `1` | Long walks allowed (not preferred) — no distance balk; scoring walk/eta unscaled; PPO walk shaping off |
+
+Scoring inflate uses `DISTANCE_PREF_WALK_INFLATE` (α). Feasibility always uses true walk times. See [`heuristic-router.md`](heuristic-router.md) and [`rank-route-architecture.md`](rank-route-architecture.md).
 
 ## Balk Thresholds
 

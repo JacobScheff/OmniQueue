@@ -16,15 +16,17 @@ from Park.training.features import (
     ENV_DYNAMIC_FEAT_DIM,
     FLAT_OBS_DIM,
     GUEST_FEAT_DIM,
-    GUEST_FEAT_AT_RIDE_NODE,
+    GUEST_FEAT_DISTANCE_PREF,
     GUEST_FEAT_TIME_LEFT,
     NUM_ACTIONS,
     NUM_RIDES,
     RIDE_DYNAMIC_FEAT_DIM,
     RIDE_FEAT_DURATION,
+    RIDE_FEAT_ETA,
     RIDE_FEAT_OPEN,
     RIDE_FEAT_WAIT,
     RIDE_FEAT_WALK,
+    distance_pref_walk_inflate,
     route_k as default_route_k,
 )
 
@@ -60,16 +62,58 @@ def _adapt_ride_feat_dim(ride: np.ndarray, expected_dim: int) -> np.ndarray:
     return np.concatenate([ride, pad], axis=-1)
 
 
+def _adapt_guest_feat_dim(guest: np.ndarray, expected_dim: int) -> np.ndarray:
+    """Slice or zero-pad guest feats to the loaded model's guest width."""
+    cur = int(guest.shape[-1])
+    exp = int(expected_dim)
+    if cur == exp:
+        return guest
+    if cur > exp:
+        return np.ascontiguousarray(guest[..., :exp])
+    pad = np.zeros((*guest.shape[:-1], exp - cur), dtype=guest.dtype)
+    return np.concatenate([guest, pad], axis=-1)
+
+
+def _deflate_walk_eta_for_legacy(
+    ride: np.ndarray, distance_pref: np.ndarray
+) -> np.ndarray:
+    """Undo scoring walk/eta inflate when feeding pre-distance-preference models."""
+    out = np.array(ride, copy=True, dtype=np.float32)
+    d = np.clip(np.asarray(distance_pref, dtype=np.float32).reshape(-1), 0.0, 1.0)
+    inflate = np.array(
+        [distance_pref_walk_inflate(float(x)) for x in d], dtype=np.float32
+    ).reshape(-1, 1)
+    inflate = np.maximum(inflate, 1e-6)
+    wait = out[..., RIDE_FEAT_WAIT]
+    true_walk = np.clip(out[..., RIDE_FEAT_WALK], 0.0, None) / inflate
+    out[..., RIDE_FEAT_WALK] = true_walk
+    out[..., RIDE_FEAT_ETA] = np.minimum(true_walk + wait, 2.0)
+    return out
+
+
 def build_action_mask_numpy(
     guest: np.ndarray,
     ride: np.ndarray,
     env: np.ndarray,
 ) -> np.ndarray:
-    """Boolean mask (B, A) matching training.features.build_action_mask."""
+    """Boolean mask (B, A) for companion inference.
+
+    Uses true (deflated) walk for time feasibility. Unlike training
+    ``build_action_mask``, does **not** hard-mask the ride the guest is
+    standing at — companion “I'm at ride X” should still allow picking X.
+    """
     batch, num_rides, _ = ride.shape
 
     open_ok = ride[..., RIDE_FEAT_OPEN] > 0.5
-    walk = np.clip(ride[..., RIDE_FEAT_WALK], 0.0, None) * 3600.0
+    d = np.clip(guest[..., GUEST_FEAT_DISTANCE_PREF], 0.0, 1.0)
+    try:
+        from Park import config as _cfg
+
+        alpha = float(getattr(_cfg, "DISTANCE_PREF_WALK_INFLATE", 2.0))
+    except Exception:  # noqa: BLE001
+        alpha = 2.0
+    inflate = np.maximum(1.0 + alpha * (1.0 - d), 1e-6)
+    walk = (np.clip(ride[..., RIDE_FEAT_WALK], 0.0, None) / inflate[..., None]) * 3600.0
     wait = np.clip(ride[..., RIDE_FEAT_WAIT], 0.0, None) * 3600.0
     duration = np.clip(ride[..., RIDE_FEAT_DURATION], 0.0, None) * 900.0
 
@@ -86,10 +130,7 @@ def build_action_mask_numpy(
     remaining_for_feas = (remaining_sec + drain)[..., None]
     time_ok = (walk + wait + duration) <= remaining_for_feas
 
-    at_ride_node = guest[..., GUEST_FEAT_AT_RIDE_NODE] > 0.5
-    already_here = at_ride_node[..., None] & (ride[..., RIDE_FEAT_WALK] <= 1e-6)
-
-    ride_ok = open_ok & time_ok & (~already_here) & (~soft_closed[..., None])
+    ride_ok = open_ok & time_ok & (~soft_closed[..., None])
 
     mask = np.zeros((batch, NUM_ACTIONS), dtype=bool)
     mask[:, :num_rides] = ride_ok
@@ -178,6 +219,7 @@ class Recommender:
         self._onnx_has_force_any_slot = False
         self._onnx_outputs: list[str] = []
         self.ride_feat_dim = RIDE_DYNAMIC_FEAT_DIM
+        self.guest_feat_dim = GUEST_FEAT_DIM
         self.route_k = default_route_k()
         self.step = 0
         self.meta: dict = {}
@@ -246,6 +288,14 @@ class Recommender:
                 if isinstance(last, int) and last > 0:
                     ride_dim = last
         self.ride_feat_dim = int(ride_dim or RIDE_DYNAMIC_FEAT_DIM)
+        guest_dim = self.meta.get("guest_feat_dim")
+        if guest_dim is None and "guest" in ins:
+            shape = ins["guest"].shape
+            if shape is not None and len(shape) >= 1:
+                last = shape[-1]
+                if isinstance(last, int) and last > 0:
+                    guest_dim = last
+        self.guest_feat_dim = int(guest_dim or GUEST_FEAT_DIM)
 
     def _load_torch(self, path: Path) -> None:
         import torch
@@ -273,6 +323,15 @@ class Recommender:
             except Exception:  # noqa: BLE001
                 cfg_dim = RIDE_DYNAMIC_FEAT_DIM
         self.ride_feat_dim = int(cfg_dim)
+        g_dim = None
+        if isinstance(meta, dict):
+            g_dim = meta.get("guest_feat_dim")
+        if g_dim is None:
+            try:
+                g_dim = int(model.guest_proj[0].in_features) - ENV_DYNAMIC_FEAT_DIM
+            except Exception:  # noqa: BLE001
+                g_dim = GUEST_FEAT_DIM
+        self.guest_feat_dim = int(g_dim)
 
     def _load_or_create_stub(self, path: Path) -> None:
         if path.is_file():
@@ -346,6 +405,7 @@ class Recommender:
                         "path": str(path),
                         "arch_version": "rank_route_v1",
                         "route_k": int(model.route_k),
+                        "guest_feat_dim": int(GUEST_FEAT_DIM),
                         "ride_dynamic_feat_dim": int(RIDE_DYNAMIC_FEAT_DIM),
                     },
                     indent=2,
@@ -377,6 +437,7 @@ class Recommender:
                 self._backend == "torch" or self._onnx_has_slots
             ),
             "route_k": int(self.route_k),
+            "guest_feat_dim": int(self.guest_feat_dim),
             "ride_dynamic_feat_dim": int(self.ride_feat_dim),
         }
 
@@ -405,9 +466,15 @@ class Recommender:
         force_action: int | None = None,
     ) -> dict:
         guest, ride, env = _split_flat_obs(obs_flat)
-        # Masking uses the full live ride tensor; models may expect a legacy width.
-        model_ride = _adapt_ride_feat_dim(ride, self.ride_feat_dim)
+        # Masking uses the full live tensors; models may expect a legacy width.
         legal = build_action_mask_numpy(guest, ride, env)[0]
+        model_guest = _adapt_guest_feat_dim(guest, self.guest_feat_dim)
+        model_ride = _adapt_ride_feat_dim(ride, self.ride_feat_dim)
+        if self.guest_feat_dim < GUEST_FEAT_DIM:
+            # Pre-distance-preference graphs expect true (uninflated) walk/eta.
+            model_ride = _deflate_walk_eta_for_legacy(
+                model_ride, guest[..., GUEST_FEAT_DISTANCE_PREF]
+            )
         route_ids: list[int] = []
         slot_logits_np: np.ndarray | None = None
         slot_masks_np: np.ndarray | None = None
@@ -445,7 +512,7 @@ class Recommender:
 
         if self._session is not None:
             feeds: dict[str, np.ndarray] = {
-                "guest": guest,
+                "guest": model_guest,
                 "ride": model_ride,
                 "env": env,
             }
@@ -481,7 +548,7 @@ class Recommender:
         elif self._torch_model is not None:
             torch = self._torch
             with torch.no_grad():
-                g = torch.tensor(guest, dtype=torch.float32, device=self.device)
+                g = torch.tensor(model_guest, dtype=torch.float32, device=self.device)
                 r = torch.tensor(model_ride, dtype=torch.float32, device=self.device)
                 e = torch.tensor(env, dtype=torch.float32, device=self.device)
                 fs = None

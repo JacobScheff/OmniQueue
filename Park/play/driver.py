@@ -28,6 +28,7 @@ def make_focal_config(profile: FocalProfile):
     cfg.leave_sec = int(profile.leave_sec)
     cfg.preference_weights = np.asarray(profile.preference_weights, dtype=np.float32)
     cfg.must_dos = np.asarray(profile.must_dos, dtype=np.uint8)
+    cfg.distance_preference = float(np.clip(getattr(profile, "distance_preference", 0.5), 0.0, 1.0))
     return cfg
 
 

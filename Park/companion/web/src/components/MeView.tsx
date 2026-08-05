@@ -38,13 +38,10 @@ export default function MeView({
             value={state.location}
             onChange={(e) => onCommit({ ...state, location: e.target.value })}
           >
-            <optgroup label="Hubs">
-              {catalog.hubs.map((h) => (
-                <option key={h.key} value={h.key}>
-                  {h.name}
-                </option>
-              ))}
-            </optgroup>
+            <option value="entrance">
+              {catalog.hubs.find((h) => h.key === "entrance" || h.kind === "entrance")?.name ??
+                "Park entrance"}
+            </option>
             <optgroup label="Rides">
               {catalog.rides.map((r) => (
                 <option key={r.location_key} value={r.location_key}>
@@ -53,6 +50,34 @@ export default function MeView({
               ))}
             </optgroup>
           </select>
+        </div>
+
+        <div className="field-card">
+          <label htmlFor="distance-pref">
+            Walking comfort{" "}
+            <span className="field-hint">
+              {state.distance_preference <= 0.25
+                ? "Stay nearby"
+                : state.distance_preference >= 0.75
+                  ? "Long walks OK"
+                  : "Balanced"}
+            </span>
+          </label>
+          <input
+            id="distance-pref"
+            type="range"
+            min={catalog.distance_preference_min ?? 0}
+            max={catalog.distance_preference_max ?? 1}
+            step={0.05}
+            value={state.distance_preference}
+            onChange={(e) =>
+              onCommit({ ...state, distance_preference: Number(e.target.value) })
+            }
+          />
+          <span className="field-hint">
+            Low = prefer short walks from where you are. High = allow farther rides (does not prefer
+            them).
+          </span>
         </div>
 
         <div className="field-card two-up">
@@ -145,6 +170,11 @@ export default function MeView({
           <dd>How much you want to ride something. Higher priority nudges the model to route you there sooner.</dd>
           <dt>Must-do</dt>
           <dd>Rides you don't want to miss today. The model works these into your route before it's done.</dd>
+          <dt>Walking comfort</dt>
+          <dd>
+            How far you are willing to walk. Lower values keep recommendations closer to your current
+            spot; higher values allow longer walks without preferring them.
+          </dd>
           <dt>Done</dt>
           <dd>How many times you've already ridden something. Rides marked done won't be recommended again.</dd>
           <dt>Pinning a stop</dt>

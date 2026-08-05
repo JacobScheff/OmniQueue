@@ -102,13 +102,26 @@ python training/eval_policy.py \
 
 | Tensor | Shape | Content |
 |--------|-------|---------|
-| Guest features | `(B, 43)` | Prefs `0..33`, remaining pref mass `34`, speed `35`, time left `36`, loc `37`, rides completed `38`, must-do count `39`, at-ride `40`, state `41`, elapsed `42` |
-| Ride features | `(B, 34, 11)` | Wait, incoming, open, duration, capacity, walk, history, must-do, unfinished pref, ETA, wait_vs_mean |
+| Guest features | `(B, 44)` | Prefs `0..33`, remaining pref mass `34`, speed `35`, time left `36`, loc `37`, rides completed `38`, must-do count `39`, at-ride `40`, state `41`, elapsed `42`, distance_preference `43` |
+| Ride features | `(B, 34, 11)` | Wait, incoming, open, duration, capacity, walk, history, must-do, unfinished pref, ETA, wait_vs_mean (walk/ETA scoring-inflated by distance_preference) |
 | Env features | `(B, 3)` | Time of day, mean wait, broken fraction |
 | Route actions | `(B, K)` | `K=PPO_ROUTE_K` (default 5); rides `0–33`, or exit `34` / idle `35` in slot 0 only; later slots `-1` pad after exit/idle |
 | Commit | scalar | `route[0]` applied in the DES / companion |
 
-Flat observation size: **420** (`FLAT_OBS_DIM` = 43 + 34×11 + 3).
+Flat observation size: **421** (`FLAT_OBS_DIM` = 44 + 34×11 + 3).
+
+### Distance-preference warm-start (guest dim 43→44)
+
+When loading an older `rank_route_v1` checkpoint into the widened guest encoder, `training/checkpoint.py` copies `guest_proj.0.weight` columns for the prior guest+env inputs and zeros the new distance-preference column. Recommended short fine-tune:
+
+```bash
+# from Park/
+python training/bc_train.py --init-checkpoint checkpoints/ppo/ppo_final.pt --bc-days 2 --save-dir checkpoints/bc_dist
+python training/ppo_train.py --init-checkpoint checkpoints/bc_dist/bc_final.pt --total-days 20 --save-dir checkpoints/ppo_dist
+python tools/export_companion_onnx.py --checkpoint checkpoints/ppo_dist/ppo_final.pt --tag v3
+```
+
+Eval at `d ∈ {0, 0.5, 1}` should show mean walk-to-commit decreasing as `d → 0` without inventing a “prefer far” mode at `d = 1`.
 
 ### Architecture (`RankRouteModel` / `ParkRouterModel` alias)
 

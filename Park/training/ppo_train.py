@@ -39,6 +39,7 @@ from Park.training.features import (
 )
 from Park.training.route_reward import (
     commit_action,
+    distance_pref_from_obs,
     pad_route,
     realized_walk_penalty,
     route_shaping_delta,
@@ -252,8 +253,9 @@ def _collect_episode(
             obs_row = staged_obs[i]
             party_id = int(staged_parties[i])
             route = staged_routes[i]
+            d_pref = distance_pref_from_obs(obs_row)
             shape_extra = float(staged_emit_shaping[i]) - realized_walk_penalty(
-                float(staged_realized_walk[i])
+                float(staged_realized_walk[i]), d_pref
             )
             reward = float(rewards_arr[i]) + shape_extra
             shaping_sum += shape_extra
@@ -330,7 +332,10 @@ def _collect_episode(
             route = pad_route(routes_np[i].tolist(), k)
             routes_np[i] = route
             ride_feats = _ride_feats_from_obs(obs_np[i])
-            emit, walk_sec = route_shaping_delta(route, prev_route.get(pid), ride_feats)
+            d_pref = distance_pref_from_obs(obs_np[i])
+            emit, walk_sec = route_shaping_delta(
+                route, prev_route.get(pid), ride_feats, d_pref
+            )
             emit_shaping[i] = emit
             realized_walk[i] = walk_sec
             if commit_action(route) < NUM_RIDES:
@@ -539,7 +544,9 @@ def _ppo_update(
                 slot_masks,
                 ride_mb,
             ) = agent.get_action_and_value(obs, actions)
-            logratio = new_logprob - old_logprob
+            # Clamp log-ratio so a few near-zero route probs cannot overflow
+            # ratio.exp() into inf and print fake multi-million "approx_kl" values.
+            logratio = (new_logprob - old_logprob).clamp(-20.0, 20.0)
             ratio = logratio.exp()
 
             pg_loss1 = -adv * ratio
@@ -629,22 +636,46 @@ def train(cfg: PPOConfig) -> None:
     torch.manual_seed(cfg.seed)
 
     agent = Agent().to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
-    num_params = sum(p.numel() for p in agent.parameters())
-
     global_step = 0
     init_extra: dict = {}
     if cfg.init_checkpoint:
         loaded_model, global_step, init_extra = load_checkpoint(cfg.init_checkpoint, device)
-        # Flexible encoder warm-start into the live agent (keeps Adam param identity).
+        # Use the loaded architecture (e.g. d_model=384 from older PPO) rather than
+        # forcing default_model()'s current D_MODEL and silently skipping weights.
         from Park.training.checkpoint import _load_state_flexible
 
-        notes = _load_state_flexible(agent.model, loaded_model.state_dict())
+        if (
+            int(loaded_model.d_model) != int(agent.model.d_model)
+            or tuple(loaded_model.guest_proj[0].weight.shape)
+            != tuple(agent.model.guest_proj[0].weight.shape)
+        ):
+            agent.model = loaded_model
+            notes = ["replaced_agent_model_to_match_checkpoint"]
+        else:
+            notes = _load_state_flexible(agent.model, loaded_model.state_dict())
+        skipped = init_extra.get("load_notes", "")
+        if "skipped_incompatible=" in str(skipped):
+            # Surface catastrophic mismatch instead of training a random policy.
+            try:
+                n_skip = int(str(skipped).split("skipped_incompatible=")[1].split(",")[0])
+            except Exception:
+                n_skip = 0
+            if n_skip > 10:
+                raise RuntimeError(
+                    f"Init checkpoint failed to load into the agent ({skipped}). "
+                    "Check d_model / guest_feat_dim mismatch."
+                )
         note_txt = (" " + ", ".join(notes)) if notes else ""
+        if skipped:
+            note_txt = (note_txt + f" [{skipped}]").strip()
         _log(
             f"Loaded init checkpoint: {cfg.init_checkpoint} "
-            f"(prior step={global_step}{note_txt})"
+            f"(prior step={global_step}, d_model={agent.model.d_model}{note_txt})"
         )
+
+    # Optimizer after init swap so Adam tracks the live parameters.
+    optimizer = optim.Adam(agent.parameters(), lr=cfg.learning_rate, eps=1e-5)
+    num_params = sum(p.numel() for p in agent.parameters())
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)

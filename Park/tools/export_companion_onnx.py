@@ -186,6 +186,7 @@ def export_one(pt_path: Path, onnx_path: Path, *, opset: int) -> None:
         "arch_version": "rank_route_v1",
         "route_k": int(model.route_k),
         "candidate_m": int(getattr(model, "candidate_m", 8)),
+        "guest_feat_dim": int(GUEST_FEAT_DIM),
         "ride_dynamic_feat_dim": ride_feat_dim,
         **{k: v for k, v in (extra or {}).items() if isinstance(v, (str, int, float, bool))},
     }
