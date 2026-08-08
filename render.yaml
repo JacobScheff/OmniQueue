@@ -2,7 +2,7 @@
 # https://render.com/docs/blueprint-spec
 services:
   - type: web
-    name: omniqueue-companion
+    name: omniqueue
     runtime: docker
     plan: free
     dockerfilePath: ./Park/companion/Dockerfile

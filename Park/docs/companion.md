@@ -67,14 +67,24 @@ docker run --rm -p 8000:8000 omniqueue-companion
 
 **Recommended: [Render](https://render.com) free web service** (SPA + API together; sleeps after ~15 min idle).
 
-1. Push this branch / merge to the repo Render will watch.
-2. In Render: **New → Blueprint** and select the repo (uses root `render.yaml`), **or** **New → Web Service**:
+The default public URL is `https://<service-name>.onrender.com`. Root `render.yaml` sets `name: omniqueue`, so a Blueprint deploy should land at **`https://omniqueue.onrender.com`** (if that subdomain is free on Render).
+
+### Fresh deploy (preferred)
+
+1. Push / merge the branch Render will watch (include the `name: omniqueue` change in `render.yaml`).
+2. In the Render dashboard, **delete** any old suspended service named `omniqueue-companion` (suspend alone keeps the old name reserved; you do not need that subdomain anymore).
+3. **New → Blueprint** → connect the repo (uses root `render.yaml`). Confirm the web service is named **`omniqueue`**, then apply/deploy.
+4. Or **New → Web Service** manually:
+   - Name: **`omniqueue`** (this becomes the subdomain)
    - Runtime: **Docker**
    - Dockerfile path: `Park/companion/Dockerfile`
    - Docker context: repo root (`.`)
    - Instance: **Free**
    - Health check path: `/api/health`
-3. Deploy. Open the `*.onrender.com` URL — the phone UI and `/api/*` are on the same origin.
+   - Env: `COMPANION_DEVICE=cpu` (optional; Dockerfile already defaults to CPU)
+5. Open **`https://omniqueue.onrender.com`** — the phone UI and `/api/*` are on the same origin. No app config change is needed for the new hostname.
+
+If `omniqueue` is already taken on Render’s shared `*.onrender.com` namespace, pick another free name (or attach a custom domain later).
 
 Cold start after sleep can take ~30–60s while the free instance wakes. No ONNX rebuild is required on your machine for deploy.
 
