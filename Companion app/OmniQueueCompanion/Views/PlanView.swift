@@ -97,7 +97,7 @@ private struct TicketHero: View {
                 .padding(.trailing, 16)
                 .padding(.top, 6)
                 .contentTransition(.opacity)
-                .id(waitingOnBoard ? "no-board" : rec?.recommended.actionId)
+                .id(waitingOnBoard ? "no-board" : (rec.map { String($0.recommended.actionId) } ?? "empty"))
 
             if waitingOnBoard {
                 Text(session.waitBoardSummary)
