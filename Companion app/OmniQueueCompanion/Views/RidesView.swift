@@ -104,9 +104,9 @@ struct RidesView: View {
                 return d == 0 ? a.id < b.id : d > 0
             }
         }
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty { return rides }
-        return rides.filter { $0.name.lowercased().contains(q) || $0.hubName.lowercased().contains(q) }
+        return rides.filter { FuzzyMatch.matches(q, in: $0.name, $0.hubName) }
     }
 
     private func wobble(_ id: Int) -> Double {

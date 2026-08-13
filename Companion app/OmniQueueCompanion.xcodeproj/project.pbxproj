@@ -13,6 +13,7 @@
 		8B0400000000000000000020 /* ObservationBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000001F /* ObservationBuilder.swift */; };
 		8B0400000000000000000022 /* OnnxRecommender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000021 /* OnnxRecommender.swift */; };
 		8B0400000000000000000024 /* WaitTimeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000023 /* WaitTimeService.swift */; };
+		8B040000000000000000004E /* FuzzyMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000004D /* FuzzyMatch.swift */; };
 		8B0400000000000000000026 /* GuestState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000025 /* GuestState.swift */; };
 		8B0400000000000000000028 /* ParkCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000027 /* ParkCatalog.swift */; };
 		8B040000000000000000002A /* Recommendation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000029 /* Recommendation.swift */; };
@@ -42,6 +43,7 @@
 		8B040000000000000000001F /* ObservationBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationBuilder.swift; sourceTree = "<group>"; };
 		8B0400000000000000000021 /* OnnxRecommender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnnxRecommender.swift; sourceTree = "<group>"; };
 		8B0400000000000000000023 /* WaitTimeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitTimeService.swift; sourceTree = "<group>"; };
+		8B040000000000000000004D /* FuzzyMatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzyMatch.swift; sourceTree = "<group>"; };
 		8B0400000000000000000025 /* GuestState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestState.swift; sourceTree = "<group>"; };
 		8B0400000000000000000027 /* ParkCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParkCatalog.swift; sourceTree = "<group>"; };
 		8B0400000000000000000029 /* Recommendation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recommendation.swift; sourceTree = "<group>"; };
@@ -135,6 +137,7 @@
 				8B040000000000000000001F /* ObservationBuilder.swift */,
 				8B0400000000000000000021 /* OnnxRecommender.swift */,
 				8B0400000000000000000023 /* WaitTimeService.swift */,
+				8B040000000000000000004D /* FuzzyMatch.swift */,
 			);
 			path = Engine;
 			sourceTree = "<group>";
@@ -263,6 +266,7 @@
 				8B0400000000000000000020 /* ObservationBuilder.swift in Sources */,
 				8B0400000000000000000022 /* OnnxRecommender.swift in Sources */,
 				8B0400000000000000000024 /* WaitTimeService.swift in Sources */,
+				8B040000000000000000004E /* FuzzyMatch.swift in Sources */,
 				8B0400000000000000000026 /* GuestState.swift in Sources */,
 				8B0400000000000000000028 /* ParkCatalog.swift in Sources */,
 				8B040000000000000000002A /* Recommendation.swift in Sources */,

@@ -34,17 +34,15 @@ struct LocationPicker: View {
     }
 
     private var filteredHubs: [ParkCatalog.Hub] {
-        let q = query.lowercased()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty { return session.catalog.hubs }
-        return session.catalog.hubs.filter { $0.name.lowercased().contains(q) }
+        return session.catalog.hubs.filter { FuzzyMatch.matches(q, in: $0.name) }
     }
 
     private var filteredRides: [ParkCatalog.Ride] {
-        let q = query.lowercased()
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty { return session.catalog.rides }
-        return session.catalog.rides.filter {
-            $0.name.lowercased().contains(q) || $0.hubName.lowercased().contains(q)
-        }
+        return session.catalog.rides.filter { FuzzyMatch.matches(q, in: $0.name, $0.hubName) }
     }
 
     private func row(key: String, name: String, subtitle: String) -> some View {
