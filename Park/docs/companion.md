@@ -6,7 +6,7 @@
 
 Phone-first **live Disneyland companion**: pull real wait times from ThemeParks.wiki, let the guest edit preferences / must-dos / completions / location (with undo/redo + `localStorage`), and run the trained **PPO** checkpoint once (single-party / no guest axis) to show the **committed next action**, a short **planned route** (`route[0..K-1]`), and **per-slot** masked probability distributions. Guests can **pin any legal stop in the route** (`force_slot` + `force_action`, not just the first) so the autoregressive decoder continues the rest of the plan from that pin while every other slot keeps deciding naturally.
 
-A native iOS client lives in `Companion app/OmniQueueCompanion.xcodeproj`. It bundles `v2.onnx`, builds the same observation on-device, and calls ThemeParks.wiki directly. It does not use GPS and does not expose the web model switcher.
+A native iOS client lives in `Companion app/OmniQueueCompanion.xcodeproj`. It bundles `v2.onnx`, builds the same observation on-device, and calls ThemeParks.wiki directly. It does not use GPS and does not expose the web model switcher. Plan → **Refresh waits** spins the clockwise glyph for the whole fetch (and at least one turn): iOS 18 uses `symbolEffect(.rotate)`; earlier OS versions drive angle from a `TimelineView` with animations stripped so parent transactions cannot freeze the rotation.
 
 This does **not** run the C++ DES or Watch pygame UI. The simulator is unused at request time; only the exported ONNX policy, walk times from `park_graph`, and `config.RIDES` are reused on the server.
 

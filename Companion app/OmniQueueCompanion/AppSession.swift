@@ -216,6 +216,7 @@ final class AppSession {
 
     func refreshWaits(force: Bool) async {
         isRefreshingWaits = true
+        let started = ContinuousClock.now
         defer { isRefreshingWaits = false }
         let next = await waits.board(force: force)
         board = next
@@ -223,6 +224,13 @@ final class AppSession {
             await recompute()
         } else {
             recommendation = nil
+        }
+        // Keep the refresh glyph spinning for at least one turn so a fast
+        // ThemeParks.wiki response doesn't look like a dead control.
+        let minimum: Duration = .milliseconds(750)
+        let elapsed = ContinuousClock.now - started
+        if elapsed < minimum {
+            try? await Task.sleep(for: minimum - elapsed)
         }
     }
 

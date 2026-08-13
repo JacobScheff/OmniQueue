@@ -165,19 +165,19 @@ private struct TicketHero: View {
             HStack {
                 statusPills
                 Spacer()
-                HStack(spacing: 6) {
-                    SpinningRefreshIcon(spinning: session.isRefreshingWaits)
-                    Text("Refresh waits")
-                }
-                .font(TicketType.caption.weight(.semibold))
-                .foregroundStyle(TicketInk.copperAccent(blend: blend))
-                .opacity(session.isRefreshingWaits ? 0.85 : 1)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard !session.isRefreshingWaits else { return }
+                Button {
                     Task { await session.refreshWaits(force: true) }
+                } label: {
+                    HStack(spacing: 6) {
+                        SpinningRefreshIcon(spinning: session.isRefreshingWaits)
+                        Text("Refresh waits")
+                    }
+                    .font(TicketType.caption.weight(.semibold))
                 }
-                .accessibilityAddTraits(.isButton)
+                .buttonStyle(.plain)
+                .foregroundStyle(TicketInk.copperAccent(blend: blend))
+                .disabled(session.isRefreshingWaits)
+                .opacity(session.isRefreshingWaits ? 0.85 : 1)
                 .accessibilityLabel("Refresh waits")
             }
             .padding(.leading, TicketLayout.leading(16))

@@ -155,24 +155,37 @@ struct InkingDots: View {
     }
 }
 
+/// Clockwise refresh glyph that actually rotates while `spinning` is true.
+///
+/// Implicit animations (and Button label transactions) will happily interpolate
+/// `rotationEffect` updates — including the 359°→0° wrap — so the arrow looks
+/// frozen. Drive the angle from `TimelineView` / `symbolEffect` and strip
+/// animations from the transaction instead of fighting `withAnimation`.
 struct SpinningRefreshIcon: View {
     var spinning: Bool
-    @State private var angle = 0.0
 
     var body: some View {
-        Image(systemName: "arrow.clockwise")
-            .rotationEffect(.degrees(angle))
-            .task(id: spinning) {
-                if !spinning {
-                    angle = 0
-                    return
+        Group {
+            if #available(iOS 18.0, *) {
+                Image(systemName: "arrow.clockwise")
+                    .symbolEffect(.rotate.clockwise, options: .repeating, isActive: spinning)
+            } else if spinning {
+                // Mount a fresh timeline only while active. A TimelineView that
+                // starts paused (`paused: !spinning`) often never resumes.
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
+                    Image(systemName: "arrow.clockwise")
+                        .rotationEffect(.degrees(Self.degrees(at: context.date)))
                 }
-                let start = Date()
-                while !Task.isCancelled {
-                    let elapsed = Date().timeIntervalSince(start)
-                    angle = elapsed.truncatingRemainder(dividingBy: 0.75) / 0.75 * 360
-                    try? await Task.sleep(for: .milliseconds(16))
-                }
+            } else {
+                Image(systemName: "arrow.clockwise")
             }
+        }
+        .transaction { $0.animation = nil }
+        .accessibilityHidden(true)
+    }
+
+    static func degrees(at date: Date, period: TimeInterval = 0.75) -> Double {
+        let turns = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+        return turns * 360
     }
 }
