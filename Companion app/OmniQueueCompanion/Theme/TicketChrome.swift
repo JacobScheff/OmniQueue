@@ -1,5 +1,10 @@
 import SwiftUI
 
+enum TicketLayout {
+    /// Extra left padding so copy sits past the copper stub and punch holes.
+    static func leading(_ stubWidth: CGFloat) -> CGFloat { stubWidth + 18 }
+}
+
 /// Perforated ticket edge + faint fiber grain. Drawn, not generated art.
 struct TicketStock: View {
     var corner: CGFloat = 22
@@ -16,9 +21,10 @@ struct TicketStock: View {
 
             let body = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: corner)
             context.fill(body, with: .color(paper))
+            context.clip(to: body)
 
-            // Left stub
-            let stubRect = Path(CGRect(x: 0, y: 0, width: stubWidth + 8, height: size.height))
+            // Left stub — clipped so it follows the rounded ticket, not a square strip.
+            let stubRect = Path(CGRect(x: 0, y: 0, width: stubWidth, height: size.height))
             context.fill(stubRect, with: .color(stub.opacity(scheme == .dark ? 0.85 : 1)))
 
             // Fiber grain — hashed, not random-looking noise
@@ -32,11 +38,13 @@ struct TicketStock: View {
             context.opacity = 1
 
             if punched {
-                let count = max(4, Int((size.height - 28) / 22))
+                let holeSize: CGFloat = 9
+                let holeX = (stubWidth - holeSize) / 2
+                let count = max(3, Int((size.height - 28) / 22))
                 let spacing = (size.height - 24) / CGFloat(count)
                 for i in 0..<count {
-                    let y = 12 + spacing * CGFloat(i) + spacing * 0.35
-                    let holeRect = CGRect(x: stubWidth - 5, y: y, width: 10, height: 10)
+                    let y = 12 + spacing * CGFloat(i) + spacing * 0.28
+                    let holeRect = CGRect(x: holeX, y: y, width: holeSize, height: holeSize)
                     context.fill(Path(ellipseIn: holeRect), with: .color(hole))
                 }
             }
@@ -47,6 +55,7 @@ struct TicketStock: View {
                 lineWidth: 1
             )
         }
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .allowsHitTesting(false)
     }
 }

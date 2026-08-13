@@ -78,17 +78,20 @@ private struct TicketHero: View {
                     WaitChip(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN")
                 }
             }
-            .padding(.horizontal, 18)
+            .padding(.leading, TicketLayout.leading(16))
+            .padding(.trailing, 16)
             .padding(.top, 16)
 
             PerforationDivider()
-                .padding(.horizontal, 8)
+                .padding(.leading, TicketLayout.leading(16))
+                .padding(.trailing, 16)
 
             Text(rec?.recommended.label ?? (session.busy ? "Still inking…" : "—"))
                 .font(TicketType.mark)
                 .foregroundStyle(TicketInk.ink(for: scheme))
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 18)
+                .padding(.leading, TicketLayout.leading(16))
+                .padding(.trailing, 16)
                 .padding(.top, 6)
                 .contentTransition(.opacity)
                 .id(rec?.recommended.actionId)
@@ -97,7 +100,8 @@ private struct TicketHero: View {
                 Text("\(confidence(rec.recommended.prob)) · \(WaitFormatting.percent(rec.recommended.prob))")
                     .font(TicketType.body)
                     .foregroundStyle(TicketInk.muted(for: scheme))
-                    .padding(.horizontal, 18)
+                    .padding(.leading, TicketLayout.leading(16))
+                    .padding(.trailing, 16)
                     .padding(.top, 4)
             }
 
@@ -134,8 +138,9 @@ private struct TicketHero: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
-            .padding(14)
-            .padding(.horizontal, 4)
+            .padding(.leading, TicketLayout.leading(16))
+            .padding(.trailing, 16)
+            .padding(.vertical, 12)
 
             HStack {
                 statusPills
@@ -151,17 +156,12 @@ private struct TicketHero: View {
                 .rotationEffect(.degrees(session.busy ? 180 : 0))
                 .animation(.spring(duration: 0.5, bounce: 0.35), value: session.busy)
             }
-            .padding(.horizontal, 18)
+            .padding(.leading, TicketLayout.leading(16))
+            .padding(.trailing, 16)
             .padding(.bottom, 16)
         }
         .background {
             TicketStock(corner: 24, stubWidth: 16)
-        }
-        .overlay(alignment: .topTrailing) {
-            GuestCopyStamp()
-                .padding(.top, 10)
-                .padding(.trailing, 14)
-                .opacity(0.9)
         }
         .ticketShadow(scheme)
         .accessibilityElement(children: .combine)

@@ -5,6 +5,7 @@ struct RootView: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        @Bindable var session = session
         ZStack {
             TicketInk.paper(for: scheme).ignoresSafeArea()
             RuledBackdrop()
@@ -14,8 +15,13 @@ struct RootView: View {
 
             VStack(spacing: 0) {
                 TopBar()
-                tabBody
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                TabView(selection: $session.selectedTab) {
+                    PlanView().tag(AppSession.Tab.plan)
+                    RidesView().tag(AppSession.Tab.rides)
+                    MeView().tag(AppSession.Tab.me)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .background(Color.clear)
                 TicketTabBar()
             }
         }
@@ -26,21 +32,6 @@ struct RootView: View {
             DisclaimerSheet()
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-        }
-    }
-
-    @ViewBuilder
-    private var tabBody: some View {
-        switch session.selectedTab {
-        case .plan:
-            PlanView()
-                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .opacity))
-        case .rides:
-            RidesView()
-                .transition(.opacity)
-        case .me:
-            MeView()
-                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
         }
     }
 }
@@ -117,44 +108,118 @@ private struct TopBar: View {
 private struct TicketTabBar: View {
     @Environment(AppSession.self) private var session
     @Environment(\.colorScheme) private var scheme
-    @Namespace private var ns
+
+    @State private var thumb = CGFloat(0)
+    @State private var dragOrigin = CGFloat(0)
+    @State private var dragging = false
+
+    private let stub: CGFloat = 14
+    private let inset: CGFloat = 6
+    private let tabs = AppSession.Tab.allCases
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(AppSession.Tab.allCases) { tab in
-                Button {
-                    withAnimation(.spring(duration: 0.42, bounce: 0.22)) {
-                        session.selectedTab = tab
+        GeometryReader { geo in
+            let trackLeading = stub + inset
+            let usable = max(geo.size.width - trackLeading - inset, 1)
+            let slot = usable / CGFloat(tabs.count)
+            let pillW = slot - 6
+            let pillH = geo.size.height - 12
+            let pillX = trackLeading + thumb * slot + (slot - pillW) / 2
+
+            ZStack(alignment: .leading) {
+                TicketStock(corner: 24, stubWidth: stub)
+
+                Capsule(style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .fill(TicketInk.copperAccent(for: scheme).opacity(scheme == .dark ? 0.28 : 0.20))
                     }
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: icon(tab))
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        Text(tab.title)
-                            .font(TicketType.caption)
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.white.opacity(scheme == .dark ? 0.22 : 0.45), lineWidth: 1)
                     }
-                    .foregroundStyle(session.selectedTab == tab ? TicketInk.copperAccent(for: scheme) : TicketInk.muted(for: scheme))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background {
-                        if session.selectedTab == tab {
-                            Capsule(style: .continuous)
-                                .fill(TicketInk.copperAccent(for: scheme).opacity(0.14))
-                                .matchedGeometryEffect(id: "tab", in: ns)
+                    .shadow(color: TicketInk.copperAccent(for: scheme).opacity(0.28), radius: 10, y: 2)
+                    .frame(width: pillW, height: pillH)
+                    .offset(x: pillX, y: (geo.size.height - pillH) / 2)
+                    .animation(dragging ? nil : .spring(duration: 0.42, bounce: 0.28), value: thumb)
+
+                HStack(spacing: 0) {
+                    ForEach(tabs) { tab in
+                        let distance = abs(thumb - CGFloat(tab.index))
+                        VStack(spacing: 4) {
+                            Image(systemName: icon(tab))
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            Text(tab.title)
+                                .font(TicketType.caption)
                         }
+                        .foregroundStyle(
+                            distance < 0.5
+                                ? TicketInk.copperAccent(for: scheme)
+                                : TicketInk.muted(for: scheme)
+                        )
+                        .scaleEffect(distance < 0.5 ? 1.04 : 1)
+                        .frame(width: slot, height: geo.size.height)
                     }
                 }
-                .buttonStyle(.plain)
-                .sensoryFeedback(.selection, trigger: session.selectedTab)
+                .padding(.leading, trackLeading)
+            }
+            .contentShape(Rectangle())
+            .gesture(slideGesture(slot: slot, trackLeading: trackLeading))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Section")
+            .accessibilityValue(session.selectedTab.title)
+            .accessibilityAdjustableAction { direction in
+                let delta = direction == .increment ? 1 : -1
+                let next = AppSession.Tab.from(index: session.selectedTab.index + delta)
+                session.selectedTab = next
+                thumb = CGFloat(next.index)
             }
         }
-        .padding(6)
-        .background {
-            TicketStock(corner: 22, stubWidth: 14)
-        }
+        .frame(height: 64)
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
         .ticketShadow(scheme)
+        .onAppear { thumb = CGFloat(session.selectedTab.index) }
+        .onChange(of: session.selectedTab) { _, tab in
+            guard !dragging else { return }
+            withAnimation(.spring(duration: 0.42, bounce: 0.28)) {
+                thumb = CGFloat(tab.index)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: session.selectedTab)
+    }
+
+    private func slideGesture(slot: CGFloat, trackLeading: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if !dragging {
+                    dragging = true
+                    dragOrigin = thumb
+                }
+                let next = dragOrigin + value.translation.width / slot
+                thumb = min(max(next, 0), CGFloat(tabs.count - 1))
+                let snapped = AppSession.Tab.from(index: Int(thumb.rounded()))
+                if snapped != session.selectedTab {
+                    session.selectedTab = snapped
+                }
+            }
+            .onEnded { value in
+                let travel = hypot(value.translation.width, value.translation.height)
+                let idx: Int
+                if travel < 14 {
+                    let x = value.startLocation.x - trackLeading
+                    idx = Int(min(max(floor(x / slot), 0), CGFloat(tabs.count - 1)))
+                } else {
+                    let predicted = dragOrigin + value.predictedEndTranslation.width / slot
+                    idx = Int(min(max(predicted, 0), CGFloat(tabs.count - 1)).rounded())
+                }
+                dragging = false
+                withAnimation(.spring(duration: 0.42, bounce: 0.28)) {
+                    thumb = CGFloat(idx)
+                    session.selectedTab = AppSession.Tab.from(index: idx)
+                }
+            }
     }
 
     private func icon(_ tab: AppSession.Tab) -> String {

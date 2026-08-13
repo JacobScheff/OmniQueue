@@ -23,7 +23,9 @@ struct MeView: View {
                             Image(systemName: "chevron.right")
                                 .foregroundStyle(TicketInk.muted(for: scheme))
                         }
-                        .padding(14)
+                        .padding(.leading, TicketLayout.leading(12))
+                        .padding(.trailing, 14)
+                        .padding(.vertical, 14)
                         .background { TicketStock(corner: 16, stubWidth: 12) }
                     }
                     .buttonStyle(.plain)
@@ -103,6 +105,8 @@ struct MeView: View {
             Label(title, systemImage: icon)
                 .font(TicketType.caption.weight(.semibold))
                 .frame(maxWidth: .infinity)
+                .padding(.leading, TicketLayout.leading(10))
+                .padding(.trailing, 10)
                 .padding(.vertical, 10)
                 .foregroundStyle(danger ? TicketInk.oxblood : TicketInk.ink(for: scheme))
                 .background { TicketStock(corner: 12, stubWidth: 10, punched: false) }
@@ -141,7 +145,9 @@ private struct HourField: View {
                 .buttonStyle(.plain)
             }
             .foregroundStyle(TicketInk.ink(for: scheme))
-            .padding(10)
+            .padding(.leading, TicketLayout.leading(10))
+            .padding(.trailing, 10)
+            .padding(.vertical, 10)
             .background { TicketStock(corner: 14, stubWidth: 10, punched: false) }
         }
         .frame(maxWidth: .infinity)

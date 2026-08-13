@@ -52,7 +52,8 @@ struct RidesView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
         }
-        .padding(.horizontal, 14)
+        .padding(.leading, TicketLayout.leading(12))
+        .padding(.trailing, 14)
         .padding(.vertical, 10)
         .background {
             TicketStock(corner: 16, stubWidth: 12, punched: false)
@@ -199,7 +200,9 @@ private struct RideCard: View {
                 }
             }
         }
-        .padding(14)
+        .padding(.leading, TicketLayout.leading(12))
+        .padding(.trailing, 14)
+        .padding(.vertical, 14)
         .background { TicketStock(corner: 18, stubWidth: 12) }
         .ticketShadow(scheme)
     }

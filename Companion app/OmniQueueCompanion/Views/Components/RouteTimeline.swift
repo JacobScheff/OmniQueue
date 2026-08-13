@@ -88,7 +88,8 @@ struct RouteTimeline: View {
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
                         .foregroundStyle(TicketInk.muted(for: scheme))
                 }
-                .padding(.horizontal, 16)
+                .padding(.leading, TicketLayout.leading(14))
+                .padding(.trailing, 16)
                 .padding(.vertical, 12)
                 .background(stop.slot == 0 ? TicketInk.copperAccent(for: scheme).opacity(0.08) : Color.clear)
             }
@@ -100,7 +101,9 @@ struct RouteTimeline: View {
             }
 
             if index < (session.recommendation?.route.count ?? 1) - 1 {
-                PerforationDivider().padding(.horizontal, 10)
+                PerforationDivider()
+                    .padding(.leading, TicketLayout.leading(14))
+                    .padding(.trailing, 12)
             }
         }
     }
@@ -162,7 +165,8 @@ struct RouteTimeline: View {
                 .foregroundStyle(TicketInk.copperAccent(for: scheme))
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.leading, TicketLayout.leading(14))
+        .padding(.trailing, 16)
         .padding(.bottom, 12)
     }
 

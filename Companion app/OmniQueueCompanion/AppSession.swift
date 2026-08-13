@@ -27,6 +27,15 @@ final class AppSession {
             case .me: return "Me"
             }
         }
+
+        var index: Int {
+            Self.allCases.firstIndex(of: self) ?? 0
+        }
+
+        static func from(index: Int) -> Tab {
+            let cases = Self.allCases
+            return cases[min(max(index, 0), cases.count - 1)]
+        }
     }
 
     private let store = StateStore()
