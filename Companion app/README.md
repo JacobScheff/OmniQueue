@@ -12,4 +12,28 @@ python3 "Companion app/export_park_data.py"
 
 Copy an updated `v2.onnx` from `Park/companion/model/` into `OmniQueueCompanion/Resources/` if the checkpoint changes.
 
+## App Store Connect
+
+Public site URLs (also linked from the Me tab and the disclaimer):
+
+| Field | URL |
+|-------|-----|
+| Marketing | https://www.jacobscheff.com/OmniQueue |
+| Privacy Policy | https://www.jacobscheff.com/OmniQueue#privacy |
+| Support | https://www.jacobscheff.com/OmniQueue#support |
+
+Bundle ID: `app.omniqueue` · Display name: OmniQueue · Category: Travel · Version `1.0` / build `1` · iPhone, iOS 17+.
+
+### Before Archive → Upload
+
+1. Confirm the marketing / privacy / support pages above are live and open in Safari.
+2. In Xcode: select the **Any iOS Device** destination → **Product → Archive** → **Distribute App → App Store Connect**.
+3. Export compliance: the project sets `ITSAppUsesNonExemptEncryption = NO` (HTTPS only). Answer the Connect questionnaire the same way if asked again.
+4. App Privacy nutrition labels: **no data collected**. Guest prefs / history stay in on-device `UserDefaults`. Network: ThemeParks.wiki wait board only. No tracking, no accounts.
+5. Age rating: no restricted content; travel utility.
+6. Screenshots: show Plan / Rides / Me without implying Disney affiliation. Keep the “Not a Disney product” framing visible or stated in the description.
+7. Suggested review notes:
+
+> OmniQueue is an independent Disneyland day planner. No login. On first launch, accept the disclaimer, set prefs on Rides, pick a location on Me, then open Plan. Live waits come from ThemeParks.wiki (HTTPS); the routing model runs fully on-device (bundled ONNX). Not affiliated with Disney.
+
 OmniQueue is not affiliated with, authorized by, or endorsed by The Walt Disney Company. Wait times are unofficial estimates powered by ThemeParks.wiki.

@@ -14,7 +14,7 @@ struct DisclaimerBlock: View {
                 .foregroundStyle(TicketInk.muted(blend: blend))
                 .fixedSize(horizontal: false, vertical: true)
 
-            Link(destination: URL(string: "https://themeparks.wiki")!) {
+            Link(destination: AppLinks.themeParksWiki) {
                 HStack(spacing: 6) {
                     Image(systemName: "link")
                     Text("Wait times powered by ThemeParks.wiki")
@@ -26,6 +26,16 @@ struct DisclaimerBlock: View {
                 .font(TicketType.caption)
                 .foregroundStyle(TicketInk.muted(blend: blend))
                 .fixedSize(horizontal: false, vertical: true)
+
+            if !compact {
+                HStack(spacing: 14) {
+                    Link("Privacy", destination: AppLinks.privacy)
+                    Link("Support", destination: AppLinks.support)
+                    Link("Website", destination: AppLinks.marketing)
+                }
+                .font(TicketType.caption.weight(.semibold))
+                .foregroundStyle(TicketInk.teal)
+            }
         }
         .padding(compact ? 12 : 16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -51,6 +61,10 @@ struct DisclaimerSheet: View {
                         .font(TicketType.body)
                         .foregroundStyle(TicketInk.muted(blend: blend))
                     DisclaimerBlock()
+                    Text("By continuing you agree this is an unofficial planner. See Privacy and Support on the Me tab anytime.")
+                        .font(TicketType.caption)
+                        .foregroundStyle(TicketInk.muted(blend: blend))
+                        .fixedSize(horizontal: false, vertical: true)
                     Button {
                         session.acknowledgeDisclaimer()
                     } label: {
@@ -63,6 +77,7 @@ struct DisclaimerSheet: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 8)
+                    .accessibilityHint("Dismisses the disclaimer and opens the planner")
                 }
                 .padding(20)
             }
