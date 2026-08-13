@@ -286,7 +286,7 @@ struct PriorityControl: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("How much do you want this?")
+                Text("How much do you want to ride?")
                     .font(TicketType.caption)
                     .foregroundStyle(TicketInk.muted(blend: blend))
                 Spacer()

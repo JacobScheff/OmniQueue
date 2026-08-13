@@ -65,7 +65,7 @@ struct MeView: View {
                 }
 
                 section(title: "What these mean") {
-                    helpRow("Priority", "In Basic, pick Skip / Low / Medium / High. In Advanced, set a 0–100 number. Switching to Advanced fills in numbers from the category; changing a category in Basic overwrites that ride’s number.")
+                    helpRow("Priority", "How much you want to ride. In Basic, pick Skip / Low / Medium / High. In Advanced, set a 0–100 number. Switching to Advanced fills in numbers from the category; changing a category in Basic overwrites that ride’s number.")
                     helpRow("Must-do", "Star the rides you don’t want to miss. The plan works those in first.")
                     helpRow("Rode it", "Mark something done so it won’t keep coming back as the next stop.")
                     helpRow("Pinning", "On Plan, tap any stop and pick an alternative. Everything else rewrites around that pin.")
