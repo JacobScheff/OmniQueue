@@ -196,8 +196,12 @@ final class AppSession {
     func reset() {
         var next = GuestState.default(catalog: catalog)
         if usesAdvancedPrefs { next.fillMissingScores() }
-        commit(next)
+        past.removeAll()
+        future.removeAll()
+        state = next
         forcedPick = nil
+        persist()
+        schedulePlan()
     }
 
     func setForce(_ pick: ForcedPick) {

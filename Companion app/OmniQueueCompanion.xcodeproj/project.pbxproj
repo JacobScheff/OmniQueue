@@ -34,6 +34,7 @@
 		8B0400000000000000000048 /* v2.json in Resources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000047 /* v2.json */; };
 		8B040000000000000000004A /* v2.onnx in Resources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000049 /* v2.onnx */; };
 		8B040000000000000000004C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000004B /* PrivacyInfo.xcprivacy */; };
+		8B0400000000000000000050 /* AppLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000004F /* AppLinks.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -64,6 +65,7 @@
 		8B0400000000000000000047 /* v2.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = v2.json; sourceTree = "<group>"; };
 		8B0400000000000000000049 /* v2.onnx */ = {isa = PBXFileReference; lastKnownFileType = text; path = v2.onnx; sourceTree = "<group>"; };
 		8B040000000000000000004B /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		8B040000000000000000004F /* AppLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLinks.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +107,7 @@
 				8B040000000000000000000E /* Views */,
 				8B0400000000000000000010 /* Resources */,
 				8B040000000000000000004B /* PrivacyInfo.xcprivacy */,
+				8B040000000000000000004F /* AppLinks.swift */,
 				8B040000000000000000001D /* AppSession.swift */,
 				8B040000000000000000002D /* OmniQueueCompanionApp.swift */,
 			);
@@ -263,6 +266,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8B040000000000000000001E /* AppSession.swift in Sources */,
+				8B0400000000000000000050 /* AppLinks.swift in Sources */,
 				8B0400000000000000000020 /* ObservationBuilder.swift in Sources */,
 				8B0400000000000000000022 /* OnnxRecommender.swift in Sources */,
 				8B0400000000000000000024 /* WaitTimeService.swift in Sources */,
@@ -415,12 +419,13 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = OmniQueue;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © Jacob Scheff. OmniQueue is an independent product and is not affiliated with The Walt Disney Company.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -448,12 +453,13 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = OmniQueue;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © Jacob Scheff. OmniQueue is an independent product and is not affiliated with The Walt Disney Company.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
