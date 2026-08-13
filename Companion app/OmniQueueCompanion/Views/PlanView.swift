@@ -75,6 +75,7 @@ private struct TicketHero: View {
                     .foregroundStyle(TicketInk.copperAccent(blend: blend))
                 GuestCopyStamp()
                     .scaleEffect(0.78)
+                    .offset(y: -3)
                 Spacer()
                 if rec?.recommended.isRide == true {
                     WaitChip(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN")
