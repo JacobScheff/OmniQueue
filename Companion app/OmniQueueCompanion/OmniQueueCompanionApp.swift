@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct OmniQueueCompanionApp: App {
-    @State private var session: AppSession?
+    @State private var session: AppSession? = try? AppSession()
 
     var body: some Scene {
         WindowGroup {
@@ -18,10 +18,7 @@ struct OmniQueueCompanionApp: App {
                 }
             }
             .onAppear {
-                if session == nil {
-                    session = try? AppSession()
-                    session?.boot()
-                }
+                session?.boot()
             }
         }
     }
@@ -30,16 +27,29 @@ struct OmniQueueCompanionApp: App {
 private struct BootFailureView: View {
     var body: some View {
         ZStack {
-            TicketInk.paper(for: .light).ignoresSafeArea()
-            VStack(spacing: 12) {
+            TicketInk.paper(blend: 1).ignoresSafeArea()
+            VStack(spacing: 18) {
+                PaperclipMark()
                 Text("OmniQueue")
                     .font(TicketType.display)
-                Text("Couldn’t load the bundled park data or model.")
-                    .font(TicketType.body)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TicketInk.ink(blend: 1))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("VOID")
+                        .font(TicketType.mono)
+                        .tracking(1.6)
+                        .foregroundStyle(TicketInk.oxblood)
+                    Text("Couldn’t load the bundled park data or model.")
+                        .font(TicketType.body)
+                        .foregroundStyle(TicketInk.ink(blend: 1))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, TicketLayout.leading(16))
+                .padding(.trailing, 16)
+                .padding(.vertical, 16)
+                .background { TicketStock(corner: 20, stubWidth: 16) }
             }
             .padding(28)
         }
+        .environment(\.themeBlend, 1)
     }
 }

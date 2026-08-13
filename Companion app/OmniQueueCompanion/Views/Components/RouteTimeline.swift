@@ -20,7 +20,12 @@ struct RouteTimeline: View {
                     .foregroundStyle(TicketInk.muted(blend: blend))
             }
 
-            if let route = session.recommendation?.route, !route.isEmpty {
+            if !session.hasLiveWaits {
+                Text(session.isRefreshingWaits ? "Waiting on the wait feed…" : "No wait times loaded, so there’s no route yet.")
+                    .font(TicketType.body)
+                    .foregroundStyle(TicketInk.muted(blend: blend))
+                    .padding(.vertical, 18)
+            } else if let route = session.recommendation?.route, !route.isEmpty {
                 VStack(spacing: 0) {
                     ForEach(Array(route.enumerated()), id: \.element.id) { index, stop in
                         stopRow(stop, index: index)

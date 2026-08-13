@@ -11,7 +11,9 @@ final class AppSession {
     var board: WaitBoard
     var recommendation: Recommendation?
     var forcedPick: ForcedPick?
-    var busy = false
+    var isBooting = true
+    var isRefreshingWaits = false
+    var isPlanning = false
     var errorMessage: String?
     var selectedTab: Tab = .plan
     var showDisclaimer = false
@@ -47,6 +49,7 @@ final class AppSession {
     private let waits: WaitTimeService
     private var recommender: OnnxRecommender?
     private var planTask: Task<Void, Never>?
+    private var didBoot = false
     private let disclaimerKey = "omniqueue.companion.seenDisclaimer"
     private let themeKey = "omniqueue.companion.theme"
     private let prefModeKey = "omniqueue.companion.prefMode"
@@ -79,14 +82,54 @@ final class AppSession {
 
     var canUndo: Bool { !past.isEmpty }
     var canRedo: Bool { !future.isEmpty }
+    var busy: Bool { isBooting || isRefreshingWaits || isPlanning }
+
+    /// True once ThemeParks.wiki has given at least one real attraction status.
+    var hasLiveWaits: Bool {
+        board.rides.contains { $0.status.uppercased() != "UNKNOWN" }
+    }
+
+    var waitBoardSummary: String {
+        if let raw = board.error, !raw.isEmpty {
+            return Self.friendlyWaitError(raw)
+        }
+        return "ThemeParks.wiki didn’t send a wait board. Check the connection and try again."
+    }
 
     var locationName: String {
         catalog.location(for: state.location)?.name ?? "Entrance"
     }
 
     func boot() {
-        Task { await loadModel() }
-        Task { await refreshWaits(force: true) }
+        guard !didBoot else { return }
+        didBoot = true
+        Task { await bootOnce() }
+    }
+
+    private func bootOnce() async {
+        isBooting = true
+        async let model = loadModelOnly()
+        async let fetched = waits.board(force: true)
+        do {
+            recommender = try await model
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        board = await fetched
+        if hasLiveWaits {
+            await recompute()
+        } else {
+            recommendation = nil
+        }
+        withAnimation(.easeInOut(duration: 0.45)) {
+            isBooting = false
+        }
+    }
+
+    private func loadModelOnly() async throws -> OnnxRecommender {
+        try await Task.detached(priority: .userInitiated) { [catalog] in
+            try OnnxRecommender(catalog: catalog)
+        }.value
     }
 
     func acknowledgeDisclaimer() {
@@ -172,25 +215,15 @@ final class AppSession {
     }
 
     func refreshWaits(force: Bool) async {
-        busy = true
+        isRefreshingWaits = true
         let next = await waits.board(force: force)
         board = next
-        await recompute()
-        busy = false
-    }
-
-    private func loadModel() async {
-        busy = true
-        do {
-            let rec = try await Task.detached(priority: .userInitiated) { [catalog] in
-                try OnnxRecommender(catalog: catalog)
-            }.value
-            recommender = rec
+        if hasLiveWaits {
             await recompute()
-        } catch {
-            errorMessage = error.localizedDescription
+        } else {
+            recommendation = nil
         }
-        busy = false
+        isRefreshingWaits = false
     }
 
     private func persist() {
@@ -208,7 +241,11 @@ final class AppSession {
 
     private func recompute() async {
         guard let recommender else { return }
-        busy = true
+        guard hasLiveWaits else {
+            recommendation = nil
+            return
+        }
+        isPlanning = true
         errorMessage = nil
         do {
             let built = try ObservationBuilder.build(catalog: catalog, state: state, board: board)
@@ -217,6 +254,17 @@ final class AppSession {
         } catch {
             errorMessage = error.localizedDescription
         }
-        busy = false
+        isPlanning = false
+    }
+
+    private static func friendlyWaitError(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower.contains("offline") || lower.contains("notconnected") || lower.contains("network connection") {
+            return "You’re offline, so wait times couldn’t load."
+        }
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return "The wait feed timed out. Try refresh in a moment."
+        }
+        return "Couldn’t load wait times from ThemeParks.wiki."
     }
 }

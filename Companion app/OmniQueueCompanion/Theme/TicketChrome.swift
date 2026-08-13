@@ -128,3 +128,49 @@ struct TicketSerial: View {
         return f.string(from: Date()).uppercased()
     }
 }
+
+struct InkingDots: View {
+    @Environment(\.themeBlend) private var blend
+    @State private var phase = 0
+
+    var body: some View {
+        HStack(spacing: 7) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(TicketInk.copperAccent(blend: blend))
+                    .frame(width: 7, height: 7)
+                    .opacity(phase == i ? 1 : 0.22)
+                    .scaleEffect(phase == i ? 1.18 : 0.82)
+            }
+        }
+        .accessibilityHidden(true)
+        .task {
+            while !Task.isCancelled {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    phase = (phase + 1) % 3
+                }
+                try? await Task.sleep(for: .milliseconds(260))
+            }
+        }
+    }
+}
+
+struct SpinningRefreshIcon: View {
+    var spinning: Bool
+    @State private var on = false
+
+    var body: some View {
+        Image(systemName: "arrow.clockwise")
+            .rotationEffect(.degrees(on && spinning ? 360 : 0))
+            .animation(spinning ? .linear(duration: 0.75).repeatForever(autoreverses: false) : .easeOut(duration: 0.2), value: on)
+            .onChange(of: spinning) { _, active in
+                on = false
+                if active {
+                    DispatchQueue.main.async { on = true }
+                }
+            }
+            .onAppear {
+                if spinning { on = true }
+            }
+    }
+}

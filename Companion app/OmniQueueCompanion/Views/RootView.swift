@@ -24,9 +24,16 @@ struct RootView: View {
                 .background(Color.clear)
                 TicketTabBar()
             }
+
+            if session.isBooting {
+                BootLoadingView()
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
         }
+        .animation(.easeInOut(duration: 0.45), value: session.isBooting)
         .sheet(isPresented: Binding(
-            get: { session.showDisclaimer },
+            get: { session.showDisclaimer && !session.isBooting },
             set: { if !$0 { session.acknowledgeDisclaimer() } }
         )) {
             DisclaimerSheet()
@@ -74,7 +81,7 @@ private struct TopBar: View {
                     TicketSerial()
                         .foregroundStyle(TicketInk.muted(blend: blend))
                     Circle().fill(TicketInk.copperAccent(blend: blend)).frame(width: 4, height: 4)
-                    Text(session.busy ? "Rewriting the ticket…" : "Park-day planner")
+                    Text(session.isRefreshingWaits || session.isPlanning ? "Rewriting the ticket…" : "Park-day planner")
                         .font(TicketType.caption)
                         .foregroundStyle(TicketInk.muted(blend: blend))
                         .contentTransition(.opacity)
@@ -224,6 +231,61 @@ private struct TicketTabBar: View {
         case .plan: return "ticket.fill"
         case .rides: return "list.bullet.rectangle.fill"
         case .me: return "person.crop.circle"
+        }
+    }
+}
+
+private struct BootLoadingView: View {
+    @Environment(\.themeBlend) private var blend
+    @State private var stamped = false
+    @State private var bob = false
+
+    var body: some View {
+        ZStack {
+            TicketInk.paper(blend: blend).ignoresSafeArea()
+            RuledBackdrop()
+                .ignoresSafeArea()
+                .opacity(TicketInk.lerp(0.28, 0.40, blend))
+                .allowsHitTesting(false)
+
+            VStack(spacing: 20) {
+                PaperclipMark()
+                    .offset(y: bob ? -5 : 4)
+
+                Text("OmniQueue")
+                    .font(TicketType.display)
+                    .foregroundStyle(TicketInk.ink(blend: blend))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("INKING")
+                        .font(TicketType.mono)
+                        .tracking(1.6)
+                        .foregroundStyle(TicketInk.copperAccent(blend: blend))
+                    Text("Fetching the wait board")
+                        .font(TicketType.headline)
+                        .foregroundStyle(TicketInk.ink(blend: blend))
+                    Text("Live times from ThemeParks.wiki, then the on-device planner inks your ticket.")
+                        .font(TicketType.caption)
+                        .foregroundStyle(TicketInk.muted(blend: blend))
+                        .fixedSize(horizontal: false, vertical: true)
+                    InkingDots()
+                        .padding(.top, 4)
+                }
+                .padding(.leading, TicketLayout.leading(16))
+                .padding(.trailing, 18)
+                .padding(.vertical, 18)
+                .frame(maxWidth: 340, alignment: .leading)
+                .background { TicketStock(corner: 22, stubWidth: 16) }
+                .ticketShadow(blend)
+                .scaleEffect(stamped ? 1 : 0.9)
+                .opacity(stamped ? 1 : 0)
+                .rotationEffect(.degrees(stamped ? -1.2 : 6))
+            }
+            .padding(.horizontal, 28)
+        }
+        .onAppear {
+            withAnimation(.spring(duration: 0.7, bounce: 0.32)) { stamped = true }
+            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) { bob = true }
         }
     }
 }
