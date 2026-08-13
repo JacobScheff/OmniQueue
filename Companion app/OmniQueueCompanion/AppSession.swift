@@ -94,7 +94,7 @@ final class AppSession {
     func toggleTheme() {
         usesLightTheme.toggle()
         UserDefaults.standard.set(usesLightTheme ? "light" : "dark", forKey: themeKey)
-        withAnimation(.easeInOut(duration: 0.9)) {
+        withAnimation(.easeInOut(duration: 0.35)) {
             themeBlend = usesLightTheme ? 1 : 0
         }
     }
