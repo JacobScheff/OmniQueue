@@ -73,6 +73,8 @@ private struct TicketHero: View {
                     .font(TicketType.mono)
                     .tracking(1.4)
                     .foregroundStyle(TicketInk.copperAccent(blend: blend))
+                GuestCopyStamp()
+                    .scaleEffect(0.78)
                 Spacer()
                 if rec?.recommended.isRide == true {
                     WaitChip(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN")

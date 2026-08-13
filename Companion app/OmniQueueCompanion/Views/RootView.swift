@@ -67,14 +67,9 @@ private struct TopBar: View {
             PaperclipMark()
                 .offset(y: -6)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text("OmniQueue")
-                        .font(TicketType.display)
-                        .foregroundStyle(TicketInk.ink(blend: blend))
-                    GuestCopyStamp()
-                        .scaleEffect(0.82)
-                        .offset(y: -2)
-                }
+                Text("OmniQueue")
+                    .font(TicketType.display)
+                    .foregroundStyle(TicketInk.ink(blend: blend))
                 HStack(spacing: 8) {
                     TicketSerial()
                         .foregroundStyle(TicketInk.muted(blend: blend))
