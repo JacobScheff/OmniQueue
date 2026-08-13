@@ -162,13 +162,17 @@ struct SpinningRefreshIcon: View {
     var body: some View {
         Image(systemName: "arrow.clockwise")
             .rotationEffect(.degrees(angle))
-            .onAppear {
-                guard spinning else { return }
-                angle = 0
-                withAnimation(.linear(duration: 0.75).repeatForever(autoreverses: false)) {
-                    angle = 360
+            .task(id: spinning) {
+                if !spinning {
+                    angle = 0
+                    return
+                }
+                let start = Date()
+                while !Task.isCancelled {
+                    let elapsed = Date().timeIntervalSince(start)
+                    angle = elapsed.truncatingRemainder(dividingBy: 0.75) / 0.75 * 360
+                    try? await Task.sleep(for: .milliseconds(16))
                 }
             }
-            .id(spinning)
     }
 }
