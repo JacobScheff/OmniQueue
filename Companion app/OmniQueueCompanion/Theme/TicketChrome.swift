@@ -124,7 +124,7 @@ struct TicketSerial: View {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "America/Los_Angeles")
-        f.dateFormat = "'OQ' · dd MMM yy"
+        f.dateFormat = "dd MMM yy"
         return f.string(from: Date()).uppercased()
     }
 }
