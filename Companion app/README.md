@@ -22,7 +22,11 @@ Public site URLs (also linked from the Me tab and the disclaimer):
 | Privacy Policy | https://www.jacobscheff.com/OmniQueue#privacy |
 | Support | https://www.jacobscheff.com/OmniQueue#support |
 
-Bundle ID: `app.omniqueue` · Display name: OmniQueue · Category: Travel · Version `1.0` / build `1` · iPhone, iOS 17+.
+Bundle ID: `app.omniqueue` · Display name: OmniQueue · Category: Travel · Version `1.0` / build `2` · iPhone, iOS 17+.
+
+A Run Script build phase stamps `MinimumOSVersion` into the bundled `onnxruntime.framework` Info.plist (the SPM XCFramework ships that key empty, which App Store Connect rejects as ITMS-90208). After pulling this change, Archive **1.0 (2)** — do not reuse build `1`.
+
+In Xcode **Build Phases**, keep **Patch ONNX Runtime Info.plist** last (below **Embed Frameworks** if Xcode inserted that phase). In the Organizer archive, confirm `OmniQueueCompanion.app/Frameworks/onnxruntime.framework/Info.plist` has `MinimumOSVersion` = `17.0` before uploading.
 
 ### Before Archive → Upload
 
