@@ -173,7 +173,7 @@ struct RouteTimeline: View {
     private func dotColor(stop: RouteStop, live: RideWait?) -> Color {
         guard stop.isRide else { return TicketInk.muted(blend: blend) }
         switch WaitTone.of(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN") {
-        case .good: return TicketInk.teal
+        case .good: return TicketInk.waitGood(blend: blend)
         case .warn: return TicketInk.mustard
         case .bad: return TicketInk.oxblood
         case .closed: return TicketInk.muted(blend: blend)

@@ -7,10 +7,15 @@ import SwiftUI
 enum TicketInk {
     static let copper = Color(red: 0.710, green: 0.322, blue: 0.102)
     static let copperDeep = Color(red: 0.478, green: 0.188, blue: 0.055)
-    static let teal = Color(red: 0.122, green: 0.373, blue: 0.353)
-    static let tealBright = Color(red: 0.494, green: 0.722, blue: 0.698)
+    static let teal = Color(red: 0.16, green: 0.41, blue: 0.26)
+    static let tealBright = Color(red: 0.50, green: 0.78, blue: 0.55)
     static let oxblood = Color(red: 0.545, green: 0.180, blue: 0.180)
     static let mustard = Color(red: 0.760, green: 0.525, blue: 0.165)
+
+    /// Low waits: sage, not cyan. `blend` 0 = dark, 1 = light.
+    static func waitGood(blend t: CGFloat) -> Color {
+        mix((0.50, 0.78, 0.55, 1), (0.16, 0.41, 0.26, 1), t)
+    }
 
     static func paper(blend t: CGFloat) -> Color {
         mix((0.086, 0.075, 0.063, 1), (0.953, 0.902, 0.816, 1), t)
