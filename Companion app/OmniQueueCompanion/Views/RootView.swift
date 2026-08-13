@@ -10,7 +10,7 @@ struct RootView: View {
             TicketInk.paper(blend: blend).ignoresSafeArea()
             RuledBackdrop()
                 .ignoresSafeArea()
-                .opacity(TicketInk.lerp(0.18, 0.28, blend))
+                .opacity(TicketInk.lerp(0.28, 0.40, blend))
                 .allowsHitTesting(false)
 
             VStack(spacing: 0) {
@@ -47,13 +47,13 @@ private struct RuledBackdrop: View {
                 var path = Path()
                 path.move(to: CGPoint(x: 18, y: y))
                 path.addLine(to: CGPoint(x: size.width - 18, y: y))
-                context.stroke(path, with: .color(ink.opacity(0.08)), lineWidth: 1)
+                context.stroke(path, with: .color(ink.opacity(0.11)), lineWidth: 1)
                 y += 28
             }
             var margin = Path()
             margin.move(to: CGPoint(x: 36, y: 0))
             margin.addLine(to: CGPoint(x: 36, y: size.height))
-            context.stroke(margin, with: .color(TicketInk.oxblood.opacity(0.18)), lineWidth: 1.2)
+            context.stroke(margin, with: .color(TicketInk.oxblood.opacity(0.24)), lineWidth: 1.2)
         }
     }
 }
