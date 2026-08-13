@@ -11,13 +11,13 @@ struct TicketStock: View {
     var stubWidth: CGFloat = 18
     var punched: Bool = true
 
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         Canvas { context, size in
-            let paper = TicketInk.stock(for: scheme)
-            let stub = TicketInk.copperAccent(for: scheme)
-            let hole = TicketInk.paper(for: scheme)
+            let paper = TicketInk.stock(blend: blend)
+            let stub = TicketInk.copperAccent(blend: blend)
+            let hole = TicketInk.paper(blend: blend)
 
             let body = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: corner)
             context.fill(body, with: .color(paper))
@@ -25,15 +25,15 @@ struct TicketStock: View {
 
             // Left stub — clipped so it follows the rounded ticket, not a square strip.
             let stubRect = Path(CGRect(x: 0, y: 0, width: stubWidth, height: size.height))
-            context.fill(stubRect, with: .color(stub.opacity(scheme == .dark ? 0.85 : 1)))
+            context.fill(stubRect, with: .color(stub.opacity(TicketInk.lerp(0.85, 1, blend))))
 
             // Fiber grain — hashed, not random-looking noise
-            context.opacity = scheme == .dark ? 0.04 : 0.07
+            context.opacity = TicketInk.lerp(0.04, 0.07, blend)
             for i in stride(from: 0, through: Int(size.width + size.height), by: 11) {
                 var line = Path()
                 line.move(to: CGPoint(x: CGFloat(i), y: 0))
                 line.addLine(to: CGPoint(x: CGFloat(i) - size.height, y: size.height))
-                context.stroke(line, with: .color(TicketInk.ink(for: scheme)), lineWidth: 0.6)
+                context.stroke(line, with: .color(TicketInk.ink(blend: blend)), lineWidth: 0.6)
             }
             context.opacity = 1
 
@@ -51,7 +51,7 @@ struct TicketStock: View {
 
             context.stroke(
                 Path(roundedRect: CGRect(origin: .zero, size: size).insetBy(dx: 0.6, dy: 0.6), cornerRadius: corner),
-                with: .color(TicketInk.rule(for: scheme)),
+                with: .color(TicketInk.rule(blend: blend)),
                 lineWidth: 1
             )
         }
@@ -61,7 +61,7 @@ struct TicketStock: View {
 }
 
 struct PerforationDivider: View {
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         Canvas { context, size in
@@ -70,7 +70,7 @@ struct PerforationDivider: View {
             for i in 0..<n {
                 let x = spacing * CGFloat(i) + 3
                 let r = CGRect(x: x, y: size.height / 2 - 1.4, width: 2.8, height: 2.8)
-                context.fill(Path(ellipseIn: r), with: .color(TicketInk.muted(for: scheme).opacity(0.55)))
+                context.fill(Path(ellipseIn: r), with: .color(TicketInk.muted(blend: blend).opacity(0.55)))
             }
         }
         .frame(height: 10)
@@ -79,18 +79,18 @@ struct PerforationDivider: View {
 }
 
 struct GuestCopyStamp: View {
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         Text("GUEST COPY")
             .font(TicketType.mono)
             .tracking(1.6)
-            .foregroundStyle(TicketInk.copperAccent(for: scheme))
+            .foregroundStyle(TicketInk.copperAccent(blend: blend))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .overlay(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .stroke(TicketInk.copperAccent(for: scheme).opacity(0.7), lineWidth: 1.2)
+                    .stroke(TicketInk.copperAccent(blend: blend).opacity(0.7), lineWidth: 1.2)
             )
             .rotationEffect(.degrees(-8))
             .accessibilityHidden(true)
@@ -98,11 +98,11 @@ struct GuestCopyStamp: View {
 }
 
 struct PaperclipMark: View {
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         Canvas { context, size in
-            let c = TicketInk.copperAccent(for: scheme)
+            let c = TicketInk.copperAccent(blend: blend)
             var path = Path()
             path.addRoundedRect(in: CGRect(x: 6, y: 2, width: 10, height: size.height - 4), cornerSize: CGSize(width: 5, height: 5))
             path.addRoundedRect(in: CGRect(x: 10, y: 8, width: 10, height: size.height - 14), cornerSize: CGSize(width: 5, height: 5))

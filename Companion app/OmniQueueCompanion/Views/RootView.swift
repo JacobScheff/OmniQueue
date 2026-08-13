@@ -2,15 +2,15 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         @Bindable var session = session
         ZStack {
-            TicketInk.paper(for: scheme).ignoresSafeArea()
+            TicketInk.paper(blend: blend).ignoresSafeArea()
             RuledBackdrop()
                 .ignoresSafeArea()
-                .opacity(scheme == .dark ? 0.18 : 0.28)
+                .opacity(TicketInk.lerp(0.18, 0.28, blend))
                 .allowsHitTesting(false)
 
             VStack(spacing: 0) {
@@ -37,11 +37,11 @@ struct RootView: View {
 }
 
 private struct RuledBackdrop: View {
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         Canvas { context, size in
-            let ink = TicketInk.ink(for: scheme)
+            let ink = TicketInk.ink(blend: blend)
             var y: CGFloat = 18
             while y < size.height {
                 var path = Path()
@@ -60,7 +60,7 @@ private struct RuledBackdrop: View {
 
 private struct TopBar: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -70,31 +70,32 @@ private struct TopBar: View {
                 HStack(spacing: 8) {
                     Text("OmniQueue")
                         .font(TicketType.display)
-                        .foregroundStyle(TicketInk.ink(for: scheme))
+                        .foregroundStyle(TicketInk.ink(blend: blend))
                     GuestCopyStamp()
                         .scaleEffect(0.82)
                         .offset(y: -2)
                 }
                 HStack(spacing: 8) {
                     TicketSerial()
-                        .foregroundStyle(TicketInk.muted(for: scheme))
-                    Circle().fill(TicketInk.copperAccent(for: scheme)).frame(width: 4, height: 4)
+                        .foregroundStyle(TicketInk.muted(blend: blend))
+                    Circle().fill(TicketInk.copperAccent(blend: blend)).frame(width: 4, height: 4)
                     Text(session.busy ? "Rewriting the ticket…" : "Park-day planner")
                         .font(TicketType.caption)
-                        .foregroundStyle(TicketInk.muted(for: scheme))
+                        .foregroundStyle(TicketInk.muted(blend: blend))
                         .contentTransition(.opacity)
                 }
             }
             Spacer(minLength: 8)
             Button {
-                withAnimation(.spring(duration: 0.45, bounce: 0.28)) { session.toggleTheme() }
+                session.toggleTheme()
             } label: {
-                Image(systemName: session.preferredScheme == .light ? "moon.fill" : "sun.max.fill")
+                Image(systemName: session.usesLightTheme ? "moon.fill" : "sun.max.fill")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                    .foregroundStyle(TicketInk.copperAccent(blend: blend))
                     .frame(width: 38, height: 38)
-                    .background(TicketInk.stock(for: scheme), in: Circle())
-                    .overlay(Circle().stroke(TicketInk.rule(for: scheme), lineWidth: 1))
+                    .background(TicketInk.stock(blend: blend), in: Circle())
+                    .overlay(Circle().stroke(TicketInk.rule(blend: blend), lineWidth: 1))
+                    .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Toggle appearance")
@@ -107,7 +108,7 @@ private struct TopBar: View {
 
 private struct TicketTabBar: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     @State private var thumb = CGFloat(0)
     @State private var dragOrigin = CGFloat(0)
@@ -133,13 +134,13 @@ private struct TicketTabBar: View {
                     .fill(.ultraThinMaterial)
                     .overlay {
                         Capsule(style: .continuous)
-                            .fill(TicketInk.copperAccent(for: scheme).opacity(scheme == .dark ? 0.28 : 0.20))
+                            .fill(TicketInk.copperAccent(blend: blend).opacity(TicketInk.lerp(0.28, 0.20, blend)))
                     }
                     .overlay {
                         Capsule(style: .continuous)
-                            .strokeBorder(Color.white.opacity(scheme == .dark ? 0.22 : 0.45), lineWidth: 1)
+                            .strokeBorder(Color.white.opacity(TicketInk.lerp(0.22, 0.45, blend)), lineWidth: 1)
                     }
-                    .shadow(color: TicketInk.copperAccent(for: scheme).opacity(0.28), radius: 10, y: 2)
+                    .shadow(color: TicketInk.copperAccent(blend: blend).opacity(0.28), radius: 10, y: 2)
                     .frame(width: pillW, height: pillH)
                     .offset(x: pillX, y: (geo.size.height - pillH) / 2)
                     .animation(dragging ? nil : .spring(duration: 0.42, bounce: 0.28), value: thumb)
@@ -155,8 +156,8 @@ private struct TicketTabBar: View {
                         }
                         .foregroundStyle(
                             distance < 0.5
-                                ? TicketInk.copperAccent(for: scheme)
-                                : TicketInk.muted(for: scheme)
+                                ? TicketInk.copperAccent(blend: blend)
+                                : TicketInk.muted(blend: blend)
                         )
                         .scaleEffect(distance < 0.5 ? 1.04 : 1)
                         .frame(width: slot, height: geo.size.height)
@@ -179,7 +180,7 @@ private struct TicketTabBar: View {
         .frame(height: 64)
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
-        .ticketShadow(scheme)
+        .ticketShadow(blend)
         .onAppear { thumb = CGFloat(session.selectedTab.index) }
         .onChange(of: session.selectedTab) { _, tab in
             guard !dragging else { return }

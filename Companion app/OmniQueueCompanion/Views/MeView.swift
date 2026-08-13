@@ -2,7 +2,7 @@ import SwiftUI
 
 struct MeView: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
     @State private var pickingLocation = false
 
     var body: some View {
@@ -14,14 +14,14 @@ struct MeView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Current stop")
                                     .font(TicketType.caption)
-                                    .foregroundStyle(TicketInk.muted(for: scheme))
+                                    .foregroundStyle(TicketInk.muted(blend: blend))
                                 Text(session.locationName)
                                     .font(TicketType.headline)
-                                    .foregroundStyle(TicketInk.ink(for: scheme))
+                                    .foregroundStyle(TicketInk.ink(blend: blend))
                             }
                             Spacer()
                             Image(systemName: "chevron.right")
-                                .foregroundStyle(TicketInk.muted(for: scheme))
+                                .foregroundStyle(TicketInk.muted(blend: blend))
                         }
                         .padding(.leading, TicketLayout.leading(12))
                         .padding(.trailing, 14)
@@ -81,7 +81,7 @@ struct MeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(TicketType.headline)
-                .foregroundStyle(TicketInk.ink(for: scheme))
+                .foregroundStyle(TicketInk.ink(blend: blend))
             content()
         }
     }
@@ -90,14 +90,14 @@ struct MeView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(TicketType.caption.weight(.bold))
-                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                .foregroundStyle(TicketInk.copperAccent(blend: blend))
             Text(body)
                 .font(TicketType.caption)
-                .foregroundStyle(TicketInk.muted(for: scheme))
+                .foregroundStyle(TicketInk.muted(blend: blend))
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TicketInk.stock(for: scheme), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(TicketInk.stock(blend: blend), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func ghost(_ icon: String, _ title: String, enabled: Bool, danger: Bool = false, action: @escaping () -> Void) -> some View {
@@ -108,7 +108,7 @@ struct MeView: View {
                 .padding(.leading, TicketLayout.leading(10))
                 .padding(.trailing, 10)
                 .padding(.vertical, 10)
-                .foregroundStyle(danger ? TicketInk.oxblood : TicketInk.ink(for: scheme))
+                .foregroundStyle(danger ? TicketInk.oxblood : TicketInk.ink(blend: blend))
                 .background { TicketStock(corner: 12, stubWidth: 10, punched: false) }
                 .opacity(enabled ? 1 : 0.4)
         }
@@ -122,13 +122,13 @@ private struct HourField: View {
     let hour: Double
     let range: ClosedRange<Double>
     var onChange: (Double) -> Void
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(TicketType.caption)
-                .foregroundStyle(TicketInk.muted(for: scheme))
+                .foregroundStyle(TicketInk.muted(blend: blend))
             HStack {
                 Button { nudge(-0.5) } label: {
                     Image(systemName: "minus")
@@ -144,7 +144,7 @@ private struct HourField: View {
                 }
                 .buttonStyle(.plain)
             }
-            .foregroundStyle(TicketInk.ink(for: scheme))
+            .foregroundStyle(TicketInk.ink(blend: blend))
             .padding(.leading, TicketLayout.leading(10))
             .padding(.trailing, 10)
             .padding(.vertical, 10)

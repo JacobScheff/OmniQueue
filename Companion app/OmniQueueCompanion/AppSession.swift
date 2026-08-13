@@ -15,7 +15,10 @@ final class AppSession {
     var errorMessage: String?
     var selectedTab: Tab = .plan
     var showDisclaimer = false
-    var preferredScheme: ColorScheme? = .dark
+    /// Destination appearance. System chrome follows this immediately; `themeBlend` eases to it.
+    var usesLightTheme = false
+    /// 0 = dark, 1 = light. Animate this so palette colors ease between modes.
+    var themeBlend: CGFloat = 0
 
     enum Tab: String, CaseIterable, Identifiable {
         case plan, rides, me
@@ -60,8 +63,9 @@ final class AppSession {
             error: nil
         )
         self.waits = WaitTimeService(catalog: catalog)
-        if let raw = UserDefaults.standard.string(forKey: themeKey) {
-            preferredScheme = raw == "light" ? .light : .dark
+        if UserDefaults.standard.string(forKey: themeKey) == "light" {
+            usesLightTheme = true
+            themeBlend = 1
         }
         showDisclaimer = !UserDefaults.standard.bool(forKey: disclaimerKey)
     }
@@ -83,10 +87,16 @@ final class AppSession {
         showDisclaimer = false
     }
 
+    var preferredScheme: ColorScheme {
+        usesLightTheme ? .light : .dark
+    }
+
     func toggleTheme() {
-        let next: ColorScheme = (preferredScheme == .light) ? .dark : .light
-        preferredScheme = next
-        UserDefaults.standard.set(next == .light ? "light" : "dark", forKey: themeKey)
+        usesLightTheme.toggle()
+        UserDefaults.standard.set(usesLightTheme ? "light" : "dark", forKey: themeKey)
+        withAnimation(.easeInOut(duration: 0.9)) {
+            themeBlend = usesLightTheme ? 1 : 0
+        }
     }
 
     func commit(_ next: GuestState) {

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct RidesView: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
     @State private var query = ""
     @State private var sort: SortMode = .pref
 
@@ -31,7 +31,7 @@ struct RidesView: View {
                     if visibleRides.isEmpty {
                         Text("No rides match “\(query)”.")
                             .font(TicketType.body)
-                            .foregroundStyle(TicketInk.muted(for: scheme))
+                            .foregroundStyle(TicketInk.muted(blend: blend))
                             .padding(.top, 24)
                     }
                 }
@@ -46,7 +46,7 @@ struct RidesView: View {
     private var searchBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(TicketInk.muted(for: scheme))
+                .foregroundStyle(TicketInk.muted(blend: blend))
             TextField("Search rides or lands", text: $query)
                 .font(TicketType.body)
                 .textInputAutocapitalization(.never)
@@ -72,10 +72,10 @@ struct RidesView: View {
                         .font(TicketType.caption.weight(.semibold))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
-                        .foregroundStyle(sort == mode ? TicketInk.stock(for: scheme) : TicketInk.ink(for: scheme))
+                        .foregroundStyle(sort == mode ? TicketInk.stock(blend: blend) : TicketInk.ink(blend: blend))
                         .background(
                             Capsule(style: .continuous)
-                                .fill(sort == mode ? TicketInk.copperAccent(for: scheme) : TicketInk.stock(for: scheme))
+                                .fill(sort == mode ? TicketInk.copperAccent(blend: blend) : TicketInk.stock(blend: blend))
                         )
                 }
                 .buttonStyle(.plain)
@@ -117,7 +117,7 @@ struct RidesView: View {
 private struct RideCard: View {
     let ride: ParkCatalog.Ride
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         let live = session.board.wait(for: ride.id)
@@ -131,14 +131,14 @@ private struct RideCard: View {
                     HStack(spacing: 6) {
                         Text(ride.name)
                             .font(TicketType.body.weight(.semibold))
-                            .foregroundStyle(TicketInk.ink(for: scheme))
+                            .foregroundStyle(TicketInk.ink(blend: blend))
                         if must {
                             Text("MUST")
                                 .font(TicketType.mono)
-                                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                                .foregroundStyle(TicketInk.copperAccent(blend: blend))
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
-                                .overlay(Capsule().stroke(TicketInk.copperAccent(for: scheme), lineWidth: 1))
+                                .overlay(Capsule().stroke(TicketInk.copperAccent(blend: blend), lineWidth: 1))
                         }
                         if done > 0 {
                             Text("DONE ×\(done)")
@@ -148,7 +148,7 @@ private struct RideCard: View {
                     }
                     Text(ride.hubName)
                         .font(TicketType.caption)
-                        .foregroundStyle(TicketInk.muted(for: scheme))
+                        .foregroundStyle(TicketInk.muted(blend: blend))
                 }
                 Spacer()
                 WaitChip(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN")
@@ -170,9 +170,9 @@ private struct RideCard: View {
                         .font(TicketType.caption.weight(.semibold))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
-                        .foregroundStyle(must ? TicketInk.stock(for: scheme) : TicketInk.ink(for: scheme))
+                        .foregroundStyle(must ? TicketInk.stock(blend: blend) : TicketInk.ink(blend: blend))
                         .background(
-                            Capsule().fill(must ? TicketInk.copperAccent(for: scheme) : TicketInk.paper(for: scheme))
+                            Capsule().fill(must ? TicketInk.copperAccent(blend: blend) : TicketInk.paper(blend: blend))
                         )
                 }
                 .buttonStyle(.plain)
@@ -183,7 +183,7 @@ private struct RideCard: View {
                 HStack(spacing: 8) {
                     Text("Rode it")
                         .font(TicketType.caption)
-                        .foregroundStyle(TicketInk.muted(for: scheme))
+                        .foregroundStyle(TicketInk.muted(blend: blend))
                     stepperButton("minus") {
                         var s = session.state
                         s.bumpDone(ride: ride.id, delta: -1)
@@ -204,16 +204,16 @@ private struct RideCard: View {
         .padding(.trailing, 14)
         .padding(.vertical, 14)
         .background { TicketStock(corner: 18, stubWidth: 12) }
-        .ticketShadow(scheme)
+        .ticketShadow(blend)
     }
 
     private func stepperButton(_ system: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(TicketInk.ink(for: scheme))
+                .foregroundStyle(TicketInk.ink(blend: blend))
                 .frame(width: 28, height: 28)
-                .background(TicketInk.paper(for: scheme), in: Circle())
+                .background(TicketInk.paper(blend: blend), in: Circle())
         }
         .buttonStyle(.plain)
     }
@@ -222,14 +222,14 @@ private struct RideCard: View {
 struct PriorityControl: View {
     var weight: Double
     var onChange: (Double) -> Void
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         let selected = PriorityLevel.from(weight: weight)
         VStack(alignment: .leading, spacing: 6) {
             Text("How much do you want this?")
                 .font(TicketType.caption)
-                .foregroundStyle(TicketInk.muted(for: scheme))
+                .foregroundStyle(TicketInk.muted(blend: blend))
             HStack(spacing: 4) {
                 ForEach(PriorityLevel.allCases) { level in
                     Button {
@@ -239,10 +239,10 @@ struct PriorityControl: View {
                             .font(TicketType.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
-                            .foregroundStyle(selected == level ? TicketInk.stock(for: scheme) : TicketInk.ink(for: scheme))
+                            .foregroundStyle(selected == level ? TicketInk.stock(blend: blend) : TicketInk.ink(blend: blend))
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(selected == level ? TicketInk.copperAccent(for: scheme) : TicketInk.paper(for: scheme).opacity(0.7))
+                                    .fill(selected == level ? TicketInk.copperAccent(blend: blend) : TicketInk.paper(blend: blend).opacity(0.7))
                             )
                     }
                     .buttonStyle(.plain)

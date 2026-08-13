@@ -8,9 +8,11 @@ struct OmniQueueCompanionApp: App {
         WindowGroup {
             Group {
                 if let session {
-                    RootView()
-                        .environment(session)
-                        .preferredColorScheme(session.preferredScheme)
+                    ThemeBlendHost(blend: session.themeBlend) {
+                        RootView()
+                            .environment(session)
+                            .preferredColorScheme(session.preferredScheme)
+                    }
                 } else {
                     BootFailureView()
                 }

@@ -6,7 +6,7 @@ struct WaitChip: View {
     var status: String
     var small = false
 
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
 
     var body: some View {
         let tone = WaitTone.of(wait: wait, open: open, status: status)
@@ -21,15 +21,15 @@ struct WaitChip: View {
 
     private func fg(_ tone: WaitTone) -> Color {
         switch tone {
-        case .good: return scheme == .dark ? TicketInk.tealBright : TicketInk.teal
+        case .good: return TicketInk.mix((0.494, 0.722, 0.698, 1), (0.122, 0.373, 0.353, 1), blend)
         case .warn: return TicketInk.mustard
         case .bad: return TicketInk.oxblood
-        case .closed: return TicketInk.muted(for: scheme)
-        case .unknown: return TicketInk.muted(for: scheme)
+        case .closed: return TicketInk.muted(blend: blend)
+        case .unknown: return TicketInk.muted(blend: blend)
         }
     }
 
     private func bg(_ tone: WaitTone) -> Color {
-        fg(tone).opacity(scheme == .dark ? 0.18 : 0.12)
+        fg(tone).opacity(TicketInk.lerp(0.18, 0.12, blend))
     }
 }

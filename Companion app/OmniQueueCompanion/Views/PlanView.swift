@@ -2,7 +2,7 @@ import SwiftUI
 
 struct PlanView: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
     @State private var whyOpen = false
 
     var body: some View {
@@ -41,26 +41,26 @@ struct PlanView: View {
     private var pinBanner: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: "pin.fill")
-                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                .foregroundStyle(TicketInk.copperAccent(blend: blend))
             Text("You pinned the next stop. The rest of the ticket still rewrites around it.")
                 .font(TicketType.caption)
-                .foregroundStyle(TicketInk.ink(for: scheme))
+                .foregroundStyle(TicketInk.ink(blend: blend))
             Spacer(minLength: 4)
             Button("Clear") {
                 withAnimation(.spring(duration: 0.4, bounce: 0.25)) { session.clearForce() }
             }
             .font(TicketType.caption.weight(.semibold))
-            .foregroundStyle(TicketInk.copperAccent(for: scheme))
+            .foregroundStyle(TicketInk.copperAccent(blend: blend))
         }
         .padding(12)
-        .background(TicketInk.stock(for: scheme), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(TicketInk.rule(for: scheme), lineWidth: 1))
+        .background(TicketInk.stock(blend: blend), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(TicketInk.rule(blend: blend), lineWidth: 1))
     }
 }
 
 private struct TicketHero: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
     @State private var whyOpen = false
 
     var body: some View {
@@ -72,7 +72,7 @@ private struct TicketHero: View {
                 Text(session.forcedPick?.slot == 0 ? "PINNED NEXT" : "UP NEXT")
                     .font(TicketType.mono)
                     .tracking(1.4)
-                    .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                    .foregroundStyle(TicketInk.copperAccent(blend: blend))
                 Spacer()
                 if rec?.recommended.isRide == true {
                     WaitChip(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN")
@@ -88,7 +88,7 @@ private struct TicketHero: View {
 
             Text(rec?.recommended.label ?? (session.busy ? "Still inking…" : "—"))
                 .font(TicketType.mark)
-                .foregroundStyle(TicketInk.ink(for: scheme))
+                .foregroundStyle(TicketInk.ink(blend: blend))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, TicketLayout.leading(16))
                 .padding(.trailing, 16)
@@ -99,7 +99,7 @@ private struct TicketHero: View {
             if let rec {
                 Text("\(confidence(rec.recommended.prob)) · \(WaitFormatting.percent(rec.recommended.prob))")
                     .font(TicketType.body)
-                    .foregroundStyle(TicketInk.muted(for: scheme))
+                    .foregroundStyle(TicketInk.muted(blend: blend))
                     .padding(.leading, TicketLayout.leading(16))
                     .padding(.trailing, 16)
                     .padding(.top, 4)
@@ -117,7 +117,7 @@ private struct TicketHero: View {
                             .rotationEffect(.degrees(whyOpen ? 90 : 0))
                     }
                     .font(TicketType.caption.weight(.semibold))
-                    .foregroundStyle(TicketInk.ink(for: scheme))
+                    .foregroundStyle(TicketInk.ink(blend: blend))
                 }
                 .buttonStyle(.plain)
 
@@ -126,12 +126,12 @@ private struct TicketHero: View {
                         ForEach(whyLines, id: \.self) { line in
                             HStack(alignment: .top, spacing: 8) {
                                 Circle()
-                                    .fill(TicketInk.copperAccent(for: scheme))
+                                    .fill(TicketInk.copperAccent(blend: blend))
                                     .frame(width: 5, height: 5)
                                     .padding(.top, 5)
                                 Text(line)
                                     .font(TicketType.caption)
-                                    .foregroundStyle(TicketInk.muted(for: scheme))
+                                    .foregroundStyle(TicketInk.muted(blend: blend))
                             }
                         }
                     }
@@ -152,7 +152,7 @@ private struct TicketHero: View {
                         .font(TicketType.caption.weight(.semibold))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                .foregroundStyle(TicketInk.copperAccent(blend: blend))
                 .rotationEffect(.degrees(session.busy ? 180 : 0))
                 .animation(.spring(duration: 0.5, bounce: 0.35), value: session.busy)
             }
@@ -163,7 +163,7 @@ private struct TicketHero: View {
         .background {
             TicketStock(corner: 24, stubWidth: 16)
         }
-        .ticketShadow(scheme)
+        .ticketShadow(blend)
         .accessibilityElement(children: .combine)
     }
 
@@ -178,7 +178,7 @@ private struct TicketHero: View {
             }
         }
         .font(TicketType.caption)
-        .foregroundStyle(TicketInk.muted(for: scheme))
+        .foregroundStyle(TicketInk.muted(blend: blend))
     }
 
     private var whyLines: [String] {

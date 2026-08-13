@@ -2,7 +2,7 @@ import SwiftUI
 
 struct RouteTimeline: View {
     @Environment(AppSession.self) private var session
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.themeBlend) private var blend
     @State private var expanded: Int?
     @State private var showAll = false
 
@@ -13,11 +13,11 @@ struct RouteTimeline: View {
             HStack {
                 Text("Your route")
                     .font(TicketType.headline)
-                    .foregroundStyle(TicketInk.ink(for: scheme))
+                    .foregroundStyle(TicketInk.ink(blend: blend))
                 Spacer()
                 Text("Tap a stop to pin another")
                     .font(TicketType.caption)
-                    .foregroundStyle(TicketInk.muted(for: scheme))
+                    .foregroundStyle(TicketInk.muted(blend: blend))
             }
 
             if let route = session.recommendation?.route, !route.isEmpty {
@@ -32,11 +32,11 @@ struct RouteTimeline: View {
                 .background {
                     TicketStock(corner: 20, stubWidth: 14)
                 }
-                .ticketShadow(scheme)
+                .ticketShadow(blend)
             } else {
                 Text(session.busy ? "Building your plan…" : "No plan yet.")
                     .font(TicketType.body)
-                    .foregroundStyle(TicketInk.muted(for: scheme))
+                    .foregroundStyle(TicketInk.muted(blend: blend))
                     .padding(.vertical, 18)
             }
         }
@@ -63,7 +63,7 @@ struct RouteTimeline: View {
                         if isForced {
                             Image(systemName: "pin.fill")
                                 .font(.system(size: 8))
-                                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                                .foregroundStyle(TicketInk.copperAccent(blend: blend))
                                 .offset(x: 8, y: -8)
                                 .transition(.scale.combined(with: .opacity))
                         }
@@ -73,10 +73,10 @@ struct RouteTimeline: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(stopWords.indices.contains(stop.slot) ? stopWords[stop.slot] : "Then")
                             .font(TicketType.mono)
-                            .foregroundStyle(TicketInk.muted(for: scheme))
+                            .foregroundStyle(TicketInk.muted(blend: blend))
                         Text(stop.label)
                             .font(TicketType.body.weight(.semibold))
-                            .foregroundStyle(TicketInk.ink(for: scheme))
+                            .foregroundStyle(TicketInk.ink(blend: blend))
                             .multilineTextAlignment(.leading)
                     }
                     Spacer()
@@ -86,12 +86,12 @@ struct RouteTimeline: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
-                        .foregroundStyle(TicketInk.muted(for: scheme))
+                        .foregroundStyle(TicketInk.muted(blend: blend))
                 }
                 .padding(.leading, TicketLayout.leading(14))
                 .padding(.trailing, 16)
                 .padding(.vertical, 12)
-                .background(stop.slot == 0 ? TicketInk.copperAccent(for: scheme).opacity(0.08) : Color.clear)
+                .background(stop.slot == 0 ? TicketInk.copperAccent(blend: blend).opacity(0.08) : Color.clear)
             }
             .buttonStyle(.plain)
 
@@ -118,7 +118,7 @@ struct RouteTimeline: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Tap another option to pin it here — the rest of the plan rewrites around it.")
                 .font(TicketType.caption)
-                .foregroundStyle(TicketInk.muted(for: scheme))
+                .foregroundStyle(TicketInk.muted(blend: blend))
 
             ForEach(visible) { row in
                 let active = session.forcedPick?.slot == stop.slot && session.forcedPick?.actionId == row.actionId
@@ -131,25 +131,25 @@ struct RouteTimeline: View {
                     HStack {
                         Text(row.label)
                             .font(TicketType.caption.weight(.semibold))
-                            .foregroundStyle(row.legal ? TicketInk.ink(for: scheme) : TicketInk.muted(for: scheme))
-                            .strikethrough(!row.legal, color: TicketInk.muted(for: scheme))
+                            .foregroundStyle(row.legal ? TicketInk.ink(blend: blend) : TicketInk.muted(blend: blend))
+                            .strikethrough(!row.legal, color: TicketInk.muted(blend: blend))
                         Spacer()
                         if row.isRide {
                             WaitChip(wait: row.waitMin, open: row.open, status: row.status, small: true)
                         }
                         Text(WaitFormatting.percent(row.prob))
                             .font(TicketType.mono)
-                            .foregroundStyle(TicketInk.muted(for: scheme))
+                            .foregroundStyle(TicketInk.muted(blend: blend))
                         if active {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                                .foregroundStyle(TicketInk.copperAccent(blend: blend))
                         }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(active ? TicketInk.copperAccent(for: scheme).opacity(0.14) : TicketInk.paper(for: scheme).opacity(0.5))
+                            .fill(active ? TicketInk.copperAccent(blend: blend).opacity(0.14) : TicketInk.paper(blend: blend).opacity(0.5))
                     )
                 }
                 .buttonStyle(.plain)
@@ -162,7 +162,7 @@ struct RouteTimeline: View {
                     withAnimation { showAll.toggle() }
                 }
                 .font(TicketType.caption.weight(.semibold))
-                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+                .foregroundStyle(TicketInk.copperAccent(blend: blend))
             }
         }
         .padding(.leading, TicketLayout.leading(14))
@@ -171,12 +171,12 @@ struct RouteTimeline: View {
     }
 
     private func dotColor(stop: RouteStop, live: RideWait?) -> Color {
-        guard stop.isRide else { return TicketInk.muted(for: scheme) }
+        guard stop.isRide else { return TicketInk.muted(blend: blend) }
         switch WaitTone.of(wait: live?.waitMin, open: live?.open ?? false, status: live?.status ?? "UNKNOWN") {
         case .good: return TicketInk.teal
         case .warn: return TicketInk.mustard
         case .bad: return TicketInk.oxblood
-        case .closed: return TicketInk.muted(for: scheme)
+        case .closed: return TicketInk.muted(blend: blend)
         case .unknown: return TicketInk.copper
         }
     }
