@@ -119,10 +119,11 @@ private struct TicketTabBar: View {
             let usable = max(geo.size.width - trackLeading - inset, 1)
             let slot = usable / CGFloat(tabs.count)
             let pillW = slot - 6
-            let pillH = geo.size.height - 12
+            let pillH: CGFloat = 44
             let pillX = trackLeading + thumb * slot + (slot - pillW) / 2
+            let pillY = (geo.size.height - pillH) / 2
 
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .topLeading) {
                 TicketStock(corner: 24, stubWidth: stub)
 
                 Capsule(style: .continuous)
@@ -137,7 +138,7 @@ private struct TicketTabBar: View {
                     }
                     .shadow(color: TicketInk.copperAccent(blend: blend).opacity(0.28), radius: 10, y: 2)
                     .frame(width: pillW, height: pillH)
-                    .offset(x: pillX, y: (geo.size.height - pillH) / 2)
+                    .offset(x: pillX, y: pillY)
                     .animation(dragging ? nil : .spring(duration: 0.42, bounce: 0.28), value: thumb)
 
                 HStack(spacing: 0) {
