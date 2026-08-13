@@ -70,7 +70,7 @@ Training uses a **Discrete Event Simulator (DES)** at 1-second resolution, imple
 | [pref-mustdo-reward-plan.md](docs/pref-mustdo-reward-plan.md) | PPO / `ParkEnv` | Design plan: preference + must-do latency objective (ignore wait variance) |
 | [route-plan-output-plan.md](docs/route-plan-output-plan.md) | (superseded) | Prior K-ride plan; see [rank-route-architecture.md](docs/rank-route-architecture.md) |
 | [watch.md](docs/watch.md) | `watch.py`, `watch/` | PPO-focal watcher, timeline marks, mid-day prefs |
-| [companion.md](docs/companion.md) | `companion/` | Live wait-time companion + ONNX recommendations (web; free Render deploy) |
+| [companion.md](docs/companion.md) | `companion/` | Live wait-time companion + ONNX recommendations (web; free Render deploy). Native iOS client: repo-root `Companion app/`. |
 
 ## Phase Roadmap
 

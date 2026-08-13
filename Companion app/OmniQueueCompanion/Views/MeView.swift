@@ -1,0 +1,154 @@
+import SwiftUI
+
+struct MeView: View {
+    @Environment(AppSession.self) private var session
+    @Environment(\.colorScheme) private var scheme
+    @State private var pickingLocation = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                section(title: "Where you are") {
+                    Button { pickingLocation = true } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Current stop")
+                                    .font(TicketType.caption)
+                                    .foregroundStyle(TicketInk.muted(for: scheme))
+                                Text(session.locationName)
+                                    .font(TicketType.headline)
+                                    .foregroundStyle(TicketInk.ink(for: scheme))
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(TicketInk.muted(for: scheme))
+                        }
+                        .padding(14)
+                        .background { TicketStock(corner: 16, stubWidth: 12) }
+                    }
+                    .buttonStyle(.plain)
+
+                    HStack(spacing: 10) {
+                        HourField(title: "Arrived around", hour: session.state.arrivalHour, range: range) { value in
+                            var s = session.state
+                            s.arrivalHour = value
+                            session.commit(s)
+                        }
+                        HourField(title: "Leaving around", hour: session.state.leaveHour, range: range) { value in
+                            var s = session.state
+                            s.leaveHour = value
+                            session.commit(s)
+                        }
+                    }
+                }
+
+                section(title: "Edits") {
+                    HStack(spacing: 8) {
+                        ghost("arrow.uturn.backward", "Undo", enabled: session.canUndo) { session.undo() }
+                        ghost("arrow.uturn.forward", "Redo", enabled: session.canRedo) { session.redo() }
+                        ghost("trash", "Reset", enabled: true, danger: true) { session.reset() }
+                    }
+                }
+
+                section(title: "What these mean") {
+                    helpRow("Priority", "Skip / Low / Medium / High tells the model how badly you want a ride.")
+                    helpRow("Must-do", "Star the rides you don’t want to miss. The plan works those in first.")
+                    helpRow("Rode it", "Mark something done so it won’t keep coming back as the next stop.")
+                    helpRow("Pinning", "On Plan, tap any stop and pick an alternative. Everything else rewrites around that pin.")
+                    helpRow("Location", "Pick the land or ride you’re standing at. The app never uses GPS.")
+                }
+
+                DisclaimerBlock()
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 28)
+        }
+        .scrollIndicators(.hidden)
+        .sheet(isPresented: $pickingLocation) {
+            LocationPicker()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    private var range: ClosedRange<Double> {
+        Double(session.catalog.dayStartHour)...Double(session.catalog.dayEndHour)
+    }
+
+    private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(TicketType.headline)
+                .foregroundStyle(TicketInk.ink(for: scheme))
+            content()
+        }
+    }
+
+    private func helpRow(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(TicketType.caption.weight(.bold))
+                .foregroundStyle(TicketInk.copperAccent(for: scheme))
+            Text(body)
+                .font(TicketType.caption)
+                .foregroundStyle(TicketInk.muted(for: scheme))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TicketInk.stock(for: scheme), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func ghost(_ icon: String, _ title: String, enabled: Bool, danger: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(TicketType.caption.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .foregroundStyle(danger ? TicketInk.oxblood : TicketInk.ink(for: scheme))
+                .background { TicketStock(corner: 12, stubWidth: 10, punched: false) }
+                .opacity(enabled ? 1 : 0.4)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+}
+
+private struct HourField: View {
+    let title: String
+    let hour: Double
+    let range: ClosedRange<Double>
+    var onChange: (Double) -> Void
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(TicketType.caption)
+                .foregroundStyle(TicketInk.muted(for: scheme))
+            HStack {
+                Button { nudge(-0.5) } label: {
+                    Image(systemName: "minus")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                Text(WaitFormatting.hourLabel(hour))
+                    .font(TicketType.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                Button { nudge(0.5) } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(TicketInk.ink(for: scheme))
+            .padding(10)
+            .background { TicketStock(corner: 14, stubWidth: 10, punched: false) }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func nudge(_ delta: Double) {
+        let next = min(range.upperBound, max(range.lowerBound, hour + delta))
+        onChange(next)
+    }
+}
