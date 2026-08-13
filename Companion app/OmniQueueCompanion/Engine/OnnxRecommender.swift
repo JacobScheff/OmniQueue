@@ -246,26 +246,26 @@ final class OnnxRecommender: @unchecked Sendable {
     }
 
     private func floats(from value: ORTValue) throws -> [Float] {
-        let data = try value.tensorData()
-        let count = data.length / MemoryLayout<Float>.stride
-        return data.withUnsafeBytes { raw in
-            let buf = raw.bindMemory(to: Float.self)
-            return Array(buf.prefix(count))
-        }
+        copyTensor(try value.tensorData(), as: Float.self)
     }
 
     private func int64s(from value: ORTValue) throws -> [Int64] {
-        let data = try value.tensorData()
+        let nsData = try value.tensorData()
         let info = try value.tensorTypeAndShapeInfo()
         if info.elementType == .int64 {
-            let count = data.length / MemoryLayout<Int64>.stride
-            return data.withUnsafeBytes { raw in
-                let buf = raw.bindMemory(to: Int64.self)
-                return Array(buf.prefix(count))
-            }
+            return copyTensor(nsData, as: Int64.self)
         }
         // Some graphs emit floats for route ids.
-        return try floats(from: value).map { Int64($0.rounded()) }
+        return copyTensor(nsData, as: Float.self).map { Int64($0.rounded()) }
+    }
+
+    /// ORT returns NSMutableData, which has no Swift `withUnsafeBytes`.
+    private func copyTensor<T>(_ nsData: NSMutableData, as type: T.Type) -> [T] {
+        let data = Data(referencing: nsData)
+        let count = data.count / MemoryLayout<T>.stride
+        return data.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: T.self).prefix(count))
+        }
     }
 }
 
