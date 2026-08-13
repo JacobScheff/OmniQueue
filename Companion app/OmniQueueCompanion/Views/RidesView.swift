@@ -100,8 +100,10 @@ struct RidesView: View {
             }
         case .pref:
             rides.sort { a, b in
-                let d = (session.state.preferenceWeights[safe: b.id] ?? 0) - (session.state.preferenceWeights[safe: a.id] ?? 0)
-                return d == 0 ? a.id < b.id : d > 0
+                let wa = session.state.preferenceWeights[safe: a.id] ?? 0
+                let wb = session.state.preferenceWeights[safe: b.id] ?? 0
+                if wa == wb { return a.id < b.id }
+                return wa > wb
             }
         }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
