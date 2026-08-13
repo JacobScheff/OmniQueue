@@ -19,6 +19,8 @@ final class AppSession {
     var usesLightTheme = false
     /// 0 = dark, 1 = light. Animate this so palette colors ease between modes.
     var themeBlend: CGFloat = 0
+    /// Basic = Skip/Low/Medium/High. Advanced = 0–100 per ride.
+    var usesAdvancedPrefs = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case plan, rides, me
@@ -47,6 +49,7 @@ final class AppSession {
     private var planTask: Task<Void, Never>?
     private let disclaimerKey = "omniqueue.companion.seenDisclaimer"
     private let themeKey = "omniqueue.companion.theme"
+    private let prefModeKey = "omniqueue.companion.prefMode"
 
     init() throws {
         let catalog = try ParkCatalog.loadFromBundle()
@@ -66,6 +69,10 @@ final class AppSession {
         if UserDefaults.standard.string(forKey: themeKey) == "light" {
             usesLightTheme = true
             themeBlend = 1
+        }
+        usesAdvancedPrefs = UserDefaults.standard.string(forKey: prefModeKey) == "advanced"
+        if usesAdvancedPrefs, state.fillMissingScores() {
+            persist()
         }
         showDisclaimer = !UserDefaults.standard.bool(forKey: disclaimerKey)
     }
@@ -99,6 +106,22 @@ final class AppSession {
         }
     }
 
+    func setAdvancedPrefs(_ on: Bool) {
+        if on {
+            var next = state
+            if next.fillMissingScores() {
+                state = next
+                persist()
+                schedulePlan()
+            }
+        }
+        guard usesAdvancedPrefs != on else { return }
+        UserDefaults.standard.set(on ? "advanced" : "basic", forKey: prefModeKey)
+        withAnimation(.spring(duration: 0.55, bounce: 0.22)) {
+            usesAdvancedPrefs = on
+        }
+    }
+
     func commit(_ next: GuestState) {
         past.append(state)
         if past.count > 50 { past.removeFirst(past.count - 50) }
@@ -128,7 +151,9 @@ final class AppSession {
     }
 
     func reset() {
-        commit(GuestState.default(catalog: catalog))
+        var next = GuestState.default(catalog: catalog)
+        if usesAdvancedPrefs { next.fillMissingScores() }
+        commit(next)
         forcedPick = nil
     }
 

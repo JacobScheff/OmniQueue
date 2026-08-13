@@ -106,11 +106,11 @@ struct LocationRef: Hashable, Identifiable, Sendable {
     let walkSec: [Int]
 }
 
-enum PriorityLevel: Int, CaseIterable, Identifiable {
+enum PriorityLevel: Int, CaseIterable, Identifiable, Codable {
     case skip = 0
-    case low = 50
-    case medium = 130
-    case high = 220
+    case low = 1
+    case medium = 2
+    case high = 3
 
     var id: Int { rawValue }
 
@@ -123,10 +123,29 @@ enum PriorityLevel: Int, CaseIterable, Identifiable {
         }
     }
 
+    /// Default 0–100 score when a ride has no fine-tuned number yet.
+    var score: Int {
+        switch self {
+        case .skip: return 0
+        case .low: return 25
+        case .medium: return 55
+        case .high: return 85
+        }
+    }
+
+    /// Model weight on the 0–250 scale the planner was trained with.
+    var modelWeight: Double {
+        Double(score) / 100.0 * 250.0
+    }
+
     static func from(weight: Double) -> PriorityLevel {
         if weight <= 0 { return .skip }
         if weight < 90 { return .low }
         if weight < 175 { return .medium }
         return .high
+    }
+
+    static func modelWeight(fromScore score: Double) -> Double {
+        min(max(score, 0), 100) / 100.0 * 250.0
     }
 }

@@ -42,8 +42,23 @@ final class StateStore {
             while out.count < catalog.numRides { out.append(fill) }
             return out
         }
+        func padOpt(_ arr: [Double?], count: Int) -> [Double?] {
+            var out = Array(arr.prefix(count))
+            while out.count < count { out.append(nil) }
+            return out
+        }
+        func padLevel(_ arr: [PriorityLevel], weights: [Double], count: Int) -> [PriorityLevel] {
+            var out = Array(arr.prefix(count))
+            while out.count < count {
+                let w = weights.indices.contains(out.count) ? weights[out.count] : 1
+                out.append(PriorityLevel.from(weight: w))
+            }
+            return out
+        }
         return GuestState(
             preferenceWeights: pad(state.preferenceWeights, fill: 1),
+            preferenceLevels: padLevel(state.preferenceLevels, weights: state.preferenceWeights, count: catalog.numRides),
+            preferenceFine: padOpt(state.preferenceFine, count: catalog.numRides),
             mustDos: padInt(state.mustDos, fill: 0).map { $0 == 0 ? 0 : 1 },
             history: padInt(state.history, fill: 0).map { max(0, $0) },
             location: state.location.isEmpty ? "entrance" : state.location,

@@ -44,6 +44,18 @@ struct MeView: View {
                     }
                 }
 
+                section(title: "Preferences") {
+                    PrefModeSwitch()
+                    Text(session.usesAdvancedPrefs
+                         ? "Each ride gets a 0–100 score. Switch back to Basic anytime — your numbers stay until you change Skip / Low / Medium / High."
+                         : "Skip / Low / Medium / High is the simple scale. Advanced unlocks a 0–100 number per ride.")
+                        .font(TicketType.caption)
+                        .foregroundStyle(TicketInk.muted(blend: blend))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity)
+                        .animation(.spring(duration: 0.55, bounce: 0.22), value: session.usesAdvancedPrefs)
+                }
+
                 section(title: "Edits") {
                     HStack(spacing: 8) {
                         ghost("arrow.uturn.backward", "Undo", enabled: session.canUndo) { session.undo() }
@@ -53,7 +65,7 @@ struct MeView: View {
                 }
 
                 section(title: "What these mean") {
-                    helpRow("Priority", "Skip / Low / Medium / High tells the model how badly you want a ride.")
+                    helpRow("Priority", "In Basic, pick Skip / Low / Medium / High. In Advanced, set a 0–100 number. Switching to Advanced fills in numbers from the category; changing a category in Basic overwrites that ride’s number.")
                     helpRow("Must-do", "Star the rides you don’t want to miss. The plan works those in first.")
                     helpRow("Rode it", "Mark something done so it won’t keep coming back as the next stop.")
                     helpRow("Pinning", "On Plan, tap any stop and pick an alternative. Everything else rewrites around that pin.")
