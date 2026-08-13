@@ -216,6 +216,7 @@ final class AppSession {
 
     func refreshWaits(force: Bool) async {
         isRefreshingWaits = true
+        defer { isRefreshingWaits = false }
         let next = await waits.board(force: force)
         board = next
         if hasLiveWaits {
@@ -223,7 +224,6 @@ final class AppSession {
         } else {
             recommendation = nil
         }
-        isRefreshingWaits = false
     }
 
     private func persist() {

@@ -157,20 +157,14 @@ struct InkingDots: View {
 
 struct SpinningRefreshIcon: View {
     var spinning: Bool
-    @State private var on = false
 
     var body: some View {
-        Image(systemName: "arrow.clockwise")
-            .rotationEffect(.degrees(on && spinning ? 360 : 0))
-            .animation(spinning ? .linear(duration: 0.75).repeatForever(autoreverses: false) : .easeOut(duration: 0.2), value: on)
-            .onChange(of: spinning) { _, active in
-                on = false
-                if active {
-                    DispatchQueue.main.async { on = true }
-                }
-            }
-            .onAppear {
-                if spinning { on = true }
-            }
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !spinning)) { timeline in
+            let turns = spinning
+                ? timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.75) / 0.75
+                : 0
+            Image(systemName: "arrow.clockwise")
+                .rotationEffect(.degrees(turns * 360))
+        }
     }
 }
