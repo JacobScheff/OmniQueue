@@ -1,0 +1,37 @@
+OmniQueue (bundle app.omniqueue) v1.0 — Guideline 2.1 notes
+
+WHAT IT IS / WHO IT IS FOR
+Independent Disneyland (Anaheim) day planner. Guests set ride priorities and must-dos, pick where they are standing, and get a short next-ride plan. The problem it solves: choosing the next ride from live waits, walk time, remaining park time, and personal taste. Target audience: park guests. Not affiliated with, authorized by, or endorsed by The Walt Disney Company.
+
+NO LOGIN, IAP, UGC, OR PERMISSION PROMPTS
+- No accounts, registration, login, or account deletion. Sign-In Required = No. No demo username/password.
+- No paid content, In-App Purchase, or subscriptions.
+- No user-generated content, reporting, or blocking.
+- No prompts for Location, Contacts, Camera, Photos, Microphone, or App Tracking Transparency. "Location" is a manual land/ride picker (no GPS). Guest prefs stay in on-device UserDefaults. Privacy nutrition labels: no data collected.
+
+HOW TO USE (fresh install; Wi-Fi or cellular required)
+1. Launch the app. A boot screen fetches the wait board, then a first-launch disclaimer appears. Tap "Got it — plan my day".
+2. Plan: shows UP NEXT, "Why this pick?", Refresh waits, and Your route (Now / Next / Then). Pull to refresh or tap Refresh waits.
+3. Tap any route stop, then tap an alternative to pin it; the rest of the plan rewrites around that pin. Use Clear if a pin banner appears.
+4. Rides: search, sort (My priority / Shortest wait / A-Z), set Skip/Low/Medium/High (or Advanced 0-100), Must-do, and Rode it.
+5. Me: Current stop (pick a land or ride), arrival/leave times, Undo/Redo, Clear data (local reset only — this is the closest analog to account deletion). About links: Website, Privacy, Support.
+No sample files. No hidden menus. If waits fail to load, tap Refresh waits; overnight most rides may show CLOSED and the planner still runs on that board.
+
+DEVICES / OS TESTED
+- Physical iPhone running the latest iOS (see attached screen recording; recording starts at launch).
+- Development: Xcode 16 iPhone Simulator, iOS 17+.
+Submitted binary: iPhone only, iOS 17+, portrait. Not iPad or Vision Pro.
+
+EXTERNAL SERVICES
+- ThemeParks.wiki public API (https://api.themeparks.wiki/v1/entity/7340550b-c14d-4def-80bb-acdb51d49a66/live) for unofficial standby waits. In-app credit: "Wait times powered by ThemeParks.wiki". Their terms (https://www.themeparks.wiki/terms) allow commercial wait-time / planner apps with that credit; no park affiliation is implied. No API key required for this endpoint.
+- Microsoft ONNX Runtime (bundled) runs the routing model fully on-device. License linked on Me.
+No OmniQueue server, authentication, ads, analytics, or payment processor.
+
+REGIONS
+Features and content are the same in every region. Catalog is Disneyland Anaheim only. Live waits are that park's current board regardless of reviewer locale. English UI only.
+
+REGULATED INDUSTRY / THIRD-PARTY MATERIAL
+Not a regulated industry. No Disney license: attraction names appear only to identify publicly known rides. In-app disclaimer states we are not a Disney product and waits are unofficial estimates, not official park data. ThemeParks.wiki use is permitted under their public API terms with on-screen attribution. No tickets, Lightning Lane, copyrighted media, or park credentials.
+
+CONTACT: Jacob Scheff, jscheff@usc.edu
+Marketing / Privacy / Support: https://www.jacobscheff.com/OmniQueue

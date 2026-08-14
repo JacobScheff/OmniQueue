@@ -36,8 +36,7 @@ In Xcode **Build Phases**, keep **Patch ONNX Runtime Info.plist** last (below **
 4. App Privacy nutrition labels: **no data collected**. Guest prefs / history stay in on-device `UserDefaults`. Network: ThemeParks.wiki wait board only. No tracking, no accounts.
 5. Age rating: no restricted content; travel utility.
 6. Screenshots: show Plan / Rides / Me without implying Disney affiliation. Keep the “Not a Disney product” framing visible or stated in the description.
-7. Suggested review notes:
-
-> OmniQueue is an independent Disneyland day planner. No login. On first launch, accept the disclaimer, set prefs on Rides, pick a location on Me, then open Plan. Live waits come from ThemeParks.wiki (HTTPS); the routing model runs fully on-device (bundled ONNX). Not affiliated with Disney.
+7. App Review Information: paste [`app_review_notes.txt`](app_review_notes.txt) into **Notes** (under the 4,000-byte cap). Leave **Sign-In Required** off. For a Guideline 2.1 “Information Needed” rejection, also attach a physical-iPhone screen recording; the shot list is in [`APP_REVIEW_INFORMATION.md`](APP_REVIEW_INFORMATION.md).
+8. Confirm the marketing page matches this binary (iPhone only, iOS 17+). Do not list iPad or Vision Pro unless those targets ship.
 
 OmniQueue is not affiliated with, authorized by, or endorsed by The Walt Disney Company. Wait times are unofficial estimates powered by ThemeParks.wiki.
