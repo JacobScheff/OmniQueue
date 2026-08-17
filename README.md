@@ -6,6 +6,8 @@ The goal is to get preferred and must-do rides done quickly. Wait-time variance 
 
 All park code lives in [`Park/`](Park/).
 
+The website can be viewed at: https://omniqueue.onrender.com
+
 ## How it works
 
 1. **Discrete event simulator** — C++ DES at 1-second resolution, exposed to Python as `_park_sim`. Parties (not individuals) walk OSM pedestrian paths, join FIFO queues, ride, and re-route after completions or breakdowns. A full day rolls out in ~0.2s.
