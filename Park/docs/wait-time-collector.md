@@ -18,3 +18,18 @@ For catalog `encoding_version` 1, each ride takes three bytes in catalog order. 
 4. Import OmniQueue into Vercel as a separate project with root directory `Park/wait_time_collector` and the **Other** framework preset. Add `FIRESTORE_SERVICE_ACCOUNT_JSON` with the full contents of the downloaded JSON key and `CRON_SECRET` with a long random token. Set both for **Production** and deploy. [Vercel project settings](https://vercel.com/docs/project-configuration/project-settings)
 5. In the cron-job.org console, create a job for `https://<production-domain>/api/collect`. Set it to **Every 5 minutes** (`*/5 * * * *`), select **POST** with an empty body, and add the `Authorization` header with value `Bearer <CRON_SECRET>`. [cron-job.org console](https://console.cron-job.org/jobs)
 6. Run a test request during published park hours. HTTP 200 with `status` of `collected` and `inserted` of `1` indicates a new snapshot. A repeat call in the same bucket reports `0`. `park_closed` always reports `0`. Check `wait_time_snapshots` and the matching catalog in the Firebase Console. Upstream and database failures return non-2xx responses.
+
+## Local archive viewer
+
+From the repository root, install the collector dependencies and start the viewer with the service account JSON file you downloaded during setup.
+
+```powershell
+python -m pip install -r Park/wait_time_collector/requirements.txt
+python Park/wait_time_collector/view.py --credentials "C:\path\to\service-account.json"
+```
+
+Use the same Python interpreter for both commands. If you run the viewer in a virtual environment or from VS Code, install the requirements with that environment's Python. A missing dependency at startup prints the install command for the interpreter running the viewer.
+
+The script opens `http://127.0.0.1:8765` in your browser. It initially loads the latest recorded day. Choose a date, scrub the snapshot timeline, search attractions, filter statuses, and sort waits. Refresh fetches the selected day again. Each load reads up to 400 snapshots and caches the catalogs in memory. Times are shown in Disneyland's timezone. A missing wait displays as an em dash, while a reported zero displays as zero.
+
+Credentials stay in the local Python process. The viewer reads Firestore and binds to the local loopback interface. It also accepts `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials with `--project`. Use `--no-browser` to launch without opening a tab or `--port` to change ports. Stop with Ctrl+C.
