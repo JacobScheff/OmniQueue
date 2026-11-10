@@ -4,7 +4,7 @@ AI-driven **personal next-ride planner** for theme-park parties. OmniQueue simul
 
 The goal is to get preferred and must-do rides done quickly. Wait-time variance across rides is a diagnostic KPI, not the training objective.
 
-All park code lives in [`Park/`](Park/).
+The park simulator and web companion live in [`Park/`](Park/).
 
 ## How it works
 
@@ -74,7 +74,9 @@ cd companion/web && npm install && npm run dev
 
 See [`Park/docs/companion.md`](Park/docs/companion.md) for Docker and Render deploy.
 
-See [Disneyland wait-time collector](Park/docs/wait-time-collector.md) to schedule five-minute Firestore snapshots through Vercel and cron-job.org.
+### Wait time predictions
+
+See the [Disneyland wait-time collector guide](Wait%20Time%20Predictions/wait-time-collector.md) to schedule five-minute Firestore snapshots through Vercel and cron-job.org, or browse the archive locally.
 
 ## Layout
 

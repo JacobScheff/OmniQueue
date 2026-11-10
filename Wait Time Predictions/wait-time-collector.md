@@ -15,7 +15,7 @@ For catalog `encoding_version` 1, each ride takes three bytes in catalog order. 
 1. In the Firebase Console, create or choose a project and open **Firestore Database → Create database**. Create the `(default)` database in **Standard edition** and **Production mode**. The collector creates its collections on the first successful write. [Firestore setup](https://firebase.google.com/docs/firestore/quickstart)
 2. In the same project's Google Cloud Console, go to **IAM & Admin → Service Accounts**. Create a dedicated collector account with the **Cloud Datastore User** role. Under **Keys**, select **Add key → Create new key → JSON**. Keep the downloaded key out of the repository. [Firestore IAM](https://firebase.google.com/docs/firestore/security/iam), [service account keys](https://docs.cloud.google.com/iam/docs/keys-create-delete)
 3. In Firestore **Indexes → Single field**, add index exemptions for `rides`, `catalog_version`, and `park_date` in `wait_time_snapshots`, and for `attractions` in `wait_time_catalogs`. Keep `sampled_at` indexed for time range queries. The exemptions keep each 50-ride snapshot below the 1 KiB storage budget. [Index exemptions](https://firebase.google.com/docs/firestore/query-data/indexing)
-4. Import OmniQueue into Vercel as a separate project with root directory `Park/wait_time_collector` and the **Other** framework preset. Add `FIRESTORE_SERVICE_ACCOUNT_JSON` with the full contents of the downloaded JSON key and `CRON_SECRET` with a long random token. Set both for **Production** and deploy. [Vercel project settings](https://vercel.com/docs/project-configuration/project-settings)
+4. Import OmniQueue into Vercel as a separate project with root directory `Wait Time Predictions` and the **Other** framework preset. For an existing collector project, update its **Root Directory** to `Wait Time Predictions` before deploying the moved files. Add `FIRESTORE_SERVICE_ACCOUNT_JSON` with the full contents of the downloaded JSON key and `CRON_SECRET` with a long random token. Set both for **Production** and deploy. [Vercel project settings](https://vercel.com/docs/project-configuration/project-settings)
 5. In the cron-job.org console, create a job for `https://<production-domain>/api/collect`. Set it to **Every 5 minutes** (`*/5 * * * *`), select **POST** with an empty body, and add the `Authorization` header with value `Bearer <CRON_SECRET>`. [cron-job.org console](https://console.cron-job.org/jobs)
 6. Run a test request during published park hours. HTTP 200 with `status` of `collected` and `inserted` of `1` indicates a new snapshot. A repeat call in the same bucket reports `0`. `park_closed` always reports `0`. Check `wait_time_snapshots` and the matching catalog in the Firebase Console. Upstream and database failures return non-2xx responses.
 
@@ -24,8 +24,8 @@ For catalog `encoding_version` 1, each ride takes three bytes in catalog order. 
 From the repository root, install the collector dependencies and start the viewer with the service account JSON file you downloaded during setup.
 
 ```powershell
-python -m pip install -r Park/wait_time_collector/requirements.txt
-python Park/wait_time_collector/view.py --credentials "C:\path\to\service-account.json"
+python -m pip install -r "Wait Time Predictions/requirements.txt"
+python "Wait Time Predictions/view.py" --credentials "C:\path\to\service-account.json"
 ```
 
 Use the same Python interpreter for both commands. If you run the viewer in a virtual environment or from VS Code, install the requirements with that environment's Python. A missing dependency at startup prints the install command for the interpreter running the viewer.
