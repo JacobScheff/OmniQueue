@@ -74,6 +74,8 @@ cd companion/web && npm install && npm run dev
 
 See [`Park/docs/companion.md`](Park/docs/companion.md) for Docker and Render deploy.
 
+See [Disneyland wait-time collector](Park/docs/wait-time-collector.md) to schedule five-minute Firestore snapshots through Vercel and cron-job.org.
+
 ## Layout
 
 ```
