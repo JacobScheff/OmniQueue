@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#163d35">
+  <title>OmniQueue · Disneyland wait map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/" aria-label="OmniQueue home"><span class="brand-mark" aria-hidden="true">Q</span><strong>omniqueue<span class="brand-dot">.</span></strong><span class="brand-divider"></span><span class="brand-section">WAIT TIME LAB</span></a>
+    <div class="park-label"><span class="park-dot"></span> Disneyland Park <span class="muted">/ Anaheim, CA</span></div>
+    <span class="local-label">LOCAL ARCHIVE</span>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar" aria-label="Day and prediction controls">
+      <section class="planning">
+        <div class="eyebrow">EXPLORE THE PARK</div>
+        <h1>A little foresight.<br>A better park day.</h1>
+        <p class="intro">Replay the waits. See what comes next.</p>
+        <label for="day">Operating day</label>
+        <select id="day" disabled><option>Loading your archive…</option></select>
+        <div class="day-note" id="day-note">Reading the saved dataset</div>
+        <div class="time-fields">
+          <div><label for="start">Predictions start</label><input id="start" type="time" step="300" value="12:00" disabled></div>
+          <div><label for="view-time">Viewing time</label><input id="view-time" type="time" step="300" value="12:00" disabled></div>
+        </div>
+        <button id="generate" class="primary" disabled><span id="generate-label">Generate forecast</span><span aria-hidden="true">↗</span></button>
+        <p class="forecast-note" id="forecast-note">Uses saved observations before the start time.</p>
+      </section>
+
+      <section class="attractions">
+        <div class="list-heading"><h2>Attractions <span id="ride-count">0</span></h2><button id="sort" class="text-button" aria-label="Sort attractions by wait time">Name ↓</button></div>
+        <label class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Find an attraction" aria-label="Find an attraction"></label>
+        <div id="ride-list" class="ride-list" aria-live="polite"><p class="empty-list">Your saved waits will appear here.</p></div>
+      </section>
+      <div class="sidebar-foot"><span class="tiny-dot"></span> All times in Disneyland local time <span id="zone">PT</span></div>
+    </aside>
+
+    <section class="map-stage" aria-label="Disneyland wait-time map">
+      <div id="map" aria-label="Pan and zoom to explore Disneyland"></div>
+      <div class="map-toolbar">
+        <div class="map-title"><span class="eyebrow">THE HAPPIEST PLACE ON EARTH</span><strong>Disneyland Park</strong></div>
+        <div class="map-actions"><div class="segmented" aria-label="Map style"><button id="aerial" class="active" aria-pressed="true">Aerial</button><button id="streets" aria-pressed="false">Streets</button></div><button id="recenter" class="icon-button" title="Recenter on Disneyland" aria-label="Recenter map">⌖</button></div>
+      </div>
+      <div id="message" class="message" role="status" hidden></div>
+      <div class="map-legend"><span><i class="legend-dot observed"></i> Recorded</span><span><i class="legend-dot predicted"></i> Predicted</span><span><i class="legend-dot interpolated"></i> Interpolated</span></div>
+      <div class="map-caption">Imagery is a geographic backdrop, independent of the selected day.</div>
+
+      <section id="detail" class="detail" aria-label="Attraction details" hidden>
+        <button id="close-detail" class="close-button" aria-label="Close attraction details">×</button>
+        <div class="eyebrow" id="detail-source"></div><h2 id="detail-name"></h2>
+        <div class="detail-wait" id="detail-wait"></div><p id="detail-meta"></p>
+        <svg id="sparkline" viewBox="0 0 320 94" role="img" aria-label="Wait times across the selected day"></svg>
+        <div class="spark-labels"><span id="spark-start"></span><span>Wait · minutes</span><span id="spark-end"></span></div>
+      </section>
+    </section>
+
+    <footer class="timeline-panel" aria-label="Time controls">
+      <div class="timeline-heading">
+        <div class="current-time"><span class="eyebrow">VIEWING TIME</span><div><strong id="clock">—</strong><span id="day-offset" class="muted"></span></div></div>
+        <div class="frame-description"><span id="source" class="source missing">Loading archive</span><span id="source-note">Your data stays on this computer.</span></div>
+        <div class="playback"><button id="back" class="icon-button" aria-label="Back five minutes" disabled>‹</button><button id="play" class="play-button" aria-label="Play timeline" disabled>▶</button><button id="forward" class="icon-button" aria-label="Forward five minutes" disabled>›</button></div>
+      </div>
+      <div class="timeline-track">
+        <div id="boundary" class="forecast-boundary" hidden><span id="boundary-label">Forecast starts</span><i></i></div>
+        <input id="timeline" type="range" min="0" max="1" value="0" step="1" aria-label="Current park time in five-minute steps" disabled>
+      </div>
+      <div id="timeline-labels" class="timeline-labels"></div>
+    </footer>
+  </main>
+  <noscript>This map requires JavaScript. Run python ml/visualize.py and enable JavaScript in your browser.</noscript>
+</body>
+</html>

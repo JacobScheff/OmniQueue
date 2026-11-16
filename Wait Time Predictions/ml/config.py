@@ -25,8 +25,8 @@ HIDDEN_SIZE = 512
 LEARNING_RATE = 0.001
 
 # Forecasting. Used by run.py.
-PREDICT_DAY = "2026-11-13" # None selects the latest cached day, including an incomplete day.
-PREDICT_START_TIME = "10:40" # Park-local HH:MM. None starts after the last observation.
+PREDICT_DAY = "2026-11-15" # None selects the latest cached day, including an incomplete day.
+PREDICT_START_TIME = "20:30" # Park-local HH:MM. None starts after the last observation.
 HISTORY = None  # Optional Path to recent snapshots in the archive viewer's JSON format.
 STEPS = None  # None predicts the rest of the recorded day, or 24 ticks for live history.
 SAMPLES = 100

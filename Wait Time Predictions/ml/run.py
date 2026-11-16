@@ -106,7 +106,7 @@ def forecast_boundary(day, opening_date, start_time):
     return count, cutoff
 
 
-def predict(settings=config, target_time=None):
+def predict(settings=config, target_time=None, *, print_output=True):
     if (settings.STEPS is not None and settings.STEPS < 1) or settings.SAMPLES < 1 or settings.TEMPERATURE <= 0:
         raise ValueError("Steps, samples, and temperature must be positive")
     torch.manual_seed(settings.SEED)
@@ -167,7 +167,8 @@ def predict(settings=config, target_time=None):
     result = {"as_of": datetime.fromtimestamp(timestamps[-1], timezone.utc).isoformat(),
               "day": key, "prediction_start": datetime.fromtimestamp(cutoff, timezone.utc).isoformat(),
               "samples": settings.SAMPLES, "snapshots": summarize(paths, checkpoint["rides"], future)}
-    print_predictions(result)
+    if print_output:
+        print_predictions(result)
     return result
 
 
