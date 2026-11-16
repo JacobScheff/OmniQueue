@@ -18,9 +18,9 @@ PROJECT = "omniqueue-9ce1b"
 REFRESH = False  # True rechecks the selected dates, including previously discarded days.
 
 # Training.
-EPOCHS = 100
+EPOCHS = 200
 BATCH_SIZE = 64  # Full operating days per batch.
-EMBEDDING_SIZE = 16
+EMBEDDING_SIZE = 64
 HIDDEN_SIZE = 512
 LEARNING_RATE = 0.001
 
