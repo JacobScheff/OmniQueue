@@ -21,15 +21,20 @@ For catalog `encoding_version` 1, each ride takes three bytes in catalog order. 
 
 ## Local archive viewer
 
-From the repository root, install the collector dependencies and start the viewer with the service account JSON file you downloaded during setup.
+From the repository root, open the collector folder and install its dependencies. Set `CREDENTIALS` in `ml/config.py` to the service account JSON path you downloaded during setup, then start the viewer.
 
 ```powershell
-python -m pip install -r "Wait Time Predictions/requirements.txt"
-python "Wait Time Predictions/view.py" --credentials "C:\path\to\service-account.json"
+cd "Wait Time Predictions"
+python -m pip install -r requirements.txt
+python view.py
 ```
 
 Use the same Python interpreter for both commands. If you run the viewer in a virtual environment or from VS Code, install the requirements with that environment's Python. A missing dependency at startup prints the install command for the interpreter running the viewer.
 
 The script opens `http://127.0.0.1:8765` in your browser. It initially loads the latest recorded day. Choose a date, scrub the snapshot timeline, search attractions, filter statuses, and sort waits. Refresh fetches the selected day again. Each load reads up to 400 snapshots and caches the catalogs in memory. Times are shown in Disneyland's timezone. A missing wait displays as an em dash, while a reported zero displays as zero.
 
-Credentials stay in the local Python process. The viewer reads Firestore and binds to the local loopback interface. It also accepts `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials with `--project`. Use `--no-browser` to launch without opening a tab or `--port` to change ports. Stop with Ctrl+C.
+Credentials stay in the local Python process. The viewer reads Firestore and binds to the local loopback interface. It also accepts `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials using `PROJECT` in `ml/config.py`. Optional command-line overrides remain available. Stop with Ctrl+C.
+
+## Prediction dataset and training
+
+See [the predictor guide](README.md) to cache complete and incomplete days locally, train the autoregressive PyTorch model on complete operating days on an NVIDIA GPU, and generate five-minute wait and DOWN-token forecasts.

@@ -12,7 +12,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from ml import config
+
 try:
+    from google.api_core.gapic_v1.method import DEFAULT
     from google.cloud import firestore
     from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -45,8 +48,8 @@ class Archive:
         self.snapshots = db.collection("wait_time_snapshots")
 
     @lru_cache(maxsize=64)
-    def catalog(self, version):
-        doc = self.db.collection("wait_time_catalogs").document(version).get(timeout=15)
+    def catalog(self, version, retry=DEFAULT, timeout=15):
+        doc = self.db.collection("wait_time_catalogs").document(version).get(retry=retry, timeout=timeout)
         if not doc.exists:
             raise ValueError("The snapshot's ride catalog is missing")
         catalog = doc.to_dict()
@@ -119,8 +122,8 @@ class Viewer(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--credentials", type=Path, help="Path to your service account JSON key")
-    parser.add_argument("--project", default="omniqueue-9ce1b", help="Project for application default credentials")
+    parser.add_argument("--credentials", type=Path, default=config.CREDENTIALS, help="Path to your service account JSON key")
+    parser.add_argument("--project", default=config.PROJECT, help="Project for application default credentials")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
