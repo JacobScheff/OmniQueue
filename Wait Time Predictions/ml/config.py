@@ -26,7 +26,11 @@ TEST_SPLIT = 0.15
 EPOCHS = 200
 BATCH_SIZE = 64  # Full operating days per batch.
 EMBEDDING_SIZE = 64
-HIDDEN_SIZE = 512
+MODEL_ARCHITECTURE = "ride_gru_attention_v1"
+HIDDEN_SIZE = 128  # Per-ride recurrent state, shared GRU weights.
+ATTENTION_BLOCKS = 2  # Cross-ride attention at each observed tick.
+ATTENTION_HEADS = 4  # HIDDEN_SIZE must be divisible by this count.
+DROPOUT = 0.1
 LEARNING_RATE = 0.001
 
 # Forecasting. Used by run.py.

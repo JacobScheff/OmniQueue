@@ -1,4 +1,4 @@
-"""Park-wide GRU, categorical loss, and autoregressive sampling."""
+"""Shared ride GRU with cross-ride attention and autoregressive sampling."""
 
 import torch
 from torch import nn
@@ -23,20 +23,65 @@ def token_loss(logits, targets):
 
 
 class WaitPredictor(nn.Module):
-    def __init__(self, num_rides, embedding_size=16, hidden_size=128):
+    def __init__(self, num_rides, embedding_size=16, hidden_size=128, *,
+                 architecture="park_gru_v1", attention_blocks=2, attention_heads=4,
+                 dropout=0.1):
         super().__init__()
+        if min(num_rides, embedding_size, hidden_size) < 1:
+            raise ValueError("Ride count, embedding size, and hidden size must be positive")
+        if architecture not in ("park_gru_v1", "ride_gru_attention_v1"):
+            raise ValueError(f"Unsupported model architecture: {architecture}")
+        self.architecture = architecture
         self.num_rides = num_rides
         self.embedding = nn.Embedding(VOCAB_SIZE, embedding_size)
-        # Fixed ride slots preserve identity while mixing information across the park.
-        self.input = nn.Linear(num_rides * embedding_size + 6, hidden_size)
+        if architecture == "park_gru_v1":
+            # Checkpoints without an architecture field retain their original layout.
+            self.input = nn.Linear(num_rides * embedding_size + 6, hidden_size)
+            self.output = nn.Linear(hidden_size, num_rides * VOCAB_SIZE)
+        else:
+            if attention_blocks < 1 or attention_heads < 1 or hidden_size % attention_heads:
+                raise ValueError("Attention needs positive block/head counts and hidden size divisible by heads")
+            if not 0 <= dropout < 1:
+                raise ValueError("Dropout must be between 0 (inclusive) and 1 (exclusive)")
+            self.ride_embedding = nn.Embedding(num_rides, embedding_size)
+            self.input = nn.Linear(2 * embedding_size + 6, hidden_size)
+            self.attention = nn.ModuleList([
+                nn.TransformerEncoderLayer(
+                    d_model=hidden_size, nhead=attention_heads,
+                    dim_feedforward=2 * hidden_size, dropout=dropout,
+                    activation="gelu", batch_first=True, norm_first=True,
+                ) for _ in range(attention_blocks)
+            ])
+            self.output_norm = nn.LayerNorm(hidden_size)
+            self.output = nn.Linear(hidden_size, VOCAB_SIZE)
         self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
-        self.output = nn.Linear(hidden_size, num_rides * VOCAB_SIZE)
 
     def forward(self, tokens, next_time_features, hidden=None):
-        embedded = self.embedding(tokens).flatten(start_dim=2)
-        inputs = torch.cat((embedded, next_time_features), dim=-1)
-        states, hidden = self.gru(torch.relu(self.input(inputs)), hidden)
-        logits = self.output(states).reshape(*tokens.shape, VOCAB_SIZE)
+        """Return next-tick logits and state with the batch on hidden axis 1.
+
+        Ride-GRU state is [1, batch, rides, hidden], so forecast branches can
+        expand/concatenate batches without mixing a ride's recurrent history.
+        Attention operates only across rides at the same tick, never future ticks.
+        """
+        embedded = self.embedding(tokens)
+        if self.architecture == "park_gru_v1":
+            inputs = torch.cat((embedded.flatten(start_dim=2), next_time_features), dim=-1)
+            states, hidden = self.gru(torch.relu(self.input(inputs)), hidden)
+            return self.output(states).reshape(*tokens.shape, VOCAB_SIZE), hidden
+
+        batch, ticks, rides = tokens.shape
+        identities = self.ride_embedding.weight.view(1, 1, rides, -1).expand(batch, ticks, -1, -1)
+        calendar = next_time_features.unsqueeze(2).expand(-1, -1, rides, -1)
+        inputs = torch.relu(self.input(torch.cat((embedded, identities, calendar), dim=-1)))
+        inputs = inputs.permute(0, 2, 1, 3).reshape(batch * rides, ticks, -1)
+        state = None if hidden is None else hidden.reshape(1, batch * rides, -1).contiguous()
+        states, state = self.gru(inputs, state)
+        hidden = state.reshape(1, batch, rides, -1)
+        states = states.reshape(batch, rides, ticks, -1).permute(0, 2, 1, 3)
+        states = states.reshape(batch * ticks, rides, -1)
+        for block in self.attention:
+            states = block(states)
+        logits = self.output(self.output_norm(states)).reshape(batch, ticks, rides, VOCAB_SIZE)
         return logits, hidden
 
     @torch.inference_mode()
@@ -55,7 +100,7 @@ class WaitPredictor(nn.Module):
         self.eval()
         logits, hidden = self(history.unsqueeze(0), time_features[:len(history)].unsqueeze(0))
         logits = logits[:, -1].expand(samples, -1, -1)
-        hidden = hidden.expand(-1, samples, -1).contiguous()
+        hidden = hidden.expand(-1, samples, *hidden.shape[2:]).contiguous()
         locked = history[-1] == REFURBISHMENT
         absent = (history == UNKNOWN).all(dim=0)
         paths = []

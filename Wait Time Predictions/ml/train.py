@@ -149,7 +149,14 @@ def train(settings=config):
             batch_size=settings.BATCH_SIZE, shuffle=False,
             pin_memory=device.type == "cuda", collate_fn=collate_days,
         )
-    model_config = {"num_rides": len(rides), "embedding_size": settings.EMBEDDING_SIZE, "hidden_size": settings.HIDDEN_SIZE}
+    model_config = {
+        "num_rides": len(rides), "embedding_size": settings.EMBEDDING_SIZE,
+        "hidden_size": settings.HIDDEN_SIZE,
+        "architecture": getattr(settings, "MODEL_ARCHITECTURE", config.MODEL_ARCHITECTURE),
+        "attention_blocks": getattr(settings, "ATTENTION_BLOCKS", config.ATTENTION_BLOCKS),
+        "attention_heads": getattr(settings, "ATTENTION_HEADS", config.ATTENTION_HEADS),
+        "dropout": getattr(settings, "DROPOUT", config.DROPOUT),
+    }
     model = WaitPredictor(**model_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.LEARNING_RATE)
     description = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
