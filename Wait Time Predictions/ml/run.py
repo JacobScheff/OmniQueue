@@ -16,7 +16,7 @@ if __package__ in (None, ""):
 from ml import config
 from ml.data import (
     DOWN, OVERFLOW, PARK_TIMEZONE, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
-    WAIT_STEP, align_day, expected_ticks, history_from_json, load_dataset, time_features, validate_day,
+    WAIT_STEP, align_day, expected_ticks, history_from_json, interpolate_day, load_dataset, time_features, validate_day,
 )
 from ml.model import WaitPredictor, select_device
 
@@ -138,6 +138,7 @@ def predict(settings=config, target_time=None):
         if key not in available:
             raise ValueError(f"Dataset has no cached day for {key}. Run data.py to fetch it.")
         day = available[key]
+    day = interpolate_day(day)
     count, cutoff = forecast_boundary(day, key, settings.PREDICT_START_TIME)
     timestamps = day["timestamps"][:count]
     # Later observations supply the replay's end time, while history contains

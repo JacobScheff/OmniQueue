@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+from bisect import bisect_left
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -167,12 +168,52 @@ def collect_day(ticks, snapshots, catalog):
         names.update({ride["id"]: ride["name"] for ride in rides})
     ride_ids = sorted(names)
     timestamps = sorted(rows)
-    return {
+    return interpolate_day({
         "timestamps": timestamps,
         "expected_timestamps": ticks,
         "rides": [{"id": ride_id, "name": names[ride_id]} for ride_id in ride_ids],
         "tokens": [[rows[tick].get(ride_id, MISSING) for ride_id in ride_ids] for tick in timestamps],
-    }
+    })
+
+
+def interpolate_day(day):
+    """Fill up to four missing scheduled ticks using their observed neighbors."""
+    timestamps = day.get("timestamps", [])
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        return day  # Preserve invalid history for the caller's validation.
+    expected = set(day.get("expected_timestamps", timestamps))
+    missing = sorted(expected - set(timestamps))
+    if not 0 < len(missing) < 5:
+        return day
+    rows = dict(zip(timestamps, day["tokens"]))
+    interpolated = dict(day.get("interpolated_ticks", {}))
+    for tick in missing:
+        index = bisect_left(timestamps, tick)
+        if index == 0 or index == len(timestamps):
+            continue  # Interpolation needs both endpoints; never extrapolate.
+        left, right = timestamps[index - 1:index + 1]
+        if any(point not in expected for point in range(left, right + TICK_SECONDS, TICK_SECONDS)):
+            continue  # Do not bridge a scheduled break.
+        span, offset = right - left, tick - left
+        tokens = []
+        for start, end in zip(rows[left], rows[right]):
+            if MISSING in (start, end):
+                token = MISSING
+            elif 0 <= start < OVERFLOW and 0 <= end < OVERFLOW:
+                # Tokens are five-minute waits. Round half up to a whole token.
+                weighted = start * (span - offset) + end * offset
+                token = (2 * weighted + span) // (2 * span)
+            else:
+                # Status and overflow tokens are categories, not numeric waits.
+                token = start if 2 * offset < span else end
+            tokens.append(token)
+        rows[tick] = tokens
+        interpolated[str(tick)] = [left, right]
+    if len(rows) == len(timestamps):
+        return day
+    ordered = sorted(rows)
+    return {**day, "timestamps": ordered, "tokens": [rows[tick] for tick in ordered],
+            "interpolated_ticks": interpolated}
 
 
 def validate_day(day, before=None):
@@ -183,6 +224,12 @@ def validate_day(day, before=None):
         raise ValueError("No published operating schedule is available for this day")
     required = [tick for tick in expected if before is None or tick < before]
     missing = sorted(set(required) - set(day["timestamps"]))
+    if before is not None:
+        # Replays cannot use an interpolation's future endpoint as history.
+        missing = sorted(set(missing) | {
+            int(tick) for tick, (_, right) in day.get("interpolated_ticks", {}).items()
+            if int(tick) < before <= right
+        })
     if missing:
         first = datetime.fromtimestamp(missing[0], PARK_TIMEZONE)
         raise ValueError(f"Missing {len(missing)} of {len(required)} scheduled snapshots. First missing {first:%Y-%m-%d %H:%M %Z}")
@@ -223,6 +270,28 @@ def export(settings=config):
     if first_day > last_day:
         raise ValueError("Start date must be on or before the end date")
     days = [first_day + timedelta(days=offset) for offset in range((last_day - first_day).days + 1)]
+    repaired_cache = False
+    for day in days:
+        key = day.isoformat()
+        if key not in incomplete:
+            continue
+        original = incomplete[key]
+        repaired = interpolate_day(original)
+        if repaired is original:
+            continue
+        incomplete[key] = repaired
+        repaired_cache = True
+        try:
+            validate_day(repaired)
+        except ValueError as error:
+            repaired["reason"] = str(error)
+            continue
+        closing = repaired.get("closing_at", 0)
+        if closing and repaired.get("checked_at", 0) >= closing:
+            repaired.pop("reason", None)
+            dataset["days"][key] = incomplete.pop(key)
+    if repaired_cache:
+        save_dataset(settings.DATASET, dataset)
     pending = [day for day in days if settings.REFRESH or (
         day.isoformat() not in dataset["days"] and (
             day.isoformat() not in incomplete or needs_refresh(incomplete[day.isoformat()], now)
