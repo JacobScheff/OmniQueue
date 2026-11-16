@@ -21,7 +21,6 @@ def token_loss(logits, targets):
     count = (targets != -100).sum()
     return losses / count.clamp_min(1), count
 
-
 class WaitPredictor(nn.Module):
     def __init__(self, num_rides, embedding_size=16, hidden_size=128, *,
                  architecture="park_gru_v1", attention_blocks=2, attention_heads=4,

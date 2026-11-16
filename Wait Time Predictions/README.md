@@ -6,7 +6,7 @@ The ML code and interactive map are in `ml/`.
 ml/
   config.py   settings
   data.py     fetch, save, and prepare the dataset
-  model.py    GRU and autoregressive sampling
+  model.py    shared ride GRU, cross-ride attention, autoregressive sampling
   train.py    training on complete days
   test.py     evaluate held-out complete days
   run.py      forecasts from a trained checkpoint
@@ -130,7 +130,11 @@ A day enters the training group after closing when every scheduled five-minute b
 
 Incomplete and in-progress days remain available to `run.py`. Sessions are grouped by local opening date and include hours past midnight. Writes are atomic, and fetch failures preserve saved data. Old rejected days are fetched again once to recover observations discarded by earlier versions of the exporter. Existing complete-day records and trained checkpoints remain usable. An attraction omitted by the source for an entire day cannot be detected from this archive.
 
-The model predicts all rides together with one categorical output per ride. Tokens cover five-minute waits from 0 through 300, overflow, DOWN, CLOSED, REFURBISHMENT, and UNKNOWN. Only wait and DOWN targets contribute to loss. Unknown statuses and missing standby waits remain UNKNOWN. Observed refurbishment flags stay locked throughout each forecast.
+New training runs use `ride_gru_attention_v1`: a shared single-layer GRU with a separate 128-unit hidden state for each ride, followed by two cross-ride attention blocks with four heads each. Each ride's input combines a 64-dimensional wait/status embedding, a learned 64-dimensional ride-ID embedding, and six next-tick calendar features. The input projection maps these to 128 units with ReLU. Each attention block includes residual connections, layer normalization, and a 256-unit GELU feed-forward layer, with 0.1 dropout; final layer normalization and a shared categorical head produce each ride's next-tick distribution. Attention mixes rides only at the same tick, preserving causality. `HIDDEN_SIZE`, `ATTENTION_BLOCKS`, `ATTENTION_HEADS`, and `DROPOUT` are configurable in `ml/config.py`; hidden size must be divisible by the head count.
+
+The model predicts all rides together with one categorical output per ride. Tokens cover five-minute waits from 0 through 300, overflow, DOWN, CLOSED, REFURBISHMENT, and UNKNOWN. Only wait and DOWN targets contribute to loss. Unknown statuses and missing standby waits remain UNKNOWN. Observed refurbishment flags stay locked throughout each forecast. Sampling remains autoregressive: each future tick consumes the preceding generated tokens.
+
+Checkpoints save the architecture and attention settings, so inference reconstructs the trained model independently of current config settings. Existing checkpoints without an architecture field continue to load the original park-wide GRU. Run `python ml/train.py` to train the new architecture; changing config alone does not upgrade an existing checkpoint. Training saves to `CHECKPOINT`, so select a different path first if you want to keep the old weights for comparison.
 
 Training uses only the training partition of complete days in `days`; `PREDICT_DAY` selects a replay and does not affect the split. Each day is a full sequence, with each next-tick prediction conditioned on all earlier observations from that day. Shorter days are padded in a batch and padded targets are excluded from loss. History carries across scheduled breaks, while transitions across those breaks are excluded from the five-minute prediction loss. Each epoch reports training and validation loss and token accuracy and saves the latest model. Test days are scored only by `test.py`. `run.py` loads the saved model to generate predictions. Forecasts can extend past park closing.
 
