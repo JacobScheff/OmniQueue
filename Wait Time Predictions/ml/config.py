@@ -1,4 +1,4 @@
-"""Settings for data.py, train.py, and run.py."""
+"""Settings for data.py, train.py, test.py, and run.py."""
 
 from pathlib import Path
 
@@ -18,6 +18,11 @@ PROJECT = "omniqueue-9ce1b"
 REFRESH = False  # True rechecks the selected dates, including previously discarded days.
 
 # Training.
+# Fractions must sum to 1. Whole days are split chronologically:
+# oldest days train, then validation, then newest days test.
+TRAIN_SPLIT = 0.70
+VAL_SPLIT = 0.15
+TEST_SPLIT = 0.15
 EPOCHS = 200
 BATCH_SIZE = 64  # Full operating days per batch.
 EMBEDDING_SIZE = 64

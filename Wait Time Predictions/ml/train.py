@@ -1,4 +1,4 @@
-"""Train the wait predictor on every day in the dataset using settings in config.py."""
+"""Train on whole operating days, with chronological validation/test holdouts."""
 
 import math
 import random
@@ -58,8 +58,36 @@ def collate_days(days):
     )
 
 
-def epoch(model, loader, device, optimizer):
-    model.train()
+def split_dates(dates, train_fraction, val_fraction, test_fraction):
+    """Allocate whole days in chronological order, keeping enabled splits nonempty."""
+    fractions = (train_fraction, val_fraction, test_fraction)
+    if (any(not math.isfinite(value) or value < 0 for value in fractions)
+            or train_fraction <= 0 or not math.isclose(sum(fractions), 1.0, abs_tol=1e-9)):
+        raise ValueError("TRAIN_SPLIT, VAL_SPLIT, and TEST_SPLIT must be nonnegative, sum to 1, and include training")
+    dates = sorted(dates)
+    if len(set(dates)) != len(dates):
+        raise ValueError("Operating dates must be unique")
+    minimums = [int(value > 0) for value in fractions]
+    if len(dates) < sum(minimums):
+        raise ValueError(f"Need at least {sum(minimums)} complete days with two snapshots for the configured splits")
+    targets = [len(dates) * value for value in fractions]
+    counts = [max(minimum, math.floor(target)) for minimum, target in zip(minimums, targets)]
+    while sum(counts) > len(dates):
+        index = max((i for i in range(3) if counts[i] > minimums[i]),
+                    key=lambda i: counts[i] - targets[i])
+        counts[index] -= 1
+    while sum(counts) < len(dates):
+        index = max((i for i in range(3) if fractions[i] > 0),
+                    key=lambda i: targets[i] - counts[i])
+        counts[index] += 1
+    train_end, val_end = counts[0], counts[0] + counts[1]
+    return dates[:train_end], dates[train_end:val_end], dates[val_end:]
+
+
+def epoch(model, loader, device, optimizer=None, *, on_predictions=None):
+    """Score next-tick targets; only training enables gradients and weight updates."""
+    training = optimizer is not None
+    model.train(training)
     total_loss = torch.zeros((), device=device)
     total_count = torch.zeros((), device=device)
     total_correct = torch.zeros((), device=device)
@@ -67,16 +95,20 @@ def epoch(model, loader, device, optimizer):
         tokens = tokens.to(device, non_blocking=True)
         features = features.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        logits, _ = model(tokens, features)
-        loss, count = token_loss(logits, targets)
-        if count.item():
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+        with torch.set_grad_enabled(training):
+            logits, _ = model(tokens, features)
+            loss, count = token_loss(logits, targets)
+            if training and count.item():
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
         total_loss += loss.detach() * count
         total_count += count
-        total_correct += ((logits.argmax(dim=-1) == targets) & (targets <= DOWN)).sum()
+        predictions = logits.argmax(dim=-1)
+        total_correct += ((predictions == targets) & (targets <= DOWN)).sum()
+        if on_predictions is not None:
+            on_predictions(predictions, targets)
     count = total_count.item()
     if count == 0:
         raise ValueError("These days contain no wait or DOWN targets")
@@ -98,10 +130,13 @@ def train(settings=config):
     if not settings.DATASET.exists():
         raise ValueError("No local dataset. Set the export dates in config.py and run python data.py first.")
     dataset = load_dataset(settings.DATASET)
-    dates = sorted(dataset["days"])
+    dates = sorted(day for day, row in dataset["days"].items() if len(row["timestamps"]) >= 2)
     if not dates:
-        raise ValueError("Dataset contains no complete days")
-    training = [dataset["days"][day] for day in dates]
+        raise ValueError("Dataset contains no complete days with at least two snapshots")
+    train_dates, validation_dates, test_dates = split_dates(
+        dates, settings.TRAIN_SPLIT, settings.VAL_SPLIT, settings.TEST_SPLIT,
+    )
+    training = [dataset["days"][day] for day in train_dates]
     ride_by_id = {ride["id"]: ride for day in training for ride in day["rides"]}
     rides = [ride_by_id[key] for key in sorted(ride_by_id)]
     train_days = Days(training, rides)
@@ -109,23 +144,45 @@ def train(settings=config):
         raise ValueError("Dataset needs an operating day with at least two snapshots")
     train_loader = DataLoader(train_days, batch_size=settings.BATCH_SIZE, shuffle=True,
                               pin_memory=device.type == "cuda", collate_fn=collate_days)
+    validation_loader = None
+    if validation_dates:
+        validation_loader = DataLoader(
+            Days([dataset["days"][day] for day in validation_dates], rides),
+            batch_size=settings.BATCH_SIZE, shuffle=False,
+            pin_memory=device.type == "cuda", collate_fn=collate_days,
+        )
     model_config = {"num_rides": len(rides), "embedding_size": settings.EMBEDDING_SIZE, "hidden_size": settings.HIDDEN_SIZE}
     model = WaitPredictor(**model_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.LEARNING_RATE)
     description = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
     print(f"Training on {device} ({description}), {sum(p.numel() for p in model.parameters()):,} parameters", flush=True)
-    print(f"{len(train_days)} full-day training sequences, {len(rides)} rides", flush=True)
+    print(f"Whole-day chronological split: {len(train_dates)} train, "
+          f"{len(validation_dates)} validation, {len(test_dates)} test; {len(rides)} rides", flush=True)
+    for label, selected in (("Train", train_dates), ("Validation", validation_dates), ("Test", test_dates)):
+        if selected:
+            print(f"{label} dates: {', '.join(selected)}", flush=True)
     settings.CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
     for number in range(1, settings.EPOCHS + 1):
         training_loss, accuracy = epoch(model, train_loader, device, optimizer)
         if not math.isfinite(training_loss):
             raise ValueError("Training produced a nonfinite loss")
-        print(f"Epoch {number:3}: train NLL {training_loss:.4f}, token accuracy {accuracy:.1%}", flush=True)
+        validation_loss, validation_accuracy = None, None
+        metrics = f"Epoch {number:3}: train NLL {training_loss:.4f}, token accuracy {accuracy:.1%}"
+        if validation_loader is not None:
+            validation_loss, validation_accuracy = epoch(model, validation_loader, device)
+            if not math.isfinite(validation_loss):
+                raise ValueError("Validation produced a nonfinite loss")
+            metrics += f" | val NLL {validation_loss:.4f}, token accuracy {validation_accuracy:.1%}"
+        print(metrics, flush=True)
         checkpoint = {
             "version": 1, "model_config": model_config, "model_state": model.state_dict(),
             "rides": rides, "token_labels": TOKEN_LABELS, "history": "full_day",
-            "park_id": dataset["park_id"], "train_dates": dates,
-            "epoch": number, "training_loss": training_loss,
+            "park_id": dataset["park_id"], "train_dates": train_dates,
+            "validation_dates": validation_dates, "test_dates": test_dates,
+            "split": {"method": "chronological_days", "train": settings.TRAIN_SPLIT,
+                      "validation": settings.VAL_SPLIT, "test": settings.TEST_SPLIT},
+            "epoch": number, "training_loss": training_loss, "training_accuracy": accuracy,
+            "validation_loss": validation_loss, "validation_accuracy": validation_accuracy,
         }
         temporary = settings.CHECKPOINT.with_suffix(settings.CHECKPOINT.suffix + ".tmp")
         torch.save(checkpoint, temporary)
