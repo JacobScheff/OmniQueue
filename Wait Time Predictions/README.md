@@ -95,6 +95,8 @@ Choose an **operating day** and **Predictions start** time, then click **Generat
 
 Green solid pins show **recorded data** before the prediction start. Purple dashed pins show **model predictions** at and after the start, even when later actual observations exist in the cache. Amber pins identify **interpolated data**. Missing observations and scheduled breaks have explicit labels. An interpolation that needs an endpoint at or after the forecast start cannot enter prediction history. Unresolved earlier gaps produce an error; move the start to a valid history boundary or refresh the dataset.
 
+When a recorded actual is available for the same ride and time, a badge beside the predicted wait shows the signed error (**predicted − recorded**): yellow for 0–5 minutes of absolute error, orange for 6–15, and red above 15. Wait/status token mismatches (including a numeric wait versus Closed or Down) are red; matching status or `300+` tokens show **Match**. Overflow (`300+`) comparisons never invent an exact minute error. Hover a badge or select the ride to see the recorded value. Missing, unknown, and interpolated actuals are excluded. These comparisons only affect the display and never enter prediction history.
+
 Pan and zoom the map, search or sort the attraction list, and select a ride to see its wait history, forecast, p10/p90 interval, and chance of being down. Predicted waits are medians conditional on operating; the down probability is reported separately. The map uses [Leaflet](https://leafletjs.com/reference-1.9.4.html), public [Orange County aerial imagery](https://www.ocgis.com/arcpub/rest/services/Aerial_Imagery_Countywide/OC_Aerial_3in_WGS84/ImageServer), and an optional [OpenStreetMap](https://www.openstreetmap.org/copyright) street layer. These layers require no API key. The aerial layer requests detailed imagery for each visible map tile through native zoom 20, with larger image requests on high-density displays, instead of enlarging the former zoom-16 USGS tiles. Imagery is a geographic backdrop and does not match the selected historical day. Internet access is needed for map tiles and the Leaflet library. Public attraction coordinates from [ThemeParks.wiki](https://api.themeparks.wiki/docs/v1/) are cached in `data/attraction_locations.json`; attractions without coordinates remain available in the list. Only public map/coordinate requests leave the machine; forecasting uses the local dataset and checkpoint.
 
 Map zoom buttons use quarter-level steps. Mouse-wheel zoom uses Leaflet's normal sensitivity and event timing, with quarter-level snapping and animated transitions.
@@ -142,4 +144,5 @@ Run the regression checks from this folder.
 
 ```powershell
 python -m unittest discover -s tests -v
+node --test tests/test_visualizer_errors.cjs
 ```

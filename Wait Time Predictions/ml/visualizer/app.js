@@ -251,6 +251,36 @@ function displayWait(ride, unit = false) {
   return ({DOWN: "Down", CLOSED: "Closed", REFURBISHMENT: "Refurb", UNKNOWN: "Unknown", MISSING: "No data"})[ride.status] || "—";
 }
 
+function predictionError(ride, frame) {
+  if (frame.source !== "predicted" || frame.pending) return null;
+  const recorded = state.observed.get(frame.timestamp);
+  if (recorded?.source !== "observed") return null;
+  const actual = recorded.rides.find(row => row.id === ride.id);
+  const known = row => row && (
+    (row.status === "OPERATING" && (Number.isFinite(row.wait) || row.wait === "300+"))
+    || ["DOWN", "CLOSED", "REFURBISHMENT"].includes(row.status)
+  );
+  if (!known(actual) || !known(ride)) return null;
+  const comparison = `Predicted ${displayWait(ride, true)}; recorded ${displayWait(actual, true)}.`;
+  if (Number.isFinite(ride.wait) && Number.isFinite(actual.wait)) {
+    const error = ride.wait - actual.wait;
+    const signed = `${error > 0 ? "+" : ""}${error}`;
+    return {label: `${signed} min`, compact: `${signed}m`,
+      severity: Math.abs(error) <= 5 ? "small" : Math.abs(error) <= 15 ? "medium" : "large",
+      title: `${comparison} Error = predicted − recorded; positive means overestimated.`};
+  }
+  const match = ride.status === actual.status && ride.wait === actual.wait;
+  return {label: match ? "Match" : "Mismatch", compact: match ? "Match" : "Mismatch",
+    severity: match ? "small" : "large",
+    title: `${comparison} ${match ? "Matching wait/status token." : "Wait/status token mismatch; no exact minute error is available."}`};
+}
+
+function errorBadge(ride, frame, compact = false) {
+  const error = predictionError(ride, frame);
+  if (!error) return "";
+  return `<span class="prediction-error ${error.severity}" title="${escapeHTML(error.title)}" aria-label="${escapeHTML(`Prediction error: ${error.label}. ${error.title}`)}">${escapeHTML(compact ? error.compact : error.label)}</span>`;
+}
+
 function render() {
   if (!state.day) return;
   const tick = state.day.timestamps[state.index];
@@ -308,7 +338,11 @@ function renderList(rides, frame) {
     if (ride.wait !== null) {
       const unit = document.createElement("small"); unit.textContent = "min"; pill.append(unit);
     }
-    button.append(label, pill);
+    const values = document.createElement("span");
+    values.className = "ride-values";
+    values.append(pill);
+    values.insertAdjacentHTML("beforeend", errorBadge(ride, frame));
+    button.append(label, values);
     button.addEventListener("click", () => selectRide(ride.id));
     list.append(button);
   }
@@ -325,7 +359,7 @@ function renderMarkers(rides, frame) {
     keep.add(ride.id);
     const inactive = ride.wait === null;
     const text = frame.pending || ["missing", "break"].includes(frame.source) ? "—" : displayWait(ride);
-    const html = `<div class="map-pin ${frame.source}${inactive ? " inactive" : ""}${state.selected === ride.id ? " selected" : ""}">${escapeHTML(text)}</div>`;
+    const html = `<div class="map-pin-group"><div class="map-pin ${frame.source}${inactive ? " inactive" : ""}${state.selected === ride.id ? " selected" : ""}">${escapeHTML(text)}</div>${errorBadge(ride, frame, true)}</div>`;
     const icon = L.divIcon({className: "wait-marker", html, iconSize: [43, 32], iconAnchor: [21, 35], tooltipAnchor: [0, -35]});
     let marker = state.markers.get(ride.id);
     if (!marker) {
@@ -334,7 +368,8 @@ function renderMarkers(rides, frame) {
       marker.bindTooltip("", {direction: "top"});
       state.markers.set(ride.id, marker);
     } else marker.setIcon(icon);
-    marker.setTooltipContent(`${escapeHTML(ride.name)}<br>${escapeHTML(text)}${!inactive ? " min" : ""} · ${frame.pending ? "Prediction unavailable" : sourceNames[frame.source]}`);
+    const error = predictionError(ride, frame);
+    marker.setTooltipContent(`${escapeHTML(ride.name)}<br>${escapeHTML(text)}${!inactive ? " min" : ""} · ${frame.pending ? "Prediction unavailable" : sourceNames[frame.source]}${error ? `<br>${escapeHTML(error.title)}` : ""}`);
     marker.setZIndexOffset(state.selected === ride.id ? 2000 : inactive ? 0 : 100);
   }
   for (const [id, marker] of state.markers) if (!keep.has(id)) { state.map.removeLayer(marker); state.markers.delete(id); }
@@ -355,10 +390,13 @@ function renderDetail(ride, frame) {
   $("detail-source").style.color = frame.source === "predicted" ? "var(--purple)" : frame.source === "interpolated" ? "var(--amber)" : "var(--green)";
   $("detail-wait").textContent = displayWait(ride);
   if (ride.wait !== null) { const unit = document.createElement("small"); unit.textContent = frame.source === "predicted" ? " min · median" : " min"; $("detail-wait").append(unit); }
+  $("detail-wait").insertAdjacentHTML("beforeend", errorBadge(ride, frame));
   $("detail-meta").textContent = frame.pending ? "Generate a forecast for this time."
     : frame.source === "predicted" ? `${ride.p10 ?? "—"}–${ride.p90 ?? "—"} min p10–p90 when operating · ${Math.round((ride.down_probability || 0) * 100)}% chance down`
     : frame.source === "interpolated" ? "Linearly interpolated from surrounding observations; rounded to five minutes."
     : "Waits are saved in five-minute buckets. Gaps in the chart indicate unavailable waits.";
+  const error = predictionError(ride, frame);
+  if (error) $("detail-meta").textContent += ` ${error.title}`;
   drawSparkline(ride.id);
 }
 
