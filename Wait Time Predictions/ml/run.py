@@ -14,6 +14,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml import config
+from ml.attractions import modeling_day, validate_checkpoint_rides
 from ml.data import (
     DOWN, OVERFLOW, PARK_TIMEZONE, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     WAIT_STEP, align_day, expected_ticks, history_from_json, interpolate_day, load_dataset, time_features, validate_day,
@@ -114,6 +115,7 @@ def predict(settings=config, target_time=None, *, print_output=True):
     checkpoint = torch.load(settings.CHECKPOINT, map_location=device, weights_only=True)
     if checkpoint.get("version") != 1 or checkpoint["token_labels"] != TOKEN_LABELS:
         raise ValueError("Unsupported checkpoint or token vocabulary")
+    validate_checkpoint_rides(checkpoint["rides"])
     model = WaitPredictor(**checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model_state"])
     if settings.HISTORY:
@@ -138,7 +140,7 @@ def predict(settings=config, target_time=None, *, print_output=True):
         if key not in available:
             raise ValueError(f"Dataset has no cached day for {key}. Run data.py to fetch it.")
         day = available[key]
-    day = interpolate_day(day)
+    day = interpolate_day(modeling_day(day))
     count, cutoff = forecast_boundary(day, key, settings.PREDICT_START_TIME)
     timestamps = day["timestamps"][:count]
     # Later observations supply the replay's end time, while history contains

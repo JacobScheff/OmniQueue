@@ -15,6 +15,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml import config
+from ml.attractions import is_excluded
 from ml.data import (
     DOWN, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     align_day, load_dataset, time_features,
@@ -135,8 +136,12 @@ def train(settings=config):
         dates, settings.TRAIN_SPLIT, settings.VAL_SPLIT, settings.TEST_SPLIT,
     )
     training = [dataset["days"][day] for day in train_dates]
-    ride_by_id = {ride["id"]: ride for day in training for ride in day["rides"]}
+    excluded_ids = {ride["id"] for day in training for ride in day["rides"] if is_excluded(ride)}
+    ride_by_id = {ride["id"]: ride for day in training for ride in day["rides"]
+                  if ride["id"] not in excluded_ids}
     rides = [ride_by_id[key] for key in sorted(ride_by_id)]
+    if not rides:
+        raise ValueError("Dataset contains no eligible attractions after exclusions")
     train_days = Days(training, rides)
     if not train_days:
         raise ValueError("Dataset needs an operating day with at least two snapshots")

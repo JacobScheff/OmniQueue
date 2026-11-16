@@ -24,6 +24,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml import config
+from ml.attractions import modeling_day
 from ml.data import (
     CLOSED, DOWN, MISSING, OVERFLOW, PARK_TIMEZONE, REFURBISHMENT,
     TICK_SECONDS, UNKNOWN, WAIT_STEP, interpolate_day, load_dataset,
@@ -118,7 +119,7 @@ class Visualizer:
         available = self.days()
         if key not in available:
             raise ValueError("Choose a day in the local dataset")
-        day = interpolate_day(available[key])
+        day = interpolate_day(modeling_day(available[key]))
         expected = day.get("expected_timestamps", day["timestamps"])
         if not expected:
             raise ValueError("This day has no published schedule or observations")

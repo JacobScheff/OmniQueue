@@ -9,6 +9,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml import config
+from ml.attractions import modeling_day, validate_checkpoint_rides
 from ml.data import (
     CLOSED, DOWN, OVERFLOW, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     WAIT_STEP, align_day, load_dataset, time_features, validate_day,
@@ -142,6 +143,7 @@ def evaluate(settings=config):
     checkpoint = torch.load(settings.CHECKPOINT, map_location=device, weights_only=True)
     if checkpoint.get("version") != 1 or checkpoint.get("token_labels") != TOKEN_LABELS:
         raise ValueError("Unsupported checkpoint or token vocabulary")
+    validate_checkpoint_rides(checkpoint["rides"])
     fields = ("train_dates", "validation_dates", "test_dates")
     if any(field not in checkpoint for field in fields):
         raise ValueError("This checkpoint has no saved day splits. Retrain with ml/train.py before testing")
@@ -171,7 +173,7 @@ def evaluate(settings=config):
               for minutes in HORIZON_MINUTES}
     for key in dates:
         for minutes, origins, predictions, targets in forecast_day(
-                model, dataset["days"][key], checkpoint["rides"], device, settings.BATCH_SIZE):
+                model, modeling_day(dataset["days"][key]), checkpoint["rides"], device, settings.BATCH_SIZE):
             total = totals[minutes]
             valid = (targets >= 0) & (targets <= DOWN)
             total["correct"] += ((predictions == targets) & valid).sum().item()
