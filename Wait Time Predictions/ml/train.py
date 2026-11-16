@@ -84,7 +84,7 @@ def split_dates(dates, train_fraction, val_fraction, test_fraction):
     return dates[:train_end], dates[train_end:val_end], dates[val_end:]
 
 
-def epoch(model, loader, device, optimizer=None, *, on_predictions=None):
+def epoch(model, loader, device, optimizer=None):
     """Score next-tick targets; only training enables gradients and weight updates."""
     training = optimizer is not None
     model.train(training)
@@ -107,8 +107,6 @@ def epoch(model, loader, device, optimizer=None, *, on_predictions=None):
         total_count += count
         predictions = logits.argmax(dim=-1)
         total_correct += ((predictions == targets) & (targets <= DOWN)).sum()
-        if on_predictions is not None:
-            on_predictions(predictions, targets)
     count = total_count.item()
     if count == 0:
         raise ValueError("These days contain no wait or DOWN targets")

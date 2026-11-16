@@ -115,8 +115,8 @@ class SplitTests(unittest.TestCase):
             with redirect_stdout(output):
                 result = evaluate(settings)
             self.assertEqual(result["dates"], expected[2])
-            self.assertTrue(0 <= result["accuracy"] <= 1)
-            self.assertIn("Test NLL", output.getvalue())
+            self.assertTrue(0 <= result["horizons"][5]["accuracy"] <= 1)
+            self.assertIn("Autoregressive greedy forecasts", output.getvalue())
             self.assertEqual(settings.CHECKPOINT.read_bytes(), original_checkpoint)
             # Reject old all-days checkpoints and corrupted overlapping splits.
             for change, message in (({"test_dates": checkpoint["train_dates"][:1]}, "overlap"),

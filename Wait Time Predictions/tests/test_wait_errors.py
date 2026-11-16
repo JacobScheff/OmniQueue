@@ -5,7 +5,6 @@ import math
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +12,7 @@ import torch
 
 from ml.data import CLOSED, DOWN, MISSING, OVERFLOW, TOKEN_LABELS, UNKNOWN, save_dataset
 from ml.model import WaitPredictor
-from ml.test import evaluate, large_wait_errors, numeric_wait_errors, print_wait_errors, summarize_wait_errors
+from ml.test import HORIZON_MINUTES, evaluate, numeric_wait_errors, print_horizon, summarize_wait_errors
 
 
 class WaitErrorTests(unittest.TestCase):
@@ -22,10 +21,6 @@ class WaitErrorTests(unittest.TestCase):
         targets = torch.tensor([0, 0, 60, 1, OVERFLOW, 1, CLOSED, UNKNOWN, 1, MISSING, DOWN])
         errors = numeric_wait_errors(predictions, targets)
         self.assertEqual(errors.tolist(), [0, 300, -300])
-        rides = [{"id": "ride", "name": "Ride"}]
-        records = large_wait_errors(predictions.reshape(1, -1, 1), targets.reshape(1, -1, 1),
-                                    [{"rides": rides, "timestamps": [1793548800 + 300 * i for i in range(12)]}], rides)
-        self.assertEqual([row["error_minutes"] for row in records], [300, -300])
 
     def test_pooled_absolute_and_signed_statistics_and_directions(self):
         stats = summarize_wait_errors([-10, -5, 0, 5, 20])
@@ -55,8 +50,9 @@ class WaitErrorTests(unittest.TestCase):
         self.assertIsNone(empty["absolute_minutes"])
         output = io.StringIO()
         with redirect_stdout(output):
-            print_wait_errors({**empty, "actual_numeric_wait_count": 0})
-        self.assertIn("N/A (no comparable numeric wait pairs)", output.getvalue())
+            print_horizon(240, {"accuracy": None, "forecast_count": 0,
+                                "wait_errors": {**empty, "actual_numeric_wait_count": 0}})
+        self.assertIn("accuracy N/A | MAE N/A", output.getvalue())
         self.assertNotIn("nan", output.getvalue().lower())
 
     def test_evaluator_pools_pairs_across_days_and_excludes_padding_and_breaks(self):
@@ -89,18 +85,21 @@ class WaitErrorTests(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output):
                 result = evaluate(settings)
-            stats = result["wait_errors"]
+            self.assertEqual(tuple(result["horizons"]), HORIZON_MINUTES)
+            stats = result["horizons"][5]["wait_errors"]
             self.assertEqual(stats["count"], 4)  # +5, 0, -5, +10 minutes.
             self.assertEqual(stats["actual_numeric_wait_count"], 4)
             self.assertEqual(stats["absolute_minutes"]["mean"], 5)
             self.assertEqual(stats["signed_minutes"]["mean"], 2.5)
             self.assertEqual(stats["overpredictions"]["count"], 2)
             self.assertEqual(stats["underpredictions"]["count"], 1)
-            self.assertAlmostEqual(result["accuracy"], 1 / 6)
-            for expected in ("Wait-time MAE 5.00 min", "Q1", "population std dev",
-                             "Overpredictions: 2 (50.0%)", "Underpredictions: 1 (25.0%)",
-                             "Exact wait matches: 1 (25.0%)"):
+            self.assertAlmostEqual(result["horizons"][5]["accuracy"], 1 / 6)
+            self.assertEqual(result["horizons"][5]["forecast_count"], 7)
+            self.assertIsNone(result["horizons"][240]["accuracy"])
+            for expected in ("MAE 5.00 min", "RMSE", "bias +2.50 min", "numeric pairs 4/4"):
                 self.assertIn(expected, output.getvalue())
+            self.assertNotIn("predicted ", output.getvalue())
+            self.assertNotIn("errors > 40", output.getvalue())
             # Non-wait predictions count against accuracy but not numeric errors.
             with torch.no_grad():
                 model.output.bias.zero_()
@@ -110,50 +109,10 @@ class WaitErrorTests(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output):
                 result = evaluate(settings)
-            self.assertEqual(result["wait_errors"]["count"], 0)
-            self.assertEqual(result["wait_errors"]["actual_numeric_wait_count"], 4)
-            self.assertIn("0/4 actual numeric waits (0.0%)", output.getvalue())
-            self.assertIn("Wait-time errors: N/A", output.getvalue())
-
-    def test_large_errors_use_target_time_and_correct_ride_across_batches(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            settings = SimpleNamespace(DEVICE="cpu", BATCH_SIZE=2,
-                                       DATASET=root / "data.json.gz", CHECKPOINT=root / "model.pt")
-            rides = [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]
-            days = {}
-            for index, (actual_a, actual_b) in enumerate(((12, 2), (11, 11), (20, 20))):
-                key = f"2026-11-{index + 1:02}"
-                start = int(datetime.fromisoformat(key + "T23:55:00-08:00").timestamp())
-                days[key] = {
-                    "rides": [{"id": "b", "name": f"Historical B {index}"},
-                              {"id": "a", "name": f"Historical A {index}"}],
-                    "timestamps": [start, start + 300], "tokens": [[0, 0], [actual_b, actual_a]],
-                }
-            save_dataset(settings.DATASET, {"version": 1, "park_id": "park", "days": days})
-            model_config = {"num_rides": 2, "embedding_size": 2, "hidden_size": 4}
-            model = WaitPredictor(**model_config)
-            with torch.no_grad():
-                model.output.weight.zero_()
-                model.output.bias.zero_()
-                model.output.bias.reshape(2, -1)[0, 20] = 10  # A: 100 min.
-                model.output.bias.reshape(2, -1)[1, 2] = 10   # B: 10 min.
-            torch.save({"version": 1, "token_labels": TOKEN_LABELS, "park_id": "park",
-                        "model_config": model_config, "model_state": model.state_dict(), "rides": rides,
-                        "train_dates": ["2026-10-30"], "validation_dates": ["2026-10-31"],
-                        "test_dates": sorted(days)}, settings.CHECKPOINT)
-            output = io.StringIO()
-            with redirect_stdout(output):
-                result = evaluate(settings)
-            records = result["large_wait_errors"]
-            self.assertEqual([row["error_minutes"] for row in records], [45, -45, -90])
-            self.assertEqual([row["ride_name"] for row in records],
-                             ["Historical A 1", "Historical B 1", "Historical B 2"])
-            self.assertEqual([row["time"] for row in records],
-                             ["2026-11-03T00:00:00-08:00"] * 2 + ["2026-11-04T00:00:00-08:00"])
-            self.assertIn("Wait-time errors > 40 min: 3", output.getvalue())
-            self.assertIn("2026-11-03 00:00 PST | Historical A 1 | predicted 100 min | actual 55 min", output.getvalue())
-            self.assertIn("2026-11-04 00:00 PST | Historical B 2 | predicted 10 min | actual 100 min", output.getvalue())
+            self.assertEqual(result["horizons"][5]["wait_errors"]["count"], 0)
+            self.assertEqual(result["horizons"][5]["wait_errors"]["actual_numeric_wait_count"], 4)
+            self.assertIn("numeric pairs 0/4", output.getvalue())
+            self.assertIn("MAE N/A", output.getvalue())
 
 
 if __name__ == "__main__":
