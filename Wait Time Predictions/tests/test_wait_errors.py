@@ -94,6 +94,17 @@ class WaitErrorTests(unittest.TestCase):
             self.assertEqual(stats["overpredictions"]["count"], 2)
             self.assertEqual(stats["underpredictions"]["count"], 1)
             self.assertAlmostEqual(result["horizons"][5]["accuracy"], 1 / 6)
+            self.assertEqual(result["horizons"][5]["scored_targets"], 6)
+            # Closure scoring is appended after the original report, never within horizon rows.
+            self.assertNotIn("detection:", output.getvalue())
+            self.assertNotIn("statuses", result["horizons"][5])
+            self.assertLess(output.getvalue().index("240 min:"),
+                            output.getvalue().index("Closure/reopening timing"))
+            self.assertEqual(result["transitions"]["closing"]["actual_events"], 5)
+            self.assertEqual(result["transitions"]["closing"]["missed_events"], 5)
+            self.assertEqual(result["transitions"]["closing"]["accuracy"], 0.)
+            self.assertEqual(result["transitions"]["reopening"]["actual_events"], 1)
+            self.assertEqual(result["transitions"]["reopening"]["accuracy"], 1.)
             self.assertEqual(result["horizons"][5]["forecast_count"], 7)
             self.assertIsNone(result["horizons"][240]["accuracy"])
             for expected in ("MAE 5.00 min", "RMSE", "bias +2.50 min", "numeric pairs 4/4"):
