@@ -3,6 +3,7 @@
 import math
 import random
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -114,6 +115,25 @@ def epoch(model, loader, device, optimizer=None):
     return total_loss.item() / count, total_correct.item() / count
 
 
+def save_checkpoint(checkpoint, path):
+    """Publish a complete checkpoint, allowing brief Windows file locks to clear."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(checkpoint, temporary)
+    for attempt in range(41):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as error:
+            if attempt == 40:
+                raise PermissionError(
+                    f"Could not replace checkpoint {path} after 10 seconds of retries. "
+                    f"The completed checkpoint is preserved at {temporary}; "
+                    "close programs holding either file open and move it to the checkpoint path "
+                    "before starting another training run."
+                ) from error
+            time.sleep(0.25)
+
+
 def train(settings=config):
     if min(settings.EPOCHS, settings.BATCH_SIZE, settings.HIDDEN_SIZE, settings.EMBEDDING_SIZE) < 1:
         raise ValueError("Epochs, batch size, and model sizes must be positive")
@@ -194,16 +214,14 @@ def train(settings=config):
             "epoch": number, "training_loss": training_loss, "training_accuracy": accuracy,
             "validation_loss": validation_loss, "validation_accuracy": validation_accuracy,
         }
-        temporary = settings.CHECKPOINT.with_suffix(settings.CHECKPOINT.suffix + ".tmp")
-        torch.save(checkpoint, temporary)
-        temporary.replace(settings.CHECKPOINT)
+        save_checkpoint(checkpoint, settings.CHECKPOINT)
     print(f"Final checkpoint saved to {settings.CHECKPOINT}")
 
 
 def main():
     try:
         train()
-    except (ValueError, KeyError, FileNotFoundError) as error:
+    except (ValueError, KeyError, FileNotFoundError, PermissionError) as error:
         raise SystemExit(str(error)) from error
 
 

@@ -42,6 +42,8 @@ Set `TRAIN_SPLIT`, `VAL_SPLIT`, and `TEST_SPLIT` in `ml/config.py` (defaults: `0
 
 Train the model and print training and validation NLL loss and token accuracy after each epoch. Only training days update weights, and the attraction catalog comes from training days. The training command saves the final model state and metrics after every epoch.
 
+Checkpoints are written to `checkpoints/waits.pt.tmp` before replacing `checkpoints/waits.pt`. If Windows temporarily locks either file, replacement retries for up to 10 seconds. If it still fails, training stops with recovery instructions and preserves the completed `.tmp` checkpoint alongside the previous checkpoint. Once the lock clears, move the `.tmp` file over `waits.pt` before starting another training run to keep that completed epoch. Training starts from scratch each run; it does not resume from the saved checkpoint.
+
 `ml/attractions.py` excludes the Treehouse, Explorer Canoes, Monorail, Donald's Duck Pond, Frontierland Shootin' Exposition, Goofy's yard, Great Moments with Mr. Lincoln, Main Street Cinema and Vehicles, Minnie's House, Opera House and both A Magical Life listings, Pixar Short Film Spotlight, Sailing Ship Columbia, Sleeping Beauty Castle Walkthrough, Disney Gallery, and Tiki Room. These attractions never enter new models as inputs or targets and are hidden from the interactive map, including recorded waits. Raw collected data stays intact. Existing checkpoints containing these attractions require retraining with `python ml/train.py` before forecasting or testing; removing output rows alone would leave them influencing other rides.
 
 ```powershell
