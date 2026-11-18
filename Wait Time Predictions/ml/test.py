@@ -19,6 +19,49 @@ from ml.model import WaitPredictor, select_device
 HORIZON_MINUTES = (5, 15, 30, 60, 120, 240)
 
 
+def empty_transitions():
+    return {name: {"actual_events": 0, "predicted_events": 0, "matched_events": 0,
+                   "missed_events": 0, "false_alarms": 0, "errors": []}
+            for name in ("closing", "reopening")}
+
+
+def score_transitions(origins, predictions, targets, observed=None):
+    """Compare the next operating <-> DOWN/CLOSED transition in each rollout.
+
+    Paths have shape [origins, steps, rides]. Only a continuous observed prefix
+    is scored; missing/unknown/refurbishment states cannot establish event times.
+    Repeated forecast origins are separate opportunities, not unique outages.
+    """
+    initial_valid = (origins >= 0) & (origins <= CLOSED)
+    valid = (targets >= 0) & (targets <= CLOSED)
+    if observed is not None:
+        valid &= observed
+    valid = valid.to(torch.int64).cumprod(dim=1).bool() & initial_valid.unsqueeze(1)
+    initial_closed = (origins == DOWN) | (origins == CLOSED)
+    actual_closed = (targets == DOWN) | (targets == CLOSED)
+    predicted_closed = (predictions == DOWN) | (predictions == CLOSED)
+    actual_events = valid & (actual_closed != initial_closed.unsqueeze(1))
+    predicted_events = (valid & (predictions >= 0) & (predictions <= CLOSED)
+                        & (predicted_closed != initial_closed.unsqueeze(1)))
+    steps = predictions.shape[1]
+    offsets = torch.arange(1, steps + 1, device=predictions.device).view(1, steps, 1)
+    actual_first = torch.where(actual_events, offsets, steps + 1).amin(dim=1)
+    predicted_first = torch.where(predicted_events, offsets, steps + 1).amin(dim=1)
+    results = empty_transitions()
+    for name, closed in (("closing", False), ("reopening", True)):
+        eligible = initial_valid & valid[:, 0] & (initial_closed == closed)
+        actual = eligible & (actual_first <= steps)
+        predicted = eligible & (predicted_first <= steps)
+        matched = actual & predicted
+        results[name] = {
+            "actual_events": actual.sum().item(), "predicted_events": predicted.sum().item(),
+            "matched_events": matched.sum().item(), "missed_events": (actual & ~predicted).sum().item(),
+            "false_alarms": (predicted & ~actual).sum().item(),
+            "errors": ((predicted_first[matched] - actual_first[matched]) * TICK_SECONDS / 60).tolist(),
+        }
+    return results
+
+
 def numeric_wait_errors(predictions, targets):
     """Signed minute errors for numeric wait pairs, excluding the 300+ bucket."""
     valid = ((predictions >= 0) & (predictions < OVERFLOW)
@@ -27,7 +70,7 @@ def numeric_wait_errors(predictions, targets):
 
 
 @torch.inference_mode()
-def forecast_day(model, day, rides, device, batch_size):
+def forecast_day(model, day, rides, device, batch_size, *, transition_totals=None):
     """Branch from each observed prefix, then feed predictions back for up to 4h.
 
     The prefix pass saves a separate GRU state at each origin. Batching those
@@ -50,6 +93,7 @@ def forecast_day(model, day, rides, device, batch_size):
     hidden = None
     seen = torch.zeros(len(rides), dtype=torch.bool, device=device)
     interpolated = day.get("interpolated_ticks", {})
+    observed = torch.tensor([str(tick) not in interpolated for tick in timestamps], device=device)
     for index in range(len(timestamps) - 1):
         logits, hidden = model(tokens[index:index + 1].unsqueeze(0),
                                observed_features[index:index + 1].unsqueeze(0), hidden)
@@ -74,6 +118,7 @@ def forecast_day(model, day, rides, device, batch_size):
         locked = torch.stack(locks[start:start + batch_size])
         absent = torch.stack(absences[start:start + batch_size])
         steps = min(max(HORIZON_MINUTES) // 5, max(remaining[index] for index in selected))
+        paths = []
         for step in range(1, steps + 1):
             # Match forecast()'s supported output classes and context locks,
             # using deterministic most-likely tokens instead of sampling paths.
@@ -82,6 +127,8 @@ def forecast_day(model, day, rides, device, batch_size):
             prediction = logits.argmax(dim=-1)
             prediction[locked] = REFURBISHMENT
             prediction[absent] = UNKNOWN
+            if transition_totals is not None:
+                paths.append(prediction.cpu())
             minutes = step * 5
             if minutes in HORIZON_MINUTES:
                 eligible = lengths >= step
@@ -94,6 +141,19 @@ def forecast_day(model, day, rides, device, batch_size):
                 features = torch.tensor(time_features(future), dtype=torch.float32, device=device).unsqueeze(1)
                 logits, hidden = model(prediction.unsqueeze(1), features, hidden)
                 logits = logits[:, 0]
+        if transition_totals is not None:
+            offsets = torch.arange(1, steps + 1, device=device)
+            indices = (origin_indices[:, None] + offsets).clamp_max(len(tokens) - 1)
+            known_ticks = ((offsets <= lengths[:, None]) & observed[indices]
+                           & observed[origin_indices, None]).unsqueeze(-1)
+            events = score_transitions(tokens[origin_indices].cpu(), torch.stack(paths, dim=1),
+                                       tokens[indices].cpu(), known_ticks.cpu())
+            for name, values in events.items():
+                for field, value in values.items():
+                    if field == "errors":
+                        transition_totals[name][field].extend(value)
+                    else:
+                        transition_totals[name][field] += value
     return results
 
 
@@ -136,6 +196,28 @@ def print_horizon(minutes, result):
           f"numeric pairs {stats['count']:,}/{stats['actual_numeric_wait_count']:,}", flush=True)
 
 
+def print_transitions(totals):
+    print("\nClosure/reopening timing (next transition per ride/forecast origin, up to 240 min; "
+          "DOWN or CLOSED = unavailable):", flush=True)
+    results = {}
+    for name, counts in totals.items():
+        stats = summarize_wait_errors(counts["errors"])
+        exact = sum(error == 0 for error in counts["errors"])
+        accuracy = exact / counts["actual_events"] if counts["actual_events"] else None
+        results[name] = {key: value for key, value in counts.items() if key != "errors"}
+        results[name].update(exact_events=exact, accuracy=accuracy, timing_errors=stats)
+        accuracy_text = f"{accuracy:.1%}" if accuracy is not None else "N/A"
+        timing = (f"timing MAE {stats['absolute_minutes']['mean']:.2f} min | "
+                  f"bias {stats['signed_minutes']['mean']:+.2f} min" if stats["count"] else
+                  "timing MAE N/A | bias N/A")
+        print(f"  {name.capitalize()}: exact {accuracy_text} ({exact:,}/{counts['actual_events']:,}) | "
+              f"{timing} | matched {counts['matched_events']:,}/{counts['actual_events']:,} | "
+              f"missed {counts['missed_events']:,} | false alarms {counts['false_alarms']:,}", flush=True)
+    print("Timing errors use matched next transitions; positive bias = late, negative = early. "
+          "Unknown/refurbishment/interpolated observations and session breaks end timing coverage.", flush=True)
+    return results
+
+
 def evaluate(settings=config):
     if settings.BATCH_SIZE < 1:
         raise ValueError("BATCH_SIZE must be positive")
@@ -169,11 +251,13 @@ def evaluate(settings=config):
     print(f"Test: {len(dates)} held-out days ({', '.join(dates)})", flush=True)
     print("Autoregressive greedy forecasts from every eligible five-minute origin; "
           "only observations at or before each origin enter its forecast.", flush=True)
+    transitions = empty_transitions()
     totals = {minutes: {"correct": 0, "scored": 0, "forecasts": 0, "numeric_actual": 0, "errors": []}
               for minutes in HORIZON_MINUTES}
     for key in dates:
         for minutes, origins, predictions, targets in forecast_day(
-                model, modeling_day(dataset["days"][key]), checkpoint["rides"], device, settings.BATCH_SIZE):
+                model, modeling_day(dataset["days"][key]), checkpoint["rides"], device, settings.BATCH_SIZE,
+                transition_totals=transitions):
             total = totals[minutes]
             valid = (targets >= 0) & (targets <= DOWN)
             total["correct"] += ((predictions == targets) & valid).sum().item()
@@ -193,7 +277,7 @@ def evaluate(settings=config):
     print("Accuracy scores wait/overflow and DOWN tokens. Minute errors require two numeric wait tokens "
           "(0-300 min); numeric pairs shows coverage of actual numeric waits. "
           "Forecasts stop at session breaks and the end of each day.", flush=True)
-    return {"dates": dates, "horizons": results}
+    return {"dates": dates, "horizons": results, "transitions": print_transitions(transitions)}
 
 
 def main():
