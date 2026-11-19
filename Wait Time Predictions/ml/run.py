@@ -19,7 +19,7 @@ from ml.data import (
     CLOSED, DOWN, OVERFLOW, PARK_TIMEZONE, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     WAIT_STEP, align_day, expected_ticks, history_from_json, interpolate_day, load_dataset, time_features, validate_day,
 )
-from ml.model import WaitPredictor, select_device
+from ml.model import build_model, select_device
 
 
 def summarize(paths, rides, timestamps):
@@ -121,7 +121,7 @@ def predict(settings=config, target_time=None, *, print_output=True):
     if checkpoint.get("version") != 1 or checkpoint["token_labels"] != TOKEN_LABELS:
         raise ValueError("Unsupported checkpoint or token vocabulary")
     validate_checkpoint_rides(checkpoint["rides"])
-    model = WaitPredictor(**checkpoint["model_config"]).to(device)
+    model = build_model(**checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model_state"])
     if settings.HISTORY:
         day = history_from_json(settings.HISTORY)

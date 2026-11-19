@@ -1,4 +1,4 @@
-"""Evaluate autoregressive forecasts on the model's held-out operating days."""
+"""Evaluate direct or autoregressive forecasts on held-out operating days."""
 
 import sys
 from pathlib import Path
@@ -14,10 +14,10 @@ from ml.data import (
     CLOSED, DOWN, OVERFLOW, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     WAIT_STEP, align_day, load_dataset, time_features, validate_day,
 )
-from ml.model import WaitPredictor, select_device
+from ml.model import build_model, select_device
 from ml.availability import advance_ages
 
-HORIZON_MINUTES = (5, 15, 30, 60, 120, 240)
+HORIZON_MINUTES = (5, 15, 30, 60, 120, 240, 360, 480, 600)
 
 
 def empty_transitions():
@@ -72,10 +72,11 @@ def numeric_wait_errors(predictions, targets):
 
 @torch.inference_mode()
 def forecast_day(model, day, rides, device, batch_size, *, transition_totals=None):
-    """Branch from each observed prefix, then feed predictions back for up to 4h.
+    """Branch from each observed prefix and predict for up to ten hours.
 
     The prefix pass saves a separate GRU state at each origin. Batching those
     independent states avoids re-encoding every prefix for every forecast.
+    V3 queries each saved origin directly; older models consume generated tokens.
     Future observations are read only when collecting scoring targets.
     """
     model.eval()
@@ -120,6 +121,8 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
         origin_indices = torch.tensor(selected, device=device)
         lengths = torch.tensor([remaining[index] for index in selected], device=device)
         hidden = torch.cat(states[start:start + batch_size], dim=1)
+        origin_states = hidden
+        origin_tokens = tokens[origin_indices]
         logits = torch.stack(first_logits[start:start + batch_size])
         locked = torch.stack(locks[start:start + batch_size])
         absent = torch.stack(absences[start:start + batch_size])
@@ -130,18 +133,7 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
         for step in range(1, steps + 1):
             # Match forecast()'s supported output classes and context locks,
             # using deterministic most-likely tokens instead of sampling paths.
-            supported = model.prediction_logits(logits, ages)
-            prediction = supported.argmax(dim=-1)
-            if model.breakdown_hazards is not None:
-                # The median remaining outage time is meaningful even when no
-                # individual five-minute hazard exceeds 50%. Per-tick argmax
-                # would otherwise keep many calibrated outages DOWN forever.
-                probabilities = supported.softmax(-1)
-                nonclosed = (1 - probabilities[..., CLOSED]).clamp_min(1e-12)
-                survival = torch.where(ages > 0, survival * probabilities[..., DOWN] / nonclosed, 1.)
-                operating = supported[..., :DOWN].argmax(-1)
-                reopening = torch.where(survival > .5, DOWN, operating)
-                prediction = torch.where((ages > 0) & (probabilities[..., CLOSED] < .5), reopening, prediction)
+            prediction, survival = model.greedy_prediction(logits, ages, survival)
             prediction[locked] = REFURBISHMENT
             prediction[absent] = UNKNOWN
             ages = advance_ages(ages, prediction)
@@ -158,7 +150,10 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
             if step < steps:
                 future = [timestamps[index] + (step + 1) * TICK_SECONDS for index in selected]
                 features = torch.tensor(time_features(future), dtype=torch.float32, device=device).unsqueeze(1)
-                logits, hidden = model(prediction.unsqueeze(1), features, hidden)
+                if hasattr(model, "horizon_logits"):
+                    logits = model.horizon_logits(origin_states, origin_tokens, features, [[step + 1]])
+                else:
+                    logits, hidden = model(prediction.unsqueeze(1), features, hidden)
                 logits = logits[:, 0]
         if transition_totals is not None:
             offsets = torch.arange(1, steps + 1, device=device)
@@ -203,6 +198,11 @@ def summarize_wait_errors(errors):
             "exact_matches": {"count": exact, "fraction": exact / count}}
 
 
+def horizon_label(minutes):
+    amount, unit = (minutes / 60, "hour") if minutes >= 60 else (minutes, "minute")
+    return f"{amount:g} {unit}{'' if amount == 1 else 's'}"
+
+
 def print_horizon(minutes, result):
     accuracy = f"{result['accuracy']:.1%}" if result["accuracy"] is not None else "N/A"
     stats = result["wait_errors"]
@@ -211,12 +211,12 @@ def print_horizon(minutes, result):
                  f"RMSE {stats['rmse_minutes']:.2f} min | bias {stats['signed_minutes']['mean']:+.2f} min")
     else:
         error = "MAE N/A | RMSE N/A | bias N/A"
-    print(f"{minutes:3} min: accuracy {accuracy} | {error} | {result['forecast_count']:,} forecasts | "
+    print(f"{horizon_label(minutes):>10}: accuracy {accuracy} | {error} | {result['forecast_count']:,} forecasts | "
           f"numeric pairs {stats['count']:,}/{stats['actual_numeric_wait_count']:,}", flush=True)
 
 
 def print_transitions(totals):
-    print("\nClosure/reopening timing (next transition per ride/forecast origin, up to 240 min; "
+    print(f"\nClosure/reopening timing (next transition per ride/forecast origin, up to {horizon_label(max(HORIZON_MINUTES))}; "
           "DOWN or CLOSED = unavailable):", flush=True)
     results = {}
     for name, counts in totals.items():
@@ -265,10 +265,11 @@ def evaluate(settings=config):
         raise ValueError(f"Saved test days are missing from the complete-day cache: {', '.join(missing)}")
     if any(len(dataset["days"][day]["timestamps"]) < 2 for day in dates):
         raise ValueError("Every saved test day needs at least two snapshots")
-    model = WaitPredictor(**checkpoint["model_config"]).to(device)
+    model = build_model(**checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model_state"])
     print(f"Test: {len(dates)} held-out days ({', '.join(dates)})", flush=True)
-    print("Autoregressive greedy forecasts from every eligible five-minute origin; "
+    strategy = "Direct multi-horizon" if hasattr(model, "horizon_logits") else "Autoregressive greedy"
+    print(f"{strategy} forecasts from every eligible five-minute origin; "
           "only observations at or before each origin enter its forecast.", flush=True)
     transitions = empty_transitions()
     totals = {minutes: {"correct": 0, "scored": 0, "forecasts": 0, "numeric_actual": 0, "errors": []}

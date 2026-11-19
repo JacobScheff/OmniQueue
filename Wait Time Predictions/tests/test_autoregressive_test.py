@@ -41,14 +41,14 @@ def indexed(results):
 class AutoregressiveTests(unittest.TestCase):
     def test_horizons_and_batched_prefix_states_match_independent_forecasts(self):
         model = PrefixSumPredictor()
-        source = day([1 + i % 5 for i in range(54)])
+        source = day([1 + i % 5 for i in range(126)])
         results = indexed(forecast_day(model, source, source["rides"], torch.device("cpu"), 7))
         timestamps = source["timestamps"]
         for minutes in HORIZON_MINUTES:
             steps = minutes // 5
             self.assertEqual(sum(horizon == minutes for horizon, _ in results), len(timestamps) - steps)
         for origin in (0, 2, 5):
-            steps = min(48, len(timestamps) - origin - 1)
+            steps = min(max(HORIZON_MINUTES) // 5, len(timestamps) - origin - 1)
             features = torch.tensor(time_features(timestamps[1:origin + 1] +
                                                    timestamps[origin + 1:origin + steps + 1]), dtype=torch.float32)
             # Delta distributions make the production sampler deterministic.
@@ -63,9 +63,9 @@ class AutoregressiveTests(unittest.TestCase):
 
     def test_future_actuals_change_targets_but_not_an_earlier_forecast(self):
         model = PrefixSumPredictor()
-        source = day([1] * 52)
+        source = day([1] * 124)
         changed = copy.deepcopy(source)
-        changed["tokens"][3:] = [[20]] * 49
+        changed["tokens"][3:] = [[20]] * (len(source["tokens"]) - 3)
         before = indexed(forecast_day(model, source, source["rides"], torch.device("cpu"), 8))
         after = indexed(forecast_day(model, changed, changed["rides"], torch.device("cpu"), 8))
         for minutes in HORIZON_MINUTES:

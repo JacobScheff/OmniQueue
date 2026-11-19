@@ -26,12 +26,21 @@ TEST_SPLIT = 0.15
 EPOCHS = 200
 BATCH_SIZE = 64  # Full operating days per batch.
 EMBEDDING_SIZE = 64
-MODEL_ARCHITECTURE = "ride_gru_attention_v1"
+MODEL_ARCHITECTURE = "ride_horizon_v3"
 HIDDEN_SIZE = 128  # Per-ride recurrent state, shared GRU weights.
-ATTENTION_BLOCKS = 4  # Cross-ride attention at each observed tick.
+ATTENTION_BLOCKS = 2  # Cross-ride attention at each observed tick.
 ATTENTION_HEADS = 4  # HIDDEN_SIZE must be divisible by this count.
 DROPOUT = 0.1
 LEARNING_RATE = 0.001
+ORDINAL_WEIGHT = 2.0  # Penalize distance between numeric wait distributions.
+ROLLOUT_WEIGHT = 0.0  # Optional generated-input training for autoregressive v1/v2.
+ROLLOUT_STEPS = 12  # Up to one hour, never across a break or padding.
+ROLLOUT_ORIGINS = 2  # Random training / fixed validation origins per day.
+ROLLOUT_WARMUP_EPOCHS = 20  # Linearly introduce rollout training.
+EARLY_STOPPING_PATIENCE = 40  # 0 disables stopping; best validation weights are kept.
+HORIZON_WEIGHT = 1.0  # Direct forecasts avoid compounding five-minute errors.
+HORIZON_STEPS = (1, 3, 6, 12, 24, 48, 96, 144)  # 5 min through 12 h.
+HORIZON_ORIGINS = 8  # Random training / fixed validation origins per day and lead.
 
 # Forecasting. Used by run.py.
 PREDICT_DAY = "2026-11-15" # None selects the latest cached day, including an incomplete day.

@@ -98,8 +98,11 @@ class WaitErrorTests(unittest.TestCase):
             # Closure scoring is appended after the original report, never within horizon rows.
             self.assertNotIn("detection:", output.getvalue())
             self.assertNotIn("statuses", result["horizons"][5])
-            self.assertLess(output.getvalue().index("240 min:"),
+            self.assertLess(output.getvalue().index("10 hours:"),
                             output.getvalue().index("Closure/reopening timing"))
+            for label in ("5 minutes:", "15 minutes:", "30 minutes:", "1 hour:",
+                          "2 hours:", "4 hours:", "6 hours:", "8 hours:", "10 hours:"):
+                self.assertIn(label, output.getvalue())
             self.assertEqual(result["transitions"]["closing"]["actual_events"], 5)
             self.assertEqual(result["transitions"]["closing"]["missed_events"], 5)
             self.assertEqual(result["transitions"]["closing"]["accuracy"], 0.)
