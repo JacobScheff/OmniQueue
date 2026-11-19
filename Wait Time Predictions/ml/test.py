@@ -177,7 +177,7 @@ def summarize_wait_errors(errors):
     count = errors.numel()
     if not count:
         return {"count": 0, "absolute_minutes": None, "signed_minutes": None,
-                "rmse_minutes": None, "overpredictions": None,
+                "mse_minutes_squared": None, "rmse_minutes": None, "overpredictions": None,
                 "underpredictions": None, "exact_matches": None}
 
     def distribution(values):
@@ -191,8 +191,9 @@ def summarize_wait_errors(errors):
                 "mean_magnitude_minutes": values.abs().mean().item() if values.numel() else None}
 
     exact = (errors == 0).sum().item()
+    mse = errors.square().mean().item()
     return {"count": count, "absolute_minutes": distribution(errors.abs()),
-            "signed_minutes": distribution(errors), "rmse_minutes": errors.square().mean().sqrt().item(),
+            "signed_minutes": distribution(errors), "mse_minutes_squared": mse, "rmse_minutes": mse ** .5,
             "overpredictions": direction(errors[errors > 0]),
             "underpredictions": direction(errors[errors < 0]),
             "exact_matches": {"count": exact, "fraction": exact / count}}
@@ -208,9 +209,10 @@ def print_horizon(minutes, result):
     stats = result["wait_errors"]
     if stats["count"]:
         error = (f"MAE {stats['absolute_minutes']['mean']:.2f} min | "
+                 f"MSE {stats['mse_minutes_squared']:.2f} min^2 | "
                  f"RMSE {stats['rmse_minutes']:.2f} min | bias {stats['signed_minutes']['mean']:+.2f} min")
     else:
-        error = "MAE N/A | RMSE N/A | bias N/A"
+        error = "MAE N/A | MSE N/A | RMSE N/A | bias N/A"
     print(f"{horizon_label(minutes):>10}: accuracy {accuracy} | {error} | {result['forecast_count']:,} forecasts | "
           f"numeric pairs {stats['count']:,}/{stats['actual_numeric_wait_count']:,}", flush=True)
 

@@ -109,6 +109,8 @@ Park/
 | Heuristic router | [heuristic-router.md](Park/docs/heuristic-router.md) |
 | Park graph / OSM walks | [park-graph.md](Park/docs/park-graph.md) |
 | Rank-then-route model | [rank-route-architecture.md](Park/docs/rank-route-architecture.md) |
+| Proposed history-aware DP planner | [dp-planner-plan.md](Park/docs/dp-planner-plan.md) |
+| DP planner and aerial route explorer | [dp-planner.md](Park/docs/dp-planner.md) |
 | BC + PPO | [training.md](Park/docs/training.md) |
 | Visualization | [visualization.md](Park/docs/visualization.md) |
 | Interactive play | [interactive-play.md](Park/docs/interactive-play.md) |

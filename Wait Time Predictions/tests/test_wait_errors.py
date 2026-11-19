@@ -30,6 +30,7 @@ class WaitErrorTests(unittest.TestCase):
                          [0, 5, 5, 10, 20])
         self.assertEqual(absolute["mean"], 8)
         self.assertAlmostEqual(absolute["std"], math.sqrt(46))
+        self.assertEqual(stats["mse_minutes_squared"], 110)
         self.assertAlmostEqual(stats["rmse_minutes"], math.sqrt(110))
         self.assertEqual(stats["signed_minutes"]["mean"], 2)
         self.assertAlmostEqual(stats["signed_minutes"]["std"], math.sqrt(106))
@@ -41,6 +42,7 @@ class WaitErrorTests(unittest.TestCase):
 
     def test_single_pair_and_empty_pairs_do_not_produce_nan(self):
         stats = summarize_wait_errors([5])
+        self.assertEqual(stats["mse_minutes_squared"], 25)
         self.assertEqual(stats["absolute_minutes"]["std"], 0)
         self.assertEqual(stats["signed_minutes"]["std"], 0)
         self.assertEqual(stats["underpredictions"]["count"], 0)
@@ -48,11 +50,13 @@ class WaitErrorTests(unittest.TestCase):
         empty = summarize_wait_errors([])
         self.assertEqual(empty["count"], 0)
         self.assertIsNone(empty["absolute_minutes"])
+        self.assertIsNone(empty["mse_minutes_squared"])
         output = io.StringIO()
         with redirect_stdout(output):
             print_horizon(240, {"accuracy": None, "forecast_count": 0,
                                 "wait_errors": {**empty, "actual_numeric_wait_count": 0}})
         self.assertIn("accuracy N/A | MAE N/A", output.getvalue())
+        self.assertIn("MSE N/A", output.getvalue())
         self.assertNotIn("nan", output.getvalue().lower())
 
     def test_evaluator_pools_pairs_across_days_and_excludes_padding_and_breaks(self):
@@ -110,7 +114,7 @@ class WaitErrorTests(unittest.TestCase):
             self.assertEqual(result["transitions"]["reopening"]["accuracy"], 1.)
             self.assertEqual(result["horizons"][5]["forecast_count"], 7)
             self.assertIsNone(result["horizons"][240]["accuracy"])
-            for expected in ("MAE 5.00 min", "RMSE", "bias +2.50 min", "numeric pairs 4/4"):
+            for expected in ("MAE 5.00 min", "MSE 37.50 min^2", "RMSE", "bias +2.50 min", "numeric pairs 4/4"):
                 self.assertIn(expected, output.getvalue())
             self.assertNotIn("predicted ", output.getvalue())
             self.assertNotIn("errors > 40", output.getvalue())
