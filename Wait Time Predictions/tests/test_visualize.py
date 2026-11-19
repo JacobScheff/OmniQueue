@@ -81,6 +81,20 @@ class VisualizerTests(unittest.TestCase):
         second = self.result(second_job)
         self.assertEqual(first, second)
 
+    def test_in_progress_day_can_forecast_after_a_repaired_gap(self):
+        expected = self.ticks + [self.ticks[-1] + 300 * i for i in range(1, 8)]
+        self.day["expected_timestamps"] = expected
+        self.day["timestamps"] = self.ticks[:2] + self.ticks[3:]
+        self.day["tokens"] = [[2]] * 5
+        save_dataset(self.settings.DATASET, {"version": 1, "park_id": PARK_ID,
+                                            "days": {}, "incomplete_days": {"2026-11-01": self.day}})
+        payload = self.app.day_payload("2026-11-01")
+        self.assertEqual(len(payload["snapshots"]), 6)
+        self.assertEqual(payload["snapshots"][2]["source"], "interpolated")
+        result = self.result(self.app.start_forecast("2026-11-01", "08:20"))
+        self.assertEqual(result["state"], "complete")
+        self.assertEqual([row["timestamp"] for row in result["snapshots"]], expected[4:])
+
     def test_forecast_fails_if_interpolation_requires_a_future_endpoint(self):
         self.day["timestamps"] = [self.ticks[0], self.ticks[3], self.ticks[4], self.ticks[5]]
         self.day["tokens"] = [[2]] * 4

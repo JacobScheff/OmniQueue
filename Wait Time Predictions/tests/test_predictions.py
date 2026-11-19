@@ -110,6 +110,38 @@ class DatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Attractions missing"):
             validate_day(repaired)
 
+    def test_in_progress_day_repairs_interior_gap_without_filling_future_ticks(self):
+        ticks = list(range(0, 12 * 300, 300))
+        day = {"timestamps": ticks[:2] + ticks[3:5], "expected_timestamps": ticks,
+               "tokens": [[0], [0], [3], [4]]}
+        repaired = interpolate_day(day)
+        self.assertEqual(repaired["timestamps"], ticks[:5])
+        self.assertEqual(repaired["tokens"][2], [2])
+        self.assertEqual(repaired["interpolated_ticks"], {str(ticks[2]): [ticks[1], ticks[3]]})
+        validate_day(repaired, before=ticks[5])
+        with self.assertRaisesRegex(ValueError, "Missing 1"):
+            validate_day(repaired, before=ticks[3])
+        with self.assertRaisesRegex(ValueError, "Missing 7"):
+            validate_day(repaired)
+
+    def test_refreshes_count_existing_interpolations_toward_daily_limit(self):
+        ticks = list(range(0, 15 * 300, 300))
+        day = {"timestamps": ticks[:1] + ticks[3:5], "expected_timestamps": ticks,
+               "tokens": [[0], [3], [4]]}
+        repaired = interpolate_day(day)
+        self.assertEqual(len(repaired["interpolated_ticks"]), 2)
+        # Three more elapsed gaps put the daily total at five, even though
+        # each refresh individually contains fewer than five missing ticks.
+        refreshed = {**repaired, "timestamps": repaired["timestamps"] + [ticks[8]],
+                     "tokens": repaired["tokens"] + [[8]]}
+        self.assertIs(interpolate_day(refreshed), refreshed)
+        with self.assertRaisesRegex(ValueError, "Missing 3"):
+            validate_day(refreshed, before=ticks[9])
+
+    def test_empty_day_has_no_interpolation_endpoints(self):
+        day = {"timestamps": [], "expected_timestamps": [0, 300], "tokens": []}
+        self.assertIs(interpolate_day(day), day)
+
     def test_interpolation_does_not_bridge_scheduled_breaks_or_use_future_history(self):
         day = {"timestamps": [0, 900], "expected_timestamps": [0, 300, 900], "tokens": [[0], [6]]}
         self.assertIs(interpolate_day(day), day)

@@ -179,14 +179,16 @@ def collect_day(ticks, snapshots, catalog):
 def interpolate_day(day):
     """Fill up to four missing scheduled ticks using their observed neighbors."""
     timestamps = day.get("timestamps", [])
-    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+    if not timestamps or any(right <= left for left, right in zip(timestamps, timestamps[1:])):
         return day  # Preserve invalid history for the caller's validation.
     expected = set(day.get("expected_timestamps", timestamps))
-    missing = sorted(expected - set(timestamps))
-    if not 0 < len(missing) < 5:
+    # The unobserved tail of an in-progress day is not a collection gap.
+    # Count earlier repairs too, so repeated refreshes keep the daily limit.
+    missing = sorted(tick for tick in expected - set(timestamps) if tick <= timestamps[-1])
+    interpolated = dict(day.get("interpolated_ticks", {}))
+    if not missing or len(missing) + len(interpolated) >= 5:
         return day
     rows = dict(zip(timestamps, day["tokens"]))
-    interpolated = dict(day.get("interpolated_ticks", {}))
     for tick in missing:
         index = bisect_left(timestamps, tick)
         if index == 0 or index == len(timestamps):
