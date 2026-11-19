@@ -202,7 +202,8 @@ class Visualizer:
                               "wait": wait["p50"] if wait else None,
                               "p10": wait["p10"] if wait else None,
                               "p90": wait["p90"] if wait else None,
-                              "down_probability": ride["down_probability"]})
+                              "down_probability": ride["down_probability"],
+                              "closed_probability": ride.get("closed_probability", 0)})
             snapshots.append({"timestamp": int(datetime.fromisoformat(snapshot["time"]).timestamp()),
                               "source": "predicted", "rides": rides})
         return {"snapshots": snapshots, "as_of": result["as_of"],

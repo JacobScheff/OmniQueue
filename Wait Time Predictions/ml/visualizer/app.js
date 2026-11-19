@@ -328,7 +328,7 @@ function renderList(rides, frame) {
     subtitle.className = "ride-subtitle";
     subtitle.textContent = !state.meta.locations[ride.id] ? "Location unavailable · view details"
       : frame.pending ? "Prediction unavailable"
-      : frame.source === "predicted" ? `Forecast · ${Math.round((ride.down_probability || 0) * 100)}% chance down`
+      : frame.source === "predicted" ? `Forecast · ${Math.round((ride.down_probability || 0) * 100)}% down · ${Math.round((ride.closed_probability || 0) * 100)}% closed`
       : ride.status === "MISSING" ? "Missing observation"
       : frame.source === "interpolated" ? "Interpolated wait" : "Recorded wait";
     label.append(name, subtitle);
@@ -392,7 +392,7 @@ function renderDetail(ride, frame) {
   if (ride.wait !== null) { const unit = document.createElement("small"); unit.textContent = frame.source === "predicted" ? " min · median" : " min"; $("detail-wait").append(unit); }
   $("detail-wait").insertAdjacentHTML("beforeend", errorBadge(ride, frame));
   $("detail-meta").textContent = frame.pending ? "Generate a forecast for this time."
-    : frame.source === "predicted" ? `${ride.p10 ?? "—"}–${ride.p90 ?? "—"} min p10–p90 when operating · ${Math.round((ride.down_probability || 0) * 100)}% chance down`
+    : frame.source === "predicted" ? `${ride.wait !== null ? `${ride.p10 ?? "—"}–${ride.p90 ?? "—"} min p10–p90 when operating · ` : ""}${Math.round((ride.down_probability || 0) * 100)}% down · ${Math.round((ride.closed_probability || 0) * 100)}% closed`
     : frame.source === "interpolated" ? "Linearly interpolated from surrounding observations; rounded to five minutes."
     : "Waits are saved in five-minute buckets. Gaps in the chart indicate unavailable waits.";
   const error = predictionError(ride, frame);

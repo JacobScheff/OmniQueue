@@ -15,6 +15,7 @@ from ml.data import (
     WAIT_STEP, align_day, load_dataset, time_features, validate_day,
 )
 from ml.model import WaitPredictor, select_device
+from ml.availability import advance_ages
 
 HORIZON_MINUTES = (5, 15, 30, 60, 120, 240)
 
@@ -89,12 +90,16 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
         if timestamps[index + 1] - timestamps[index] == TICK_SECONDS:
             remaining[index] = remaining[index + 1] + 1
     observed_features = torch.tensor(time_features(timestamps[1:]), dtype=torch.float32, device=device)
-    origins, states, first_logits, locks, absences = [], [], [], [], []
+    origins, states, first_logits, locks, absences, outage_ages = [], [], [], [], [], []
     hidden = None
+    ages = torch.zeros(len(rides), dtype=torch.long, device=device)
     seen = torch.zeros(len(rides), dtype=torch.bool, device=device)
     interpolated = day.get("interpolated_ticks", {})
     observed = torch.tensor([str(tick) not in interpolated for tick in timestamps], device=device)
     for index in range(len(timestamps) - 1):
+        if index and timestamps[index] - timestamps[index - 1] != TICK_SECONDS:
+            ages.zero_()
+        ages = advance_ages(ages, tokens[index])
         logits, hidden = model(tokens[index:index + 1].unsqueeze(0),
                                observed_features[index:index + 1].unsqueeze(0), hidden)
         seen = seen | (tokens[index] != UNKNOWN)
@@ -108,6 +113,7 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
         first_logits.append(logits[0, 0])
         locks.append(tokens[index] == REFURBISHMENT)
         absences.append(~seen)
+        outage_ages.append(ages)
     results = []
     for start in range(0, len(origins), batch_size):
         selected = origins[start:start + batch_size]
@@ -117,16 +123,29 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
         logits = torch.stack(first_logits[start:start + batch_size])
         locked = torch.stack(locks[start:start + batch_size])
         absent = torch.stack(absences[start:start + batch_size])
+        ages = torch.stack(outage_ages[start:start + batch_size])
+        survival = torch.ones_like(ages, dtype=torch.float32)
         steps = min(max(HORIZON_MINUTES) // 5, max(remaining[index] for index in selected))
         paths = []
         for step in range(1, steps + 1):
             # Match forecast()'s supported output classes and context locks,
             # using deterministic most-likely tokens instead of sampling paths.
-            logits = logits.clone()
-            logits[..., [CLOSED, REFURBISHMENT, UNKNOWN]] = -torch.inf
-            prediction = logits.argmax(dim=-1)
+            supported = model.prediction_logits(logits, ages)
+            prediction = supported.argmax(dim=-1)
+            if model.breakdown_hazards is not None:
+                # The median remaining outage time is meaningful even when no
+                # individual five-minute hazard exceeds 50%. Per-tick argmax
+                # would otherwise keep many calibrated outages DOWN forever.
+                probabilities = supported.softmax(-1)
+                nonclosed = (1 - probabilities[..., CLOSED]).clamp_min(1e-12)
+                survival = torch.where(ages > 0, survival * probabilities[..., DOWN] / nonclosed, 1.)
+                operating = supported[..., :DOWN].argmax(-1)
+                reopening = torch.where(survival > .5, DOWN, operating)
+                prediction = torch.where((ages > 0) & (probabilities[..., CLOSED] < .5), reopening, prediction)
             prediction[locked] = REFURBISHMENT
             prediction[absent] = UNKNOWN
+            ages = advance_ages(ages, prediction)
+            survival = torch.where(ages > 0, survival, 1.)
             if transition_totals is not None:
                 paths.append(prediction.cpu())
             minutes = step * 5

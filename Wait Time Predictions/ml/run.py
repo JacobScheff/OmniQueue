@@ -16,14 +16,14 @@ if __package__ in (None, ""):
 from ml import config
 from ml.attractions import modeling_day, validate_checkpoint_rides
 from ml.data import (
-    DOWN, OVERFLOW, PARK_TIMEZONE, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
+    CLOSED, DOWN, OVERFLOW, PARK_TIMEZONE, REFURBISHMENT, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     WAIT_STEP, align_day, expected_ticks, history_from_json, interpolate_day, load_dataset, time_features, validate_day,
 )
 from ml.model import WaitPredictor, select_device
 
 
 def summarize(paths, rides, timestamps):
-    """Wait quantiles are conditional on operating. DOWN has its own probability."""
+    """Show unavailability when at least half of paths are DOWN or CLOSED."""
     paths = paths.cpu()
     snapshots = []
     for step, timestamp in enumerate(timestamps):
@@ -31,10 +31,15 @@ def summarize(paths, rides, timestamps):
         for index, ride in enumerate(rides):
             tokens = paths[:, step, index]
             row = {**ride, "down_probability": (tokens == DOWN).float().mean().item()}
+            row["closed_probability"] = (tokens == CLOSED).float().mean().item()
             if (tokens == REFURBISHMENT).all():
                 row.update(status="REFURBISHMENT", wait_minutes=None)
             elif (tokens == UNKNOWN).all():
                 row.update(status="UNKNOWN", wait_minutes=None)
+            elif ((tokens == DOWN) | (tokens == CLOSED)).sum().item() * 2 >= len(tokens):
+                status = "CLOSED" if row["closed_probability"] >= row["down_probability"] else "DOWN"
+                row.update(status=status, wait_minutes=None,
+                           operating_probability=(tokens <= OVERFLOW).float().mean().item())
             else:
                 waits = tokens[tokens <= OVERFLOW].float()
                 row["operating_probability"] = len(waits) / len(tokens)
@@ -65,7 +70,7 @@ def print_predictions(result):
                 print(f"  {ride['name']} | {ride['status']}", flush=True)
                 continue
             wait = ride["wait_minutes"]
-            down = f"DOWN {ride['down_probability']:.0%}"
+            down = f"DOWN {ride['down_probability']:.0%} | CLOSED {ride.get('closed_probability', 0):.0%}"
             if wait is None:
                 print(f"  {ride['name']} | {down}", flush=True)
             else:
@@ -162,7 +167,8 @@ def predict(settings=config, target_time=None, *, print_output=True):
     future = [cutoff + TICK_SECONDS * step for step in range(steps)]
     features = torch.tensor(time_features(timestamps[1:] + future), dtype=torch.float32, device=device)
     paths = model.forecast(tokens.to(device), features,
-                           steps=steps, samples=settings.SAMPLES, temperature=settings.TEMPERATURE)
+                           steps=steps, samples=settings.SAMPLES, temperature=settings.TEMPERATURE,
+                           history_timestamps=timestamps)
     if target_time is not None:
         paths = paths[:, -1:]
         future = future[-1:]

@@ -5,6 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ml.data import CLOSED, DOWN, REFURBISHMENT, UNKNOWN, VOCAB_SIZE
+from ml.availability import advance_ages, history_ages
 
 
 def select_device(name="auto"):
@@ -14,9 +15,9 @@ def select_device(name="auto"):
     return device
 
 
-def token_loss(logits, targets):
-    """CLOSED, REFURBISHMENT, and unavailable observations contribute no loss."""
-    targets = targets.masked_fill(targets > DOWN, -100)
+def token_loss(logits, targets, *, predict_closed=False):
+    """Train availability as well as waits; ignore unknown/refurbishment/padding."""
+    targets = targets.masked_fill(targets > (CLOSED if predict_closed else DOWN), -100)
     losses = F.cross_entropy(logits.reshape(-1, VOCAB_SIZE), targets.reshape(-1), reduction="sum")
     count = (targets != -100).sum()
     return losses / count.clamp_min(1), count
@@ -24,13 +25,16 @@ def token_loss(logits, targets):
 class WaitPredictor(nn.Module):
     def __init__(self, num_rides, embedding_size=16, hidden_size=128, *,
                  architecture="park_gru_v1", attention_blocks=2, attention_heads=4,
-                 dropout=0.1):
+                 dropout=0.1, predict_closed=False, breakdown_hazards=None):
         super().__init__()
         if min(num_rides, embedding_size, hidden_size) < 1:
             raise ValueError("Ride count, embedding size, and hidden size must be positive")
         if architecture not in ("park_gru_v1", "ride_gru_attention_v1"):
             raise ValueError(f"Unsupported model architecture: {architecture}")
         self.architecture = architecture
+        # Defaults preserve checkpoints trained before CLOSED became a target.
+        self.predict_closed = predict_closed
+        self.breakdown_hazards = breakdown_hazards
         self.num_rides = num_rides
         self.embedding = nn.Embedding(VOCAB_SIZE, embedding_size)
         if architecture == "park_gru_v1":
@@ -83,8 +87,31 @@ class WaitPredictor(nn.Module):
         logits = self.output(self.output_norm(states)).reshape(batch, ticks, rides, VOCAB_SIZE)
         return logits, hidden
 
+    def prediction_logits(self, logits, ages, temperature=1.0):
+        """Use the same output policy in production and held-out evaluation."""
+        logits = logits.clone() / temperature
+        logits[..., [REFURBISHMENT, UNKNOWN]] = -torch.inf
+        if not self.predict_closed:
+            logits[..., CLOSED] = -torch.inf
+        if self.breakdown_hazards is None:
+            return logits
+        hazards = torch.as_tensor(self.breakdown_hazards, device=logits.device, dtype=logits.dtype)
+        hazards = hazards.unsqueeze(0).expand(logits.shape[0], -1, -1)
+        hazard = hazards.gather(-1, (ages - 1).clamp(0, hazards.shape[-1] - 1).unsqueeze(-1)).squeeze(-1)
+        probabilities = logits.softmax(-1)
+        available_mass = 1 - probabilities[..., CLOSED]
+        wait_logits = logits[..., :DOWN]
+        # A neural head with no finite wait logits must still permit reopening.
+        wait_logits = torch.where(torch.isfinite(wait_logits).any(-1, keepdim=True), wait_logits, 0.)
+        waits = wait_logits.softmax(-1) * (available_mass * hazard).unsqueeze(-1)
+        calibrated = probabilities.clone()
+        calibrated[..., :DOWN] = waits
+        calibrated[..., DOWN] = available_mass * (1 - hazard)
+        return torch.where((ages > 0).unsqueeze(-1), calibrated.log(), logits)
+
     @torch.inference_mode()
-    def forecast(self, history, time_features, steps=24, samples=100, temperature=1.0):
+    def forecast(self, history, time_features, steps=24, samples=100, temperature=1.0,
+                 history_timestamps=None):
         """Consume all supplied day history and return [samples, steps, rides].
 
         time_features contains next-tick features for each history input, followed
@@ -102,15 +129,14 @@ class WaitPredictor(nn.Module):
         hidden = hidden.expand(-1, samples, *hidden.shape[2:]).contiguous()
         locked = history[-1] == REFURBISHMENT
         absent = (history == UNKNOWN).all(dim=0)
+        ages = history_ages(history, history_timestamps).expand(samples, -1)
         paths = []
         for step in range(steps):
-            # These tokens have no prediction targets. They remain input/context tokens.
-            logits = logits.clone()
-            logits[..., [CLOSED, REFURBISHMENT, UNKNOWN]] = -torch.inf
-            probabilities = (logits / temperature).softmax(dim=-1)
+            probabilities = self.prediction_logits(logits, ages, temperature).softmax(dim=-1)
             token = torch.multinomial(probabilities.reshape(-1, VOCAB_SIZE), 1).reshape(samples, self.num_rides)
             token[:, locked] = REFURBISHMENT
             token[:, absent] = UNKNOWN
+            ages = advance_ages(ages, token)
             paths.append(token)
             if step + 1 < steps:
                 features = time_features[len(history) + step].expand(samples, 1, -1)

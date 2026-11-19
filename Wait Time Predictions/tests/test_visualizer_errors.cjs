@@ -125,3 +125,14 @@ test("list, map pins, tooltips and details display the same error and recorded v
   assert.match(ui.elements.get("detail-wait").html, /\+10 min/);
   assert.match(ui.elements.get("detail-meta").textContent, /recorded 20 min/);
 });
+
+test("unavailable forecasts show status and probabilities without numeric wait ranges", () => {
+  const ui = visualizer();
+  for (const status of ["DOWN", "CLOSED"]) {
+    const predicted = {...ride(null, status), down_probability: .6, closed_probability: .3};
+    ui.renderDetail(predicted, frame);
+    assert.equal(ui.elements.get("detail-wait").textContent, status === "DOWN" ? "Down" : "Closed");
+    assert.match(ui.elements.get("detail-meta").textContent, /60% down · 30% closed/);
+    assert.doesNotMatch(ui.elements.get("detail-meta").textContent, /min p10/);
+  }
+});

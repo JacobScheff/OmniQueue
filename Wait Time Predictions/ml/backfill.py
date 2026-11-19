@@ -97,6 +97,41 @@ def request_json(path, key):
         raise RuntimeError(f"ThemeParks.wiki returned HTTP {error.code} for {path}") from None
 
 
+def reencode_cached_history(dataset_path, raw_dir):
+    """Rebuild imported tokens from raw minutes, without network access."""
+    dataset_path, raw_dir = Path(dataset_path), Path(raw_dir)
+    dataset = load_dataset(dataset_path)
+    changed, skipped = 0, 0
+    for group in ("days", "incomplete_days"):
+        for day in dataset.get(group, {}).values():
+            if day.get("source") != "themeparks.wiki/history":
+                continue
+            calendar_days = sorted({datetime.fromtimestamp(tick, PARK_TIMEZONE).date()
+                                    for tick in day["timestamps"]})
+            paths = [raw_dir / f"{value}.json.gz" for value in calendar_days]
+            if not all(path.exists() for path in paths):
+                skipped += 1
+                continue
+            documents = []
+            for path in paths:
+                with gzip.open(path, "rt", encoding="utf-8") as source:
+                    documents.append(json.load(source))
+            rebuilt = reconstruct(day["timestamps"], documents, {ride["id"] for ride in day["rides"]})
+            if (rebuilt["timestamps"] != day["timestamps"]
+                    or rebuilt["rides"] != day["rides"]):
+                raise ValueError("Raw history does not match the cached attraction catalog/timestamps")
+            if rebuilt["tokens"] != day["tokens"]:
+                day["tokens"] = rebuilt["tokens"]
+                changed += 1
+    if changed:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = dataset_path.with_name(f"{dataset_path.name}.before-reencode-{stamp}.bak")
+        shutil.copy2(dataset_path, backup)
+        save_dataset(dataset_path, dataset)
+    print(f"Reencoded {changed} imported days from raw history; {skipped} missing raw files. "
+          "Refresh Firestore days with ml/data.py --refresh to reencode collected observations.", flush=True)
+
+
 def backfill(key, dataset_path, raw_dir, since=None, until=None):
     plan = request_json("/me", key)
     coverage = request_json(PARK_PATH + "/history/coverage", key)
@@ -202,8 +237,13 @@ def main():
     parser.add_argument("--key-file", type=Path, default=config.ROOT / "credentials/themeparks-api-key.txt")
     parser.add_argument("--dataset", type=Path, default=config.DATASET)
     parser.add_argument("--raw-dir", type=Path, default=config.ROOT / "data/themeparks-history")
+    parser.add_argument("--reencode-cache", action="store_true",
+                        help="Rebuild imported tokens from local raw history; no API key or network needed")
     args = parser.parse_args()
     try:
+        if args.reencode_cache:
+            reencode_cached_history(args.dataset, args.raw_dir)
+            return
         key = os.environ.get("THEMEPARKS_API_KEY") or args.key_file.read_text(encoding="utf-8-sig").strip()
         if not key:
             raise ValueError("The ThemeParks.wiki key file is empty")

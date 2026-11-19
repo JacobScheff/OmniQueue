@@ -18,10 +18,11 @@ if __package__ in (None, ""):
 from ml import config
 from ml.attractions import is_excluded
 from ml.data import (
-    DOWN, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
+    CLOSED, DOWN, TICK_SECONDS, TOKEN_LABELS, UNKNOWN,
     align_day, load_dataset, time_features,
 )
 from ml.model import WaitPredictor, select_device, token_loss
+from ml.availability import fit_breakdown_hazards
 
 
 class Days(Dataset):
@@ -99,7 +100,7 @@ def epoch(model, loader, device, optimizer=None):
         targets = targets.to(device, non_blocking=True)
         with torch.set_grad_enabled(training):
             logits, _ = model(tokens, features)
-            loss, count = token_loss(logits, targets)
+            loss, count = token_loss(logits, targets, predict_closed=model.predict_closed)
             if training and count.item():
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -108,10 +109,11 @@ def epoch(model, loader, device, optimizer=None):
         total_loss += loss.detach() * count
         total_count += count
         predictions = logits.argmax(dim=-1)
-        total_correct += ((predictions == targets) & (targets <= DOWN)).sum()
+        limit = CLOSED if model.predict_closed else DOWN
+        total_correct += ((predictions == targets) & (targets >= 0) & (targets <= limit)).sum()
     count = total_count.item()
     if count == 0:
-        raise ValueError("These days contain no wait or DOWN targets")
+        raise ValueError("These days contain no wait or availability targets")
     return total_loss.item() / count, total_correct.item() / count
 
 
@@ -181,6 +183,8 @@ def train(settings=config):
         "attention_blocks": getattr(settings, "ATTENTION_BLOCKS", config.ATTENTION_BLOCKS),
         "attention_heads": getattr(settings, "ATTENTION_HEADS", config.ATTENTION_HEADS),
         "dropout": getattr(settings, "DROPOUT", config.DROPOUT),
+        "predict_closed": True,
+        "breakdown_hazards": fit_breakdown_hazards(training, rides),
     }
     model = WaitPredictor(**model_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.LEARNING_RATE)

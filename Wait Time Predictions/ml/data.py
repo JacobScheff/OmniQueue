@@ -37,6 +37,8 @@ def ride_token(ride):
         wait = ride["wait"]
         if type(wait) is not int or not 0 <= wait < 65535:
             raise ValueError("An operating wait must be an integer from 0 through 65534 minutes")
+        if wait == 13:
+            wait = 5
         if wait > MAX_WAIT:
             return OVERFLOW
         return min(MAX_WAIT // WAIT_STEP, (wait + WAIT_STEP // 2) // WAIT_STEP)
@@ -427,8 +429,16 @@ def export(settings=config):
 
 
 def main():
+    import argparse
+    from types import SimpleNamespace
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--refresh", action="store_true", help="Refetch configured dates, including cached days")
+    args = parser.parse_args()
+    settings = SimpleNamespace(**{name: getattr(config, name) for name in dir(config) if name.isupper()})
+    settings.REFRESH = settings.REFRESH or args.refresh
     try:
-        export()
+        export(settings)
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         raise SystemExit(str(error)) from error
 
