@@ -48,6 +48,7 @@ All commands below assume cwd is `Park/`.
 | Full-day sim + KPIs | `python benchmark.py --seed 42 --runs 3` |
 | Replay a recorded day | `python visualize.py --seed 42` |
 | Play as one guest vs the crowd | `python play.py --seed 42` |
+| Compare RL and DP on a recorded full day | `python compare.py --day 2026-11-18` |
 | Watch a PPO focal through a day | `python watch.py --model checkpoints/ppo/ppo_final.pt` |
 | Live Disneyland companion | `python run_companion.py` (API) + `cd companion/web && npm install && npm run dev` |
 
@@ -114,6 +115,7 @@ Park/
 | BC + PPO | [training.md](Park/docs/training.md) |
 | Visualization | [visualization.md](Park/docs/visualization.md) |
 | Interactive play | [interactive-play.md](Park/docs/interactive-play.md) |
+| Historical RL vs DP comparison | [compare.md](Park/docs/compare.md) |
 | Watch | [watch.md](Park/docs/watch.md) |
 | Companion | [companion.md](Park/docs/companion.md) |
 | Metrics | [metrics.md](Park/docs/metrics.md) |

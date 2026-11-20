@@ -111,3 +111,8 @@ the existing ML environment. Actual interruptions and calibrated joint risk,
 session persistence, and automatic live replanning remain follow-up work.
 
 See [the design plan](dp-planner-plan.md) for the full proposed architecture.
+
+For automatic replanning during historical full-day evaluation against OmniQueue
+RL, see [`compare.py`](compare.md). It refreshes forecasts using only the history
+available at each decision, advances the party through archived waits, and updates
+completed rides and the ride-exit position before planning again.

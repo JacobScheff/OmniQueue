@@ -4,5 +4,6 @@ pytest>=7.0
 torch>=2.0
 gymnasium>=0.29
 pygame>=2.5
+tzdata>=2024.1; sys_platform == "win32"
 # Optional: regenerate data/pathways.json
 # osmnx>=1.9
