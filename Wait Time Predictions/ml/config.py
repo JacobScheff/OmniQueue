@@ -47,6 +47,11 @@ HORIZON_WEIGHT = 1.0  # Direct forecasts avoid compounding five-minute errors.
 HORIZON_STEPS = (1, 3, 6, 12, 24, 48, 96, 144)  # 5 min through 12 h.
 HORIZON_ORIGINS = 8  # Random training / fixed validation origins per day and lead.
 
+# Held-out evaluation. Independent days/origins/leads share GPU batches.
+# BATCH_SIZE above caps forecast origins; these caps bound the other axes.
+TEST_DAY_BATCH_SIZE = 4
+TEST_HORIZON_BATCH_SIZE = 8
+
 # Forecasting. Used by run.py.
 PREDICT_DAY = None # None selects the latest cached day, including an incomplete day.
 PREDICT_START_TIME = None # Park-local HH:MM. None starts after the last observation.

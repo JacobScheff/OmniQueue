@@ -33,6 +33,25 @@ def decode_availability(probabilities, previous):
     This is causal over forecast leads: appending more leads changes no prefix.
     Raw probabilities remain untouched and are reported separately.
     """
+    numeric = wait_quantiles(probabilities, (.5,)).squeeze(-1)
+    return _decode_availability(probabilities, previous, numeric)
+
+
+def decode_availability_sequence(probabilities, previous):
+    """Decode [batch, leads, rides, vocab], batching conditional wait quantiles.
+
+    Only the cheap availability state machine needs a sequential scan. Its
+    state is per origin/ride and can continue across bounded lead chunks.
+    """
+    numeric = wait_quantiles(probabilities, (.5,)).squeeze(-1)
+    predictions = []
+    for step in range(probabilities.shape[1]):
+        previous = _decode_availability(probabilities[:, step], previous, numeric[:, step])
+        predictions.append(previous)
+    return torch.stack(predictions, dim=1)
+
+
+def _decode_availability(probabilities, previous, numeric):
     down, closed = probabilities[..., DOWN], probabilities[..., CLOSED]
     unavailable = down + closed
     was_unavailable = (previous == DOWN) | (previous == CLOSED)
@@ -42,7 +61,6 @@ def decode_availability(probabilities, previous):
     # Apply the same evidence margin before changing DOWN <-> CLOSED labels.
     status = torch.where((previous == DOWN) & (closed < UNAVAILABLE_ENTER * unavailable), DOWN, status)
     status = torch.where((previous == CLOSED) & (down < UNAVAILABLE_ENTER * unavailable), CLOSED, status)
-    numeric = wait_quantiles(probabilities, (.5,)).squeeze(-1)
     prediction = torch.where(is_unavailable, status, numeric)
     for locked in (REFURBISHMENT, UNKNOWN):
         prediction = torch.where(probabilities[..., locked] == 1, locked, prediction)

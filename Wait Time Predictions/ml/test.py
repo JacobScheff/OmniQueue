@@ -1,6 +1,7 @@
 """Evaluate direct or autoregressive forecasts on held-out operating days."""
 
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -15,7 +16,9 @@ from ml.data import (
     WAIT_STEP, align_day, load_dataset, time_features, validate_day,
 )
 from ml.model import build_model, select_device
-from ml.availability import FORECAST_POLICY_VERSION, advance_ages, decode_availability
+from ml.availability import (
+    FORECAST_POLICY_VERSION, advance_ages, decode_availability, decode_availability_sequence,
+)
 
 HORIZON_MINUTES = (5, 15, 30, 60, 120, 240, 360, 480, 600)
 
@@ -181,6 +184,139 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
     return results
 
 
+def _prepare_test_day(day, rides):
+    """Prepare independent origin metadata without reading future ride targets."""
+    from zoneinfo import ZoneInfo
+    from ml.data import PARK_TIMEZONE
+    validate_day(day)
+    timestamps = day["timestamps"]
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        raise ValueError("Day timestamps must be strictly increasing")
+    timezone = ZoneInfo(day["timezone"]) if day.get("timezone") else PARK_TIMEZONE
+    tokens = align_day(day, rides)
+    remaining = [0] * len(timestamps)
+    for index in range(len(timestamps) - 2, -1, -1):
+        if timestamps[index + 1] - timestamps[index] == TICK_SECONDS:
+            remaining[index] = remaining[index + 1] + 1
+    interpolated = day.get("interpolated_ticks", {})
+    observed = torch.tensor([str(tick) not in interpolated for tick in timestamps])
+    ages = torch.zeros(len(rides), dtype=torch.long)
+    origins, outage_ages = [], []
+    for index in range(len(timestamps) - 1):
+        if index and timestamps[index] - timestamps[index - 1] != TICK_SECONDS:
+            ages = torch.zeros_like(ages)
+        ages = advance_ages(ages, tokens[index])
+        if remaining[index] and not any(int(tick) <= timestamps[index] < right
+                                        for tick, (_, right) in interpolated.items()):
+            origins.append(index)
+            outage_ages.append(ages)
+    return {"tokens": tokens, "timestamps": timestamps, "timezone": timezone,
+            "features": torch.tensor(time_features(timestamps[1:], timezone), dtype=torch.float32),
+            "remaining": remaining, "observed": observed, "origins": origins, "ages": outage_ages}
+
+
+@torch.inference_mode()
+def forecast_days(model, days, rides, device, batch_size, *, horizon_batch_size=8):
+    """Evaluate a bounded group of independent days together.
+
+    V3 encodes all days in one causal, padded forward pass. Origin states are
+    then batched across days, and independent future leads share model queries.
+    Availability decoding stays causal across leads. Only scoring reads future
+    targets, and each origin retains its own session and interpolation limits.
+    Older architectures retain their existing autoregressive evaluator.
+    """
+    if batch_size < 1 or horizon_batch_size < 1:
+        raise ValueError("Evaluation origin and horizon batch sizes must be positive")
+    if not hasattr(model, "forecast_probabilities"):
+        results = []
+        for day in days:
+            transitions = empty_transitions()
+            forecasts = forecast_day(model, day, rides, device, batch_size, transition_totals=transitions)
+            results.append((forecasts, transitions))
+        return results
+    from torch.nn.utils.rnn import pad_sequence
+    model.eval()
+    prepared = [_prepare_test_day(day, rides) for day in days]
+    results = [([], empty_transitions()) for _ in days]
+    # Round-robin origins keep multiple days represented in each GPU query,
+    # rather than draining one day's forecast origins before the next day.
+    records = [(row, day["origins"][index], day["ages"][index])
+               for index in range(max((len(day["origins"]) for day in prepared), default=0))
+               for row, day in enumerate(prepared) if index < len(day["origins"])]
+    if not records:
+        return results
+    rows, origins, outage_ages = zip(*records)
+    outage_ages = torch.stack(outage_ages).to(device)
+    inputs = pad_sequence([day["tokens"][:-1] for day in prepared], batch_first=True, padding_value=UNKNOWN).to(device)
+    features = pad_sequence([day["features"] for day in prepared], batch_first=True).to(device)
+    immediate, states = model(inputs, features, return_state_sequence=True)
+    rows_device = torch.tensor(rows, device=device)
+    origins_device = torch.tensor(origins, device=device)
+    origin_states = states[:, rows_device, origins_device].contiguous()
+    first_logits = immediate[rows_device, origins_device]
+    origin_tokens = inputs[rows_device, origins_device]
+    del immediate, states, inputs, features
+    lengths = torch.tensor([prepared[row]["remaining"][origin] for row, origin in zip(rows, origins)])
+    steps = min(max(HORIZON_MINUTES) // 5, int(lengths.max()))
+    for start in range(0, len(origins), batch_size):
+        end = min(start + batch_size, len(origins))
+        selected_rows, selected_origins = rows[start:end], origins[start:end]
+        count = end - start
+        batch_steps = min(steps, int(lengths[start:end].max()))
+        # Calendar features are known at the origin, including leads after a
+        # day's final observation. Such leads are generated but never scored.
+        calendar = torch.tensor([
+            time_features([prepared[row]["timestamps"][origin] + step * TICK_SECONDS
+                           for step in range(1, batch_steps + 1)], prepared[row]["timezone"])
+            for row, origin in zip(selected_rows, selected_origins)
+        ], dtype=torch.float32, device=device)
+        tokens = origin_tokens[start:end]
+        previous = tokens.cpu()
+        locked = previous == REFURBISHMENT
+        absent = torch.stack([(prepared[row]["tokens"][:origin + 1] == UNKNOWN).all(0)
+                              for row, origin in zip(selected_rows, selected_origins)])
+        paths = []
+        for lead_start in range(0, batch_steps, horizon_batch_size):
+            lead_end = min(lead_start + horizon_batch_size, batch_steps)
+            leads = torch.arange(lead_start + 1, lead_end + 1, device=device)
+            logits = model.horizon_logits(origin_states[:, start:end], tokens,
+                                           calendar[:, lead_start:lead_end], leads)
+            if lead_start == 0:
+                logits[:, 0] = first_logits[start:end]
+            probabilities = model.direct_probabilities(logits, outage_ages[start:end], leads).cpu()
+            prediction = decode_availability_sequence(probabilities, previous)
+            prediction.masked_fill_(locked.unsqueeze(1), REFURBISHMENT)
+            prediction.masked_fill_(absent.unsqueeze(1), UNKNOWN)
+            previous = prediction[:, -1]
+            paths.append(prediction)
+        paths = torch.cat(paths, dim=1)
+        for row in sorted(set(selected_rows)):
+            selected = torch.tensor([index for index in range(count) if selected_rows[index] == row])
+            indices = torch.tensor([selected_origins[index] for index in selected.tolist()])
+            day = prepared[row]
+            forecasts, transitions = results[row]
+            day_lengths = lengths[start:end][selected]
+            for minutes in HORIZON_MINUTES:
+                step = minutes // 5
+                eligible = day_lengths >= step
+                if step <= batch_steps and eligible.any():
+                    eligible_origins = indices[eligible]
+                    forecasts.append((minutes, eligible_origins, paths[selected[eligible], step - 1],
+                                      day["tokens"][eligible_origins + step]))
+            offsets = torch.arange(1, batch_steps + 1)
+            targets = (indices[:, None] + offsets).clamp_max(len(day["tokens"]) - 1)
+            observed = ((offsets <= day_lengths[:, None]) & day["observed"][targets]
+                        & day["observed"][indices, None]).unsqueeze(-1)
+            events = score_transitions(day["tokens"][indices], paths[selected], day["tokens"][targets], observed)
+            for name, values in events.items():
+                for field, value in values.items():
+                    if field == "errors":
+                        transitions[name][field].extend(value)
+                    else:
+                        transitions[name][field] += value
+    return results
+
+
 def summarize_wait_errors(errors):
     """Pool individual ride/tick errors, including exact matches in all averages."""
     errors = torch.as_tensor(errors, dtype=torch.float64, device="cpu").flatten()
@@ -252,6 +388,11 @@ def print_transitions(totals):
 def evaluate(settings=config):
     if settings.BATCH_SIZE < 1:
         raise ValueError("BATCH_SIZE must be positive")
+    day_batch_size = getattr(settings, "TEST_DAY_BATCH_SIZE", config.TEST_DAY_BATCH_SIZE)
+    horizon_batch_size = getattr(settings, "TEST_HORIZON_BATCH_SIZE", config.TEST_HORIZON_BATCH_SIZE)
+    if day_batch_size < 1 or horizon_batch_size < 1:
+        raise ValueError("Evaluation day and horizon batch sizes must be positive")
+    started = time.perf_counter()
     device = select_device(settings.DEVICE)
     checkpoint = torch.load(settings.CHECKPOINT, map_location=device, weights_only=True)
     if hasattr(settings, "PARK"):
@@ -287,21 +428,37 @@ def evaluate(settings=config):
     strategy = "Direct multi-horizon" if hasattr(model, "horizon_logits") else "Autoregressive greedy"
     print(f"{strategy} forecasts from every eligible five-minute origin; "
           "only observations at or before each origin enter its forecast.", flush=True)
+    if hasattr(model, "forecast_probabilities"):
+        print(f"Parallel evaluation: up to {day_batch_size} days, {settings.BATCH_SIZE} forecast origins "
+              f"and {horizon_batch_size} future leads per model query.", flush=True)
+    else:
+        day_batch_size = 1
     transitions = empty_transitions()
     totals = {minutes: {"correct": 0, "scored": 0, "forecasts": 0, "numeric_actual": 0, "errors": []}
               for minutes in HORIZON_MINUTES}
-    for index, key in enumerate(dates, 1):
-        print(f"Evaluating test day {index}/{len(dates)}: {key}", flush=True)
-        for minutes, origins, predictions, targets in forecast_day(
-                model, modeling_day(dataset["days"][key]), checkpoint["rides"], device, settings.BATCH_SIZE,
-                transition_totals=transitions):
-            total = totals[minutes]
-            valid = (targets >= 0) & (targets <= DOWN)
-            total["correct"] += ((predictions == targets) & valid).sum().item()
-            total["scored"] += valid.sum().item()
-            total["forecasts"] += len(origins)
-            total["numeric_actual"] += ((targets >= 0) & (targets < OVERFLOW)).sum().item()
-            total["errors"].append(numeric_wait_errors(predictions, targets))
+    for start in range(0, len(dates), day_batch_size):
+        selected_dates = dates[start:start + day_batch_size]
+        print(f"Evaluating test days {start + 1}-{start + len(selected_dates)}/{len(dates)} together", flush=True)
+        batches = forecast_days(model, [modeling_day(dataset["days"][key]) for key in selected_dates],
+                                checkpoint["rides"], device, settings.BATCH_SIZE,
+                                horizon_batch_size=horizon_batch_size)
+        for offset, (forecasts, events) in enumerate(batches, 1):
+            key = selected_dates[offset - 1]
+            print(f"Evaluating test day {start + offset}/{len(dates)}: {key} (complete)", flush=True)
+            for name, values in events.items():
+                for field, value in values.items():
+                    if field == "errors":
+                        transitions[name][field].extend(value)
+                    else:
+                        transitions[name][field] += value
+            for minutes, origins, predictions, targets in forecasts:
+                total = totals[minutes]
+                valid = (targets >= 0) & (targets <= DOWN)
+                total["correct"] += ((predictions == targets) & valid).sum().item()
+                total["scored"] += valid.sum().item()
+                total["forecasts"] += len(origins)
+                total["numeric_actual"] += ((targets >= 0) & (targets < OVERFLOW)).sum().item()
+                total["errors"].append(numeric_wait_errors(predictions, targets))
     results = {}
     for minutes, total in totals.items():
         wait_errors = summarize_wait_errors(torch.cat(total["errors"]) if total["errors"] else [])
@@ -314,8 +471,10 @@ def evaluate(settings=config):
     print("Accuracy scores wait/overflow and DOWN tokens. Minute errors require two numeric wait tokens "
           "(0-300 min); numeric pairs shows coverage of actual numeric waits. "
           "Forecasts stop at session breaks and the end of each day.", flush=True)
+    transitions = print_transitions(transitions)
+    print(f"Test completed in {time.perf_counter() - started:.1f}s", flush=True)
     return {"forecast_policy_version": FORECAST_POLICY_VERSION,
-            "dates": dates, "horizons": results, "transitions": print_transitions(transitions)}
+            "dates": dates, "horizons": results, "transitions": transitions}
 
 
 def main():
@@ -327,9 +486,14 @@ def main():
     parser.add_argument("--checkpoint", type=Path, help="Evaluate this saved model's own test dates")
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--output", type=Path, help="Save test metrics as JSON")
+    parser.add_argument("--day-batch-size", type=int, default=config.TEST_DAY_BATCH_SIZE,
+                        help="Maximum independent days encoded together")
+    parser.add_argument("--horizon-batch-size", type=int, default=config.TEST_HORIZON_BATCH_SIZE,
+                        help="Maximum direct future leads per model query")
     args = parser.parse_args()
     try:
-        settings = settings_for(args.park, DEVICE=args.device)
+        settings = settings_for(args.park, DEVICE=args.device, TEST_DAY_BATCH_SIZE=args.day_batch_size,
+                                TEST_HORIZON_BATCH_SIZE=args.horizon_batch_size)
         if args.checkpoint:
             settings.CHECKPOINT = args.checkpoint.resolve()
         if args.dataset:
