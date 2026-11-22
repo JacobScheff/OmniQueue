@@ -140,7 +140,8 @@ class handler(BaseHTTPRequestHandler):
         configured = bool(os.environ.get("CRON_SECRET") and os.environ.get("FIRESTORE_SERVICE_ACCOUNT_JSON"))
         return self.respond(200 if configured else 503, status="ready" if configured else "not_ready",
                             collector_version=3, configured=configured,
-                            snapshot_bucket_minutes=5, parks=[park.slug for park in parks])
+                            snapshot_bucket_minutes=5, parks=[park.slug for park in parks],
+                            source_commit=os.environ.get("VERCEL_GIT_COMMIT_SHA"))
 
     def do_POST(self):
         secret = os.environ.get("CRON_SECRET")

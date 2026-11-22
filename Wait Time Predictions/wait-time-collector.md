@@ -41,6 +41,8 @@ See [the predictor guide](README.md) to cache complete and incomplete days local
 
 ## Multi-park deployment
 
+The existing `omniqueue-waits` Vercel project tracks `wait-time-data-collection` as its **Production** branch, with automatic production-domain assignment enabled. Pushing a commit to that branch automatically builds and updates `https://omniqueue-waits.vercel.app`; a local commit takes effect after it is pushed. Other branches remain previews. The read-only readiness response includes `source_commit` so the live build can be matched to GitHub without exposing any credentials.
+
 Redeploy the updated function to enable collection for all ten parks with the existing cron URL and credentials. All ten park fetches can run concurrently within the function timeout; each catalog hash and snapshot document ID includes the park UUID. The HTTP response includes per-park results; a failed park produces a non-2xx response while successful parks retain their snapshots. Repeated calls within one bucket remain idempotent.
 
 For one park, use `POST /api/collect?park=epcot` (or another supported slug). To limit the default set, configure `COLLECTOR_PARKS=disneyland,california-adventure`; by default it includes all ten. The new Universal slugs are `universal-studios-hollywood`, `universal-studios-florida`, `islands-of-adventure`, and `epic-universe`. An explicit production override must include them. The updated local lab reads each park's UUID-prefixed Firestore documents. Old Disneyland data is still compatible. Redeployment and cron configuration are separate from local data/model changes.
