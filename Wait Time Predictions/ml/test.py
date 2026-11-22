@@ -15,7 +15,7 @@ from ml.data import (
     WAIT_STEP, align_day, load_dataset, time_features, validate_day,
 )
 from ml.model import build_model, select_device
-from ml.availability import advance_ages
+from ml.availability import FORECAST_POLICY_VERSION, advance_ages, decode_availability
 
 HORIZON_MINUTES = (5, 15, 30, 60, 120, 240, 360, 480, 600)
 
@@ -126,19 +126,26 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
         hidden = torch.cat(states[start:start + batch_size], dim=1)
         origin_states = hidden
         origin_tokens = tokens[origin_indices]
+        previous = origin_tokens
         logits = torch.stack(first_logits[start:start + batch_size])
         locked = torch.stack(locks[start:start + batch_size])
         absent = torch.stack(absences[start:start + batch_size])
         ages = torch.stack(outage_ages[start:start + batch_size])
+        observed_ages = ages
         survival = torch.ones_like(ages, dtype=torch.float32)
         steps = min(max(HORIZON_MINUTES) // 5, max(remaining[index] for index in selected))
         paths = []
         for step in range(1, steps + 1):
-            # Match forecast()'s supported output classes and context locks,
-            # using deterministic most-likely tokens instead of sampling paths.
-            prediction, survival = model.greedy_prediction(logits, ages, survival)
+            # Direct forecasts use exactly the same probabilities, conditional
+            # median waits and causal availability decoder as the map.
+            if hasattr(model, "forecast_probabilities"):
+                probabilities = model.direct_probabilities(logits.unsqueeze(1), observed_ages, [[step]])[:, 0]
+                prediction = decode_availability(probabilities, previous)
+            else:
+                prediction, survival = model.greedy_prediction(logits, ages, survival)
             prediction[locked] = REFURBISHMENT
             prediction[absent] = UNKNOWN
+            previous = prediction
             ages = advance_ages(ages, prediction)
             survival = torch.where(ages > 0, survival, 1.)
             if transition_totals is not None:
@@ -307,7 +314,8 @@ def evaluate(settings=config):
     print("Accuracy scores wait/overflow and DOWN tokens. Minute errors require two numeric wait tokens "
           "(0-300 min); numeric pairs shows coverage of actual numeric waits. "
           "Forecasts stop at session breaks and the end of each day.", flush=True)
-    return {"dates": dates, "horizons": results, "transitions": print_transitions(transitions)}
+    return {"forecast_policy_version": FORECAST_POLICY_VERSION,
+            "dates": dates, "horizons": results, "transitions": print_transitions(transitions)}
 
 
 def main():

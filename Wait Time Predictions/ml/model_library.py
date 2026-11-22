@@ -10,6 +10,7 @@ import shutil
 from uuid import uuid4
 
 from ml import config
+from ml.availability import FORECAST_POLICY_VERSION
 from ml.attractions import is_excluded
 from ml.data import TOKEN_LABELS
 from ml.parks import settings_for
@@ -295,7 +296,9 @@ class ModelLibrary:
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
             stat = path.stat()
-            if report.get("checkpoint_mtime_ns") == stat.st_mtime_ns and report.get("checkpoint_size") == stat.st_size:
+            if (report.get("checkpoint_mtime_ns") == stat.st_mtime_ns
+                    and report.get("checkpoint_size") == stat.st_size
+                    and report.get("forecast_policy_version") == FORECAST_POLICY_VERSION):
                 return report
         except (OSError, ValueError, TypeError):
             pass

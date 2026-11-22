@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 import torch
 
 from ml.data import TOKEN_LABELS, load_dataset, save_dataset
+from ml.availability import FORECAST_POLICY_VERSION
 from ml.lab import ParkLab
 from ml.model_library import model_name, split_preview
 from ml.parks import settings_for
@@ -61,6 +62,7 @@ class ModelStudioTests(unittest.TestCase):
         for checkpoint in (path, latest):
             stat = checkpoint.stat()
             checkpoint.with_suffix(".test.json").write_text(json.dumps({"checkpoint_mtime_ns": stat.st_mtime_ns,
+                                                                      "forecast_policy_version": FORECAST_POLICY_VERSION,
                                                                       "checkpoint_size": stat.st_size}), encoding="utf-8")
         return identifier, path
 
@@ -261,11 +263,23 @@ class ModelStudioTests(unittest.TestCase):
         path = self.root / "model.pt"
         path.write_bytes(b"first")
         stat = path.stat()
-        report = {"checkpoint_mtime_ns": stat.st_mtime_ns, "checkpoint_size": stat.st_size, "dates": ["2026-11-06"]}
+        report = {"checkpoint_mtime_ns": stat.st_mtime_ns, "checkpoint_size": stat.st_size,
+                  "forecast_policy_version": FORECAST_POLICY_VERSION, "dates": ["2026-11-06"]}
         path.with_suffix(".test.json").write_text(json.dumps(report), encoding="utf-8")
         self.assertIsNotNone(self.lab.library.report(path))
         path.write_bytes(b"different weights")
         self.assertIsNone(self.lab.library.report(path))
+
+    def test_reports_from_an_older_forecast_policy_need_reevaluation(self):
+        path = self.root / "model.pt"
+        path.write_bytes(b"same weights")
+        stat = path.stat()
+        report = {"checkpoint_mtime_ns": stat.st_mtime_ns, "checkpoint_size": stat.st_size}
+        for version in (None, FORECAST_POLICY_VERSION - 1):
+            if version is not None:
+                report["forecast_policy_version"] = version
+            path.with_suffix(".test.json").write_text(json.dumps(report), encoding="utf-8")
+            self.assertIsNone(self.lab.library.report(path))
 
     def test_full_log_download_preserves_lines_beyond_the_live_tail(self):
         task = {"state": "queued", "action": "refresh", "log": deque(maxlen=4000), "error": "",

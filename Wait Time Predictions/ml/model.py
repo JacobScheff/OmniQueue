@@ -100,12 +100,17 @@ class WaitPredictor(nn.Module):
         logits = self.output(self.output_norm(states)).reshape(batch, ticks, rides, VOCAB_SIZE)
         return logits, hidden
 
-    def prediction_logits(self, logits, ages, temperature=1.0):
-        """Use the same output policy in production and held-out evaluation."""
+    def supported_logits(self, logits, temperature=1.0):
+        """Mask unsupported output classes without altering availability."""
         logits = logits.clone() / temperature
         logits[..., [REFURBISHMENT, UNKNOWN]] = -torch.inf
         if not self.predict_closed:
             logits[..., CLOSED] = -torch.inf
+        return logits
+
+    def prediction_logits(self, logits, ages, temperature=1.0):
+        """Use the same output policy in production and held-out evaluation."""
+        logits = self.supported_logits(logits, temperature)
         if self.breakdown_hazards is None:
             return logits
         hazards = torch.as_tensor(self.breakdown_hazards, device=logits.device, dtype=logits.dtype)
@@ -286,13 +291,58 @@ class HorizonWaitPredictor(TransitionWaitPredictor):
         context = self.output_norm(context).reshape(batch, ticks, self.num_rides, -1)
         return self.wait_distribution(context, tokens)
 
+    def prediction_logits(self, logits, ages=None, temperature=1.0):
+        """Direct horizon marginals already include outage persistence.
+
+        They are not breakdown-onset hazards. Applying the autoregressive
+        duration override to generated DOWN states compounds downtime mass.
+        Saved v3 weights work with this correction without retraining.
+        """
+        return self.supported_logits(logits, temperature)
+
+    def direct_probabilities(self, logits, observed_ages, leads, temperature=1.0):
+        """Direct marginals with a survival floor for an *observed* outage only.
+
+        A confirmed ongoing outage cannot have less DOWN probability than its
+        residual survival estimate (conditional on not becoming CLOSED). This
+        prior ends as survival decays; generated statuses never start or reset
+        it. logits are [batch, leads, rides, vocab], ages [batch, rides].
+        """
+        probabilities = self.prediction_logits(logits, temperature=temperature).softmax(-1)
+        if self.breakdown_hazards is None:
+            return probabilities
+        leads = torch.as_tensor(leads, device=logits.device, dtype=torch.long).expand(logits.shape[:2])
+        hazards = torch.as_tensor(self.breakdown_hazards, device=logits.device, dtype=logits.dtype)
+        # A cumulative log-survival table supports arbitrary batched leads and
+        # keeps production's all-lead query identical to evaluation's queries.
+        size = int(observed_ages.max() + leads.max())
+        indices = torch.arange(size, device=logits.device).clamp_max(hazards.shape[-1] - 1)
+        log_survival = torch.log1p(-hazards[:, indices].clamp_max(1 - torch.finfo(logits.dtype).eps))
+        log_survival = F.pad(log_survival.cumsum(-1), (1, 0))
+        table = log_survival.unsqueeze(0).expand(logits.shape[0], -1, -1)
+        start = (observed_ages - 1).clamp_min(0)
+        beginning = table.gather(-1, start.unsqueeze(-1)).transpose(1, 2)
+        end = (start.unsqueeze(1) + leads.unsqueeze(-1)).transpose(1, 2)
+        survival = (table.gather(-1, end).transpose(1, 2) - beginning).exp()
+        survival = survival * (observed_ages > 0).unsqueeze(1)
+        nonclosed = 1 - probabilities[..., CLOSED]
+        down = torch.maximum(probabilities[..., DOWN], nonclosed * survival)
+        wait_logits = logits[..., :DOWN] / temperature
+        wait_logits = torch.where(torch.isfinite(wait_logits).any(-1, keepdim=True), wait_logits, 0.)
+        conditional = wait_logits.softmax(-1)
+        probabilities = probabilities.clone()
+        probabilities[..., :DOWN] = conditional * (nonclosed - down).clamp_min(0).unsqueeze(-1)
+        probabilities[..., DOWN] = down
+        return probabilities
+
     @torch.inference_mode()
-    def forecast(self, history, time_features, steps=24, samples=100, temperature=1.0,
-                 history_timestamps=None):
+    def forecast_probabilities(self, history, time_features, steps=24, temperature=1.0,
+                               history_timestamps=None):
+        """Exact [steps, rides, vocab] marginals from the observed prefix."""
         if history.ndim != 2 or history.shape[0] < 1 or history.shape[1] != self.num_rides:
             raise ValueError("History must have shape [nonempty ticks, checkpoint rides]")
-        if steps < 1 or samples < 1 or not math.isfinite(temperature) or temperature <= 0:
-            raise ValueError("Steps, samples, and temperature must be positive and finite")
+        if steps < 1 or not math.isfinite(temperature) or temperature <= 0:
+            raise ValueError("Steps and temperature must be positive and finite")
         if time_features.shape != (history.shape[0] + steps - 1, 6):
             raise ValueError("Calendar features do not cover the history and forecast")
         self.eval()
@@ -301,17 +351,45 @@ class HorizonWaitPredictor(TransitionWaitPredictor):
         logits = self.horizon_logits(state, history[-1:].contiguous(), features,
                                      torch.arange(1, steps + 1, device=history.device))
         logits[:, 0] = immediate[:, -1]
+        probabilities = self.direct_probabilities(
+            logits, history_ages(history, history_timestamps).unsqueeze(0),
+            torch.arange(1, steps + 1, device=history.device), temperature)[0]
         locked = history[-1] == REFURBISHMENT
         absent = (history == UNKNOWN).all(0)
-        ages = history_ages(history, history_timestamps).expand(samples, -1)
+        for mask, token in ((locked, REFURBISHMENT), (absent, UNKNOWN)):
+            probabilities[:, mask] = 0
+            probabilities[:, mask, token] = 1
+        return probabilities
+
+    @torch.inference_mode()
+    def forecast(self, history, time_features, steps=24, samples=100, temperature=1.0,
+                 history_timestamps=None):
+        """Sample correlated rank paths while preserving horizon marginals.
+
+        Sharing quantiles across leads avoids independent five-minute draws.
+        These paths express marginal uncertainty, not learned event trajectories;
+        the map/evaluator decode exact probabilities instead of voting on paths.
+        """
+        if samples < 1:
+            raise ValueError("Samples must be positive")
+        probabilities = self.forecast_probabilities(history, time_features, steps, temperature,
+                                                    history_timestamps)
+        availability = torch.stack((probabilities[..., :DOWN].sum(-1),
+                                    probabilities[..., DOWN], probabilities[..., CLOSED],
+                                    probabilities[..., REFURBISHMENT], probabilities[..., UNKNOWN]), -1)
+        availability_cdf = availability.cumsum(-1)
+        availability_cdf[..., -1] = 1
+        wait_cdf = probabilities[..., :DOWN].cumsum(-1)
+        wait_cdf = wait_cdf / wait_cdf[..., -1:].clamp_min(torch.finfo(probabilities.dtype).tiny)
+        wait_cdf[..., -1] = 1
+        status_uniform = torch.rand(self.num_rides, samples, device=history.device)
+        wait_uniform = torch.rand_like(status_uniform)
+        labels = torch.tensor([0, DOWN, CLOSED, REFURBISHMENT, UNKNOWN], device=history.device)
         paths = []
         for step in range(steps):
-            probabilities = self.prediction_logits(logits[:, step].expand(samples, -1, -1), ages, temperature).softmax(-1)
-            token = torch.multinomial(probabilities.reshape(-1, VOCAB_SIZE), 1).reshape(samples, self.num_rides)
-            token[:, locked] = REFURBISHMENT
-            token[:, absent] = UNKNOWN
-            ages = advance_ages(ages, token)
-            paths.append(token)
+            status = torch.searchsorted(availability_cdf[step].contiguous(), status_uniform, right=True)
+            waits = torch.searchsorted(wait_cdf[step].contiguous(), wait_uniform, right=True).clamp_max(OVERFLOW)
+            paths.append(torch.where(status == 0, waits, labels[status]).T)
         return torch.stack(paths, 1)
 
 

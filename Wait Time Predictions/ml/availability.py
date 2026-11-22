@@ -2,7 +2,51 @@
 
 import torch
 
-from ml.data import DOWN, OVERFLOW, TICK_SECONDS, align_day
+from ml.data import CLOSED, DOWN, OVERFLOW, REFURBISHMENT, UNKNOWN, TICK_SECONDS, align_day
+
+
+# Bump when inference/decoding changes so saved test reports cannot silently
+# describe an older forecast policy with the same checkpoint weights.
+FORECAST_POLICY_VERSION = 2
+UNAVAILABLE_ENTER = .65
+UNAVAILABLE_EXIT = .35
+
+
+def wait_quantiles(probabilities, quantiles=(.1, .5, .9)):
+    """Inverse CDF of waits conditional on operating, including overflow.
+
+    Accept [..., vocab] and return [..., quantiles]. A zero-mass conditional
+    distribution has no wait; callers must show the unavailable/locked status.
+    """
+    cdf = probabilities[..., :DOWN].cumsum(-1).contiguous()
+    levels = torch.as_tensor(quantiles, device=cdf.device, dtype=cdf.dtype)
+    values = (cdf[..., -1:] * levels).contiguous()
+    return torch.searchsorted(cdf, values).clamp_max(OVERFLOW)
+
+
+def decode_availability(probabilities, previous):
+    """Decode one forecast tick with hysteresis, seeded by the last observation.
+
+    Availability competes against the *sum* of operating wait probabilities,
+    not each individual wait bucket. Ambiguous predictions retain the previous
+    availability; strong evidence can still close/reopen within a single tick.
+    This is causal over forecast leads: appending more leads changes no prefix.
+    Raw probabilities remain untouched and are reported separately.
+    """
+    down, closed = probabilities[..., DOWN], probabilities[..., CLOSED]
+    unavailable = down + closed
+    was_unavailable = (previous == DOWN) | (previous == CLOSED)
+    is_unavailable = torch.where(was_unavailable, unavailable > UNAVAILABLE_EXIT,
+                                 unavailable >= UNAVAILABLE_ENTER)
+    status = torch.where(closed >= down, CLOSED, DOWN)
+    # Apply the same evidence margin before changing DOWN <-> CLOSED labels.
+    status = torch.where((previous == DOWN) & (closed < UNAVAILABLE_ENTER * unavailable), DOWN, status)
+    status = torch.where((previous == CLOSED) & (down < UNAVAILABLE_ENTER * unavailable), CLOSED, status)
+    numeric = wait_quantiles(probabilities, (.5,)).squeeze(-1)
+    prediction = torch.where(is_unavailable, status, numeric)
+    for locked in (REFURBISHMENT, UNKNOWN):
+        prediction = torch.where(probabilities[..., locked] == 1, locked, prediction)
+    return prediction
 
 
 def fit_breakdown_hazards(days, rides, bins=48, prior_strength=5):

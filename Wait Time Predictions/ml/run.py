@@ -20,6 +20,35 @@ from ml.data import (
     WAIT_STEP, align_day, expected_ticks, history_from_json, interpolate_day, load_dataset, time_features, validate_day,
 )
 from ml.model import build_model, select_device
+from ml.availability import decode_availability, wait_quantiles
+
+
+def summarize_probabilities(probabilities, rides, timestamps, initial_tokens):
+    """Decode exact direct forecasts; keep probabilities independent of labels."""
+    probabilities = probabilities.cpu()
+    previous = initial_tokens.cpu()
+    quantiles = wait_quantiles(probabilities).tolist()
+    snapshots = []
+    for step, timestamp in enumerate(timestamps):
+        previous = decode_availability(probabilities[step], previous)
+        rows = []
+        for index, ride in enumerate(rides):
+            values = probabilities[step, index]
+            row = {**ride, "down_probability": values[DOWN].item(),
+                   "closed_probability": values[CLOSED].item(),
+                   "operating_probability": values[:DOWN].sum().item(),
+                   "over_300_probability": values[OVERFLOW].item()}
+            token = previous[index].item()
+            if token in (DOWN, CLOSED, REFURBISHMENT, UNKNOWN):
+                row.update(status=TOKEN_LABELS[token], wait_minutes=None)
+            else:
+                row["wait_minutes"] = {
+                    name: "300+" if value == OVERFLOW else value * WAIT_STEP
+                    for name, value in zip(("p10", "p50", "p90"), quantiles[step][index])
+                }
+            rows.append(row)
+        snapshots.append({"time": datetime.fromtimestamp(timestamp, timezone.utc).isoformat(), "rides": rows})
+    return snapshots
 
 
 def summarize(paths, rides, timestamps):
@@ -62,7 +91,8 @@ def print_predictions(result):
     from zoneinfo import ZoneInfo
     local_zone = ZoneInfo(result.get("timezone", str(PARK_TIMEZONE)))
     observed = datetime.fromisoformat(result["as_of"]).astimezone(local_zone)
-    print(f"Forecast for {result['day']} | {result['samples']} samples", flush=True)
+    method = "exact probabilities" if result.get("forecast_method") == "direct_probabilities" else f"{result['samples']} samples"
+    print(f"Forecast for {result['day']} | {method}", flush=True)
     print(f"Observed through {observed:%Y-%m-%d %H:%M %Z}. Wait percentiles apply when operating.", flush=True)
     for snapshot in result["snapshots"]:
         moment = datetime.fromisoformat(snapshot["time"]).astimezone(local_zone)
@@ -173,15 +203,24 @@ def predict(settings=config, target_time=None, *, print_output=True):
             steps = 24
     future = [cutoff + TICK_SECONDS * step for step in range(steps)]
     features = torch.tensor(time_features(timestamps[1:] + future, park_timezone), dtype=torch.float32, device=device)
-    paths = model.forecast(tokens.to(device), features,
-                           steps=steps, samples=settings.SAMPLES, temperature=settings.TEMPERATURE,
-                           history_timestamps=timestamps)
+    direct = hasattr(model, "forecast_probabilities")
+    if direct:
+        probabilities = model.forecast_probabilities(tokens.to(device), features, steps=steps,
+                                                     temperature=settings.TEMPERATURE, history_timestamps=timestamps)
+        snapshots = summarize_probabilities(probabilities, checkpoint["rides"], future, tokens[-1])
+    else:
+        paths = model.forecast(tokens.to(device), features,
+                               steps=steps, samples=settings.SAMPLES, temperature=settings.TEMPERATURE,
+                               history_timestamps=timestamps)
+        snapshots = summarize(paths, checkpoint["rides"], future)
     if target_time is not None:
-        paths = paths[:, -1:]
-        future = future[-1:]
+        # Decode the entire prefix before slicing: hysteresis at the requested
+        # tick must match the same tick on the complete map timeline.
+        snapshots = snapshots[-1:]
     result = {"as_of": datetime.fromtimestamp(timestamps[-1], timezone.utc).isoformat(),
               "day": key, "timezone": park.timezone, "prediction_start": datetime.fromtimestamp(cutoff, timezone.utc).isoformat(),
-              "samples": settings.SAMPLES, "snapshots": summarize(paths, checkpoint["rides"], future)}
+              "samples": settings.SAMPLES, "forecast_method": "direct_probabilities" if direct else "sampled_paths",
+              "snapshots": snapshots}
     if print_output:
         print_predictions(result)
     return result

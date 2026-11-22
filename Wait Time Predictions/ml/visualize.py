@@ -269,9 +269,10 @@ class Visualizer:
                               "down_probability": ride["down_probability"],
                               "closed_probability": ride.get("closed_probability", 0)})
             snapshots.append({"timestamp": int(datetime.fromisoformat(snapshot["time"]).timestamp()),
-                              "source": "predicted", "rides": rides})
+                              "source": "predicted", "forecast_method": result.get("forecast_method"), "rides": rides})
         return {"snapshots": snapshots, "as_of": result["as_of"],
-                "prediction_start": result["prediction_start"], "samples": result["samples"]}
+                "prediction_start": result["prediction_start"], "samples": result["samples"],
+                "forecast_method": result.get("forecast_method")}
 
     def job_payload(self, job_id):
         with self.lock:

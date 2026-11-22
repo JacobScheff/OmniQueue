@@ -12,6 +12,7 @@ import torch
 
 from ml.data import CLOSED, DOWN, OVERFLOW, REFURBISHMENT, UNKNOWN, VOCAB_SIZE, save_dataset, time_features
 from ml.model import build_model, token_loss
+from ml.run import summarize_probabilities
 from ml.test import forecast_day
 from ml.train import Days, horizon_loss, train, rollout_loss
 
@@ -208,11 +209,18 @@ class TransitionModelTests(unittest.TestCase):
             self.assertEqual(expected[minutes, 2], actual[minutes, 2])
             history = torch.tensor(source["tokens"][:3])
             calendar = torch.tensor(time_features(timestamps[1:3 + minutes // 5]))
-            with patch("torch.multinomial", side_effect=lambda probabilities, count: probabilities.argmax(-1, keepdim=True)):
-                paths = model.forecast(history, calendar, steps=minutes // 5, samples=1)
-            self.assertEqual(expected[minutes, 2], paths[0, -1].tolist())
+            probabilities = model.forecast_probabilities(history, calendar, steps=minutes // 5)
+            from ml.availability import decode_availability
+            previous = history[-1]
+            for values in probabilities:
+                previous = decode_availability(values, previous)
+            self.assertEqual(expected[minutes, 2], previous.tolist())
+            summary = summarize_probabilities(probabilities, rides, timestamps[3:3 + minutes // 5], history[-1])
+            for index, row in enumerate(summary[-1]["rides"]):
+                self.assertEqual(row.get("status", "OPERATING"),
+                                 {DOWN: "DOWN", CLOSED: "CLOSED"}.get(previous[index].item(), "OPERATING"))
 
-    def test_direct_sampling_preserves_calibrated_outage_duration(self):
+    def test_direct_forecasts_preserve_the_remaining_duration_of_an_observed_outage(self):
         model = build_model(num_rides=1, embedding_size=4, hidden_size=8,
                             architecture="ride_horizon_v3", attention_heads=2,
                             predict_closed=True, breakdown_hazards=[[0., 0., 0., 1.]])

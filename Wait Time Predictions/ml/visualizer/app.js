@@ -565,7 +565,7 @@ async function generate() {
   $("generate").disabled = true;
   $("generate-label").textContent = "Generating forecast…";
   $("forecast-note").classList.remove("error");
-  $("forecast-note").textContent = `Rolling forward from ${clock(cutoff)} · ${state.meta.samples} sampled paths`;
+  $("forecast-note").textContent = `Generating predictions from ${clock(cutoff)}…`;
   message(state.meta.location_warning);
   renderTimeline();
   render();
@@ -580,7 +580,8 @@ async function generate() {
       if (result.state === "complete") {
         state.predicted = new Map(result.snapshots.map(frame => [frame.timestamp, frame]));
         state.loading = false;
-        $("forecast-note").textContent = `History through ${clock(Date.parse(result.as_of) / 1000)} · ${result.samples} paths. Dashed pins are predictions.`;
+        const method = result.forecast_method === "direct_probabilities" ? "Stable availability forecast" : `${result.samples} paths`;
+        $("forecast-note").textContent = `History through ${clock(Date.parse(result.as_of) / 1000)} · ${method}. Dashed pins are predictions.`;
         renderTimeline();
         render();
         return;
@@ -653,7 +654,8 @@ function render() {
   $("source").className = `source ${frame.source}`;
   $("source").textContent = frame.pending ? (state.loading ? "Preparing prediction" : "Prediction unavailable") : sourceNames[frame.source];
   $("source-note").textContent = frame.pending ? (state.forecastError ? "Adjust the prediction start to resolve the error." : "Generate a forecast to explore this time.")
-    : frame.source === "predicted" ? `${state.meta.samples} paths · median wait when operating`
+    : frame.source === "predicted" ? (frame.forecast_method === "direct_probabilities"
+      ? "Stable availability · median wait when operating" : `${state.meta.samples} paths · median wait when operating`)
     : frame.source === "interpolated" ? `Estimated between ${clock(frame.endpoints[0])} and ${clock(frame.endpoints[1])}`
     : frame.source === "observed" ? "Saved five-minute snapshot · real park observations"
     : frame.source === "break" ? "No operating session scheduled at this time."
@@ -1026,6 +1028,12 @@ async function pollTask() {
 
 async function manage(action, deletedId = null) {
   if (state.jobBusy || state.submitting) return;
+  if (action === "refresh" || action === "rebuild") {
+    const prompt = action === "rebuild"
+      ? "Re-fetch history? This downloads historical data again, replacing cached historical downloads, and refreshes recent Firebase observations. This can take a while. Continue?"
+      : "Refresh all data? This fetches historical data as well as recent Firebase observations. Historical downloads can take a while. Continue?";
+    if (!window.confirm(prompt)) return;
+  }
   const park = state.park;
   state.submitting = true;
   syncModelButtons();
