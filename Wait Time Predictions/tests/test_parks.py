@@ -193,6 +193,32 @@ class ParkTests(unittest.TestCase):
             self.assertTrue(any("date=2026-11-15" in call.args[0] for call in api.call_args_list))
             with self.assertRaisesRegex(ValueError, "handoff was not changed"):
                 set_firestore_start_date(settings, "2026-11-17")
+            # The recent API tail can fill an older gap but cannot silently
+            # enter training until it becomes finalized archive history.
+            data = load_dataset(settings.DATASET)
+            data.pop("firestore_start_date")
+            data["days"].pop("2026-11-16")
+            save_dataset(settings.DATASET, data)
+            set_firestore_start_date(settings, "2026-11-17")
+            coverage["summary"].update(recordedTo="2026-11-15", retrievableThrough="2026-11-16")
+            recent_document = {**document, "range": {"from": "2026-11-16", "to": "2026-11-16"}}
+            recent_schedule = {**schedule, "schedule": schedule["schedule"] + [
+                {**schedule["schedule"][0], "openingTime": "2026-11-16T08:00:00-05:00",
+                 "closingTime": "2026-11-16T08:15:00-05:00"}]}
+            def recent_request(path, key):
+                if path.endswith("date=2026-11-16"):
+                    return recent_document
+                return recent_schedule if "/schedule/" in path else request(path, key)
+            api.side_effect = recent_request
+            backfill("key", settings.DATASET, root / "raw", park=park, refresh=True)
+            recent = load_dataset(settings.DATASET)
+            self.assertNotIn("2026-11-16", recent["days"])
+            self.assertFalse(recent["incomplete_days"]["2026-11-16"]["history_finalized"])
+            coverage["summary"]["recordedTo"] = "2026-11-16"
+            api.reset_mock()
+            backfill("key", settings.DATASET, root / "raw", park=park)
+            self.assertTrue(load_dataset(settings.DATASET)["days"]["2026-11-16"]["history_finalized"])
+            self.assertTrue(any("date=2026-11-16" in call.args[0] for call in api.call_args_list))
             with self.assertRaisesRegex(ValueError, "different park"):
                 reconstruct([int(datetime.fromisoformat(f"{day}T08:00:00-05:00").timestamp())],
                             [document], {"ride"}, "disneyland")

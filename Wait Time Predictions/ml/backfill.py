@@ -147,12 +147,16 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disney
     first = date.fromisoformat(since or earliest)
     if first.isoformat() < earliest:
         raise ValueError(f"Your key can retrieve history starting {earliest}")
-    final = min(date.fromisoformat(summary["recordedTo"]),
-                datetime.now(PARK_TIMEZONE).date() - timedelta(days=1))
+    recorded_to = date.fromisoformat(summary["recordedTo"])
+    today = datetime.now(PARK_TIMEZONE).date()
+    final = min(recorded_to, today - timedelta(days=1))
     if dataset.get("firestore_start_date"):
         # Once collection has taken over, even a forced history refresh must
         # not replace those operating days with later API archive releases.
-        final = min(final, date.fromisoformat(dataset["firestore_start_date"]) - timedelta(days=1))
+        # The recent, retrievable tail can fill pre-handoff gaps, but remains
+        # provisional (excluded from training) until the archive finalizes it.
+        final = min(date.fromisoformat(summary.get("retrievableThrough") or summary["recordedTo"]), today,
+                    date.fromisoformat(dataset["firestore_start_date"]) - timedelta(days=1))
     last = min(date.fromisoformat(until), final) if until else final
     if first > last:
         print("No finalized history is available in this date range", flush=True)
@@ -168,6 +172,8 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disney
     eligibility_changed = dataset.get("eligible_ride_ids") != sorted(attraction_ids)
     dataset["eligible_ride_ids"] = sorted(attraction_ids)
     refreshed_months = set()
+    provisional_days = {key for key, row in dataset["incomplete_days"].items()
+                        if row.get("source") == "themeparks.wiki/history" and row.get("history_finalized") is False}
 
     def backup_once():
         nonlocal backed_up
@@ -180,7 +186,8 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disney
 
     def history(day):
         path = raw_dir / f"{day}.json.gz"
-        if path.exists() and (not refresh or day in fetched_history):
+        if path.exists() and (not refresh or day in fetched_history) and (
+                str(day) not in provisional_days or day in fetched_history):
             with gzip.open(path, "rt", encoding="utf-8") as source:
                 return json.load(source)
         payload = request_json(PARK_PATH + f"/history?date={day}", key)
@@ -226,14 +233,22 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disney
         if calendar_days[-1] > final:
             print(f"{name}: skipped; overnight history is not finalized yet", flush=True)
             continue
-        result = reconstruct(ticks, [history(value) for value in calendar_days], attraction_ids, park)
+        # A closed park's current-day history can be retrieved before archive
+        # finalization. Never turn its still-unobserved future into actuals.
+        as_of = datetime.now(timezone.utc).timestamp()
+        sampled_ticks = [tick for tick in ticks if tick <= as_of]
+        result = reconstruct(sampled_ticks, [history(value) for value in calendar_days], attraction_ids, park)
+        result["expected_timestamps"] = ticks
         result["timezone"] = park.timezone
+        result["history_finalized"] = day <= recorded_to
         result.update(checked_at=datetime.now(timezone.utc).timestamp(), closing_at=closing)
         reason = None
         try:
             if not result["rides"]:
                 raise ValueError("No attractions have recorded history")
             validate_day(result)
+            if not result["history_finalized"]:
+                reason = "History is provisional; waiting for archive finalization"
         except ValueError as error:
             reason = str(error)
         previous = dataset["days"].get(name) or dataset["incomplete_days"].get(name)

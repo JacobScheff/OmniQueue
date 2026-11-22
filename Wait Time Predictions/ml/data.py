@@ -257,6 +257,34 @@ def needs_refresh(day, now):
     return checked < closing and int(checked) // TICK_SECONDS < int(now) // TICK_SECONDS
 
 
+def merge_history_prefix(previous, current):
+    """Retain a one-time API prefix while refreshing the Firebase-only tail.
+
+    history_before is an exclusive UTC bucket boundary. No historical value
+    at or after it can survive a refresh, even if that Firebase tick is absent.
+    """
+    if not previous or "history_before" not in previous:
+        return current
+    cutoff = previous["history_before"]
+    names = {ride["id"]: ride for day in (previous, current) for ride in day["rides"]}
+    ride_ids = sorted(names)
+    rows = {}
+    for day, historical in ((previous, True), (current, False)):
+        positions = {ride["id"]: index for index, ride in enumerate(day["rides"])}
+        for timestamp, tokens in zip(day["timestamps"], day["tokens"]):
+            if historical and timestamp >= cutoff:
+                continue
+            rows[timestamp] = [tokens[positions[ride_id]] if ride_id in positions else MISSING
+                               for ride_id in ride_ids]
+    timestamps = sorted(rows)
+    interpolated = {key: value for key, value in previous.get("interpolated_ticks", {}).items()
+                    if int(key) < cutoff}
+    interpolated.update(current.get("interpolated_ticks", {}))
+    return {**current, "source": "firestore_with_history_prefix", "history_before": cutoff,
+            "rides": [names[ride_id] for ride_id in ride_ids], "timestamps": timestamps,
+            "tokens": [rows[timestamp] for timestamp in timestamps], "interpolated_ticks": interpolated}
+
+
 def export_firestore(settings=config):
     print("Preparing dataset export...", flush=True)
     from api.collect import firestore_client, fetch_park_data
@@ -289,6 +317,8 @@ def export_firestore(settings=config):
         if key not in incomplete:
             continue
         original = incomplete[key]
+        if original.get("history_finalized") is False:
+            continue  # Only a later archive release can finalize provisional history.
         repaired = interpolate_day(original)
         if repaired is original:
             continue
@@ -397,6 +427,7 @@ def export_firestore(settings=config):
                 result["timezone"] = str(PARK_TIMEZONE)
                 result["source"] = "firestore"
                 previous = dataset["days"].get(key) or incomplete.get(key)
+                result = merge_history_prefix(previous, result)
                 if not result["timestamps"] and previous and previous["timestamps"]:
                     completed += 1
                     message(f"{key}: no Firestore observations; kept cached history")
