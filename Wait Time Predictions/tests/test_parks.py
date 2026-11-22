@@ -14,7 +14,7 @@ import torch
 from api.collect import pack_snapshot, store_snapshot
 from api import collect
 from ml.backfill import backfill, reconstruct
-from ml.data import expected_ticks, export, load_dataset, save_dataset, time_features
+from ml.data import expected_ticks, export, export_firestore, load_dataset, save_dataset, set_firestore_start_date, time_features
 from ml.history_api import RateBudget, retry_delay
 from ml.lab import ParkLab
 from ml.parks import PARKS, get_park, settings_for
@@ -24,7 +24,7 @@ from ml.visualize import Visualizer, load_locations
 
 
 class ParkTests(unittest.TestCase):
-    def test_collector_collects_six_parks_and_keeps_successes_when_one_fails(self):
+    def test_collector_collects_all_parks_and_keeps_successes_when_one_fails(self):
         handler = object.__new__(collect.handler)
         handler.path = "/api/collect"
         handler.headers = {"Authorization": "Bearer test"}
@@ -39,7 +39,7 @@ class ParkTests(unittest.TestCase):
                 patch("api.collect.store_snapshot", return_value=1) as store:
             handler.do_POST()
             self.assertEqual(handler.respond.call_args.args, (200,))
-            self.assertEqual(handler.respond.call_args.kwargs["inserted"], 6)
+            self.assertEqual(handler.respond.call_args.kwargs["inserted"], len(PARKS))
             self.assertEqual({call.args[4]["park_id"] for call in store.call_args_list}, {p.id for p in PARKS.values()})
             client.return_value.close.assert_called_once()
             store.reset_mock()
@@ -47,7 +47,35 @@ class ParkTests(unittest.TestCase):
             with patch("api.collect.logger.exception"):
                 handler.do_POST()
             self.assertEqual(handler.respond.call_args.args, (502,))
-            self.assertEqual(handler.respond.call_args.kwargs["inserted"], 5)
+            self.assertEqual(handler.respond.call_args.kwargs["inserted"], len(PARKS) - 1)
+
+    def test_universal_parks_have_independent_identities_timezones_and_paths(self):
+        slugs = ("universal-studios-hollywood", "universal-studios-florida", "islands-of-adventure", "epic-universe")
+        self.assertEqual(len(PARKS), 10)
+        self.assertEqual(len({get_park(slug).id for slug in slugs}), 4)
+        self.assertEqual(get_park(slugs[0]).timezone, "America/Los_Angeles")
+        self.assertTrue(all(get_park(slug).timezone == "America/New_York" for slug in slugs[1:]))
+        for slug in slugs:
+            park = get_park(slug)
+            self.assertEqual(get_park(park.id), park)
+            self.assertEqual(settings_for(park, migrate=False).DATASET.parent.name, slug)
+
+    def test_collector_readiness_exposes_active_parks_without_credentials_or_writes(self):
+        handler = object.__new__(collect.handler)
+        handler.respond = Mock()
+        with patch.dict("os.environ", {"CRON_SECRET": "secret", "FIRESTORE_SERVICE_ACCOUNT_JSON": "private"}, clear=True), \
+                patch("api.collect.firestore_client") as client:
+            handler.do_GET()
+            self.assertEqual(handler.respond.call_args.args, (200,))
+            response = handler.respond.call_args.kwargs
+            self.assertEqual(response["parks"], list(PARKS))
+            self.assertEqual(response["snapshot_bucket_minutes"], 5)
+            self.assertNotIn("secret", str(response))
+            self.assertNotIn("private", str(response))
+            client.assert_not_called()
+            with patch.dict("os.environ", {"COLLECTOR_PARKS": "disneyland,epic-universe"}):
+                handler.do_GET()
+                self.assertEqual(handler.respond.call_args.kwargs["parks"], ["disneyland", "epic-universe"])
 
     def test_legacy_disneyland_is_copied_once_without_overwriting_either_cache(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -60,8 +88,8 @@ class ParkTests(unittest.TestCase):
             self.assertEqual(settings_for(root=root).DATASET.read_bytes(), b"new")
             self.assertEqual((root / "data/waits.json.gz").read_bytes(), b"legacy")
             paths = [settings_for(park, root=root) for park in PARKS]
-            self.assertEqual(len({settings.DATASET for settings in paths}), 6)
-            self.assertEqual(len({settings.CHECKPOINT for settings in paths}), 6)
+            self.assertEqual(len({settings.DATASET for settings in paths}), len(PARKS))
+            self.assertEqual(len({settings.CHECKPOINT for settings in paths}), len(PARKS))
             self.assertFalse(settings_for("epcot", root=root).DATASET.exists())
 
     def test_florida_calendar_and_features_use_eastern_time_across_dst(self):
@@ -148,9 +176,36 @@ class ParkTests(unittest.TestCase):
             api.reset_mock()
             backfill("key", root / "waits.gz", root / "raw", park=park, refresh=True)
             self.assertTrue(any("?date=" in call.args[0] for call in api.call_args_list))
+            # A later archive release must never replace Firebase-owned days,
+            # even when the user explicitly re-fetches historical downloads.
+            settings = settings_for(park, root=root, migrate=False, DATASET=root / "waits.gz")
+            set_firestore_start_date(settings, "2026-11-16")
+            data = load_dataset(settings.DATASET)
+            live_day = {**data["days"][day], "source": "firestore", "tokens": [[30], [30], [30]],
+                        "timestamps": [tick + 86400 for tick in data["days"][day]["timestamps"]]}
+            data["days"]["2026-11-16"] = live_day
+            save_dataset(settings.DATASET, data)
+            coverage["summary"]["recordedTo"] = "2026-11-16"
+            api.reset_mock()
+            backfill("key", settings.DATASET, root / "raw", park=park, refresh=True)
+            self.assertEqual(load_dataset(settings.DATASET)["days"]["2026-11-16"], live_day)
+            self.assertFalse(any("date=2026-11-16" in call.args[0] for call in api.call_args_list))
+            self.assertTrue(any("date=2026-11-15" in call.args[0] for call in api.call_args_list))
+            with self.assertRaisesRegex(ValueError, "handoff was not changed"):
+                set_firestore_start_date(settings, "2026-11-17")
             with self.assertRaisesRegex(ValueError, "different park"):
                 reconstruct([int(datetime.fromisoformat(f"{day}T08:00:00-05:00").timestamp())],
                             [document], {"ride"}, "disneyland")
+
+    def test_firebase_only_refresh_does_not_query_before_the_handoff(self):
+        with tempfile.TemporaryDirectory() as folder:
+            settings = settings_for("epic-universe", root=folder, migrate=False,
+                                    START_DATE="2026-11-01", END_DATE="2026-11-14")
+            set_firestore_start_date(settings, "2026-11-15")
+            with patch("api.collect.firestore_client") as client, contextlib.redirect_stdout(io.StringIO()):
+                export_firestore(settings)
+            client.assert_not_called()
+            self.assertEqual(load_dataset(settings.DATASET)["firestore_start_date"], "2026-11-15")
 
     def test_rest_and_history_hourly_budgets_are_shared_between_instances(self):
         with tempfile.TemporaryDirectory() as folder:

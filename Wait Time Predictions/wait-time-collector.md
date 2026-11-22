@@ -1,6 +1,6 @@
 # Multi-park wait-time collector
 
-The Vercel function `POST /api/collect` stores separate snapshots for Disneyland, California Adventure, Magic Kingdom, Animal Kingdom, Hollywood Studios and EPCOT from [ThemeParks.wiki](https://www.themeparks.wiki/api) in Cloud Firestore. It checks the park's published schedule before fetching rides. Outside published operating, extra, or event hours, the route returns `park_closed` and writes zero documents. Published schedules determine park closure, so an unannounced park-wide closure during scheduled hours can still produce a snapshot.
+The Vercel function `POST /api/collect` stores separate snapshots for Disneyland, California Adventure, Magic Kingdom, Animal Kingdom, Hollywood Studios, EPCOT, Universal Studios Hollywood, Universal Studios Florida, Islands of Adventure and Epic Universe from [ThemeParks.wiki](https://www.themeparks.wiki/api) in Cloud Firestore. It checks the park's published schedule before fetching rides. Outside published operating, extra, or event hours, the route returns `park_closed` and writes zero documents. Published schedules determine park closure, so an unannounced park-wide closure during scheduled hours can still produce a snapshot.
 
 ## Storage format
 
@@ -41,6 +41,8 @@ See [the predictor guide](README.md) to cache complete and incomplete days local
 
 ## Multi-park deployment
 
-Redeploy the updated function to enable collection for all six parks with the existing cron URL and credentials. Park fetches run concurrently; each catalog hash and snapshot document ID includes the park UUID. The HTTP response includes per-park results; a failed park produces a non-2xx response while successful parks retain their snapshots. Repeated calls within one bucket remain idempotent.
+Redeploy the updated function to enable collection for all ten parks with the existing cron URL and credentials. All ten park fetches can run concurrently within the function timeout; each catalog hash and snapshot document ID includes the park UUID. The HTTP response includes per-park results; a failed park produces a non-2xx response while successful parks retain their snapshots. Repeated calls within one bucket remain idempotent.
 
-For one park, use `POST /api/collect?park=epcot` (or another supported slug). To limit the default set, configure `COLLECTOR_PARKS=disneyland,california-adventure`; by default it includes all six. The updated local lab reads each park's UUID-prefixed Firestore documents. Old Disneyland data is still compatible. Redeployment and cron configuration are separate from local data/model changes.
+For one park, use `POST /api/collect?park=epcot` (or another supported slug). To limit the default set, configure `COLLECTOR_PARKS=disneyland,california-adventure`; by default it includes all ten. The new Universal slugs are `universal-studios-hollywood`, `universal-studios-florida`, `islands-of-adventure`, and `epic-universe`. An explicit production override must include them. The updated local lab reads each park's UUID-prefixed Firestore documents. Old Disneyland data is still compatible. Redeployment and cron configuration are separate from local data/model changes.
+
+`GET /api/collect` reports readiness, collector version, active park slugs, and the five-minute snapshot bucket size. It exposes no credentials and makes no upstream requests or database writes. Use it to verify the production deployment before waiting 6–7 minutes for the existing scheduler. Check Firebase afterward for fresh UUID-prefixed snapshots; closed parks correctly wait until opening. Then backfill earlier available history with the local `--firestore-start-date` handoff option described in [the predictor guide](README.md), keeping new operating days Firebase-only.

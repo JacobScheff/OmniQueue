@@ -126,6 +126,14 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disney
     park = get_park(park)
     PARK_ID, PARK_TIMEZONE = park.id, park.tz
     PARK_PATH = f"/entity/{park.id}"
+    dataset_path, raw_dir = Path(dataset_path), Path(raw_dir)
+    existed = dataset_path.exists()
+    dataset = load_dataset(dataset_path) if existed else {
+        "version": 1, "park_id": PARK_ID, "days": {}, "incomplete_days": {},
+        "discarded": {}, "catalogs": {}, "schedules": {},
+    }
+    if dataset["park_id"] != PARK_ID:
+        raise ValueError("Dataset belongs to a different park")
     plan = request_json("/me", key)
     coverage = request_json(PARK_PATH + "/history/coverage", key)
     if coverage.get("id") != park.id:
@@ -141,19 +149,15 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disney
         raise ValueError(f"Your key can retrieve history starting {earliest}")
     final = min(date.fromisoformat(summary["recordedTo"]),
                 datetime.now(PARK_TIMEZONE).date() - timedelta(days=1))
+    if dataset.get("firestore_start_date"):
+        # Once collection has taken over, even a forced history refresh must
+        # not replace those operating days with later API archive releases.
+        final = min(final, date.fromisoformat(dataset["firestore_start_date"]) - timedelta(days=1))
     last = min(date.fromisoformat(until), final) if until else final
     if first > last:
         print("No finalized history is available in this date range", flush=True)
         return final
     print(f"Plan: {plan['tier']}. Backfill: {first} through {last}.", flush=True)
-    dataset_path, raw_dir = Path(dataset_path), Path(raw_dir)
-    existed = dataset_path.exists()
-    dataset = load_dataset(dataset_path) if existed else {
-        "version": 1, "park_id": PARK_ID, "days": {}, "incomplete_days": {},
-        "discarded": {}, "catalogs": {}, "schedules": {},
-    }
-    if dataset["park_id"] != PARK_ID:
-        raise ValueError("Dataset belongs to a different park")
     dataset.setdefault("incomplete_days", {})
     raw_dir.mkdir(parents=True, exist_ok=True)
     # Snapshot the original cache before the first write of each run.

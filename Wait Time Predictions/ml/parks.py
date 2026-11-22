@@ -1,4 +1,4 @@
-"""The six supported parks and their isolated local workspaces."""
+"""Supported Disney and Universal parks and their isolated local workspaces."""
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,6 +33,10 @@ PARKS = {
         Park("animal-kingdom", "1c84a229-8862-4648-9c71-378ddd2c7693", "Disney's Animal Kingdom", "America/New_York", 28.3580, -81.5906),
         Park("hollywood-studios", "288747d1-8b4f-4a64-867e-ea7c9b27bad8", "Disney's Hollywood Studios", "America/New_York", 28.3575, -81.5583),
         Park("epcot", "47f90d2c-e191-4239-a466-5892ef59a88b", "EPCOT", "America/New_York", 28.3730, -81.5494),
+        Park("universal-studios-hollywood", "bc4005c5-8c7e-41d7-b349-cdddf1796427", "Universal Studios Hollywood", "America/Los_Angeles", 34.138143, -118.353295),
+        Park("universal-studios-florida", "eb3f4560-2383-4a36-9152-6b3e5ed6bc57", "Universal Studios Florida", "America/New_York", 28.477986, -81.468386),
+        Park("islands-of-adventure", "267615cc-8943-4c2a-ae2c-5da728ca591f", "Universal Islands of Adventure", "America/New_York", 28.472250, -81.467594),
+        Park("epic-universe", "12dbb85b-265f-44e6-bccf-f1faa17211fc", "Universal Epic Universe", "America/New_York", 28.441445, -81.448674),
     )
 }
 

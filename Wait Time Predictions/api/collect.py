@@ -30,6 +30,12 @@ FIRESTORE_TIMEOUT = 4
 logger = logging.getLogger(__name__)
 
 
+def collector_parks(requested=None):
+    """Use the same park selection for collection and public readiness checks."""
+    slugs = requested or os.environ.get("COLLECTOR_PARKS", ",".join(PARKS)).split(",")
+    return list(dict.fromkeys(get_park(slug.strip()) for slug in slugs))
+
+
 def fetch_park_data(client, endpoint, field, park=None):
     park_id = get_park(park).id if park else PARK_ID
     response = client.get(f"https://api.themeparks.wiki/v1/entity/{park_id}/{endpoint}")
@@ -124,6 +130,18 @@ def store_snapshot(db, sampled_at, park_date, catalog_version, catalog, rides):
 
 
 class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # A side-effect-free readiness endpoint lets deployment checks verify
+        # the active park set without exposing the cron secret or doing writes.
+        try:
+            parks = collector_parks()
+        except ValueError:
+            return self.respond(500, status="not_ready", error="unknown_park")
+        configured = bool(os.environ.get("CRON_SECRET") and os.environ.get("FIRESTORE_SERVICE_ACCOUNT_JSON"))
+        return self.respond(200 if configured else 503, status="ready" if configured else "not_ready",
+                            collector_version=3, configured=configured,
+                            snapshot_bucket_minutes=5, parks=[park.slug for park in parks])
+
     def do_POST(self):
         secret = os.environ.get("CRON_SECRET")
         service_account_json = os.environ.get("FIRESTORE_SERVICE_ACCOUNT_JSON")
@@ -135,8 +153,7 @@ class handler(BaseHTTPRequestHandler):
 
         requested = parse_qs(urlsplit(self.path).query).get("park")
         try:
-            parks = [get_park(requested[0])] if requested else [
-                get_park(slug.strip()) for slug in os.environ.get("COLLECTOR_PARKS", ",".join(PARKS)).split(",")]
+            parks = collector_parks(requested)
         except ValueError:
             return self.respond(400, error="unknown_park")
         sampled_at = datetime.now(timezone.utc)
@@ -162,7 +179,7 @@ class handler(BaseHTTPRequestHandler):
                 return {"park": park.slug, "error": "database_unavailable", "inserted": 0}
 
         try:
-            with ThreadPoolExecutor(max_workers=6) as workers:
+            with ThreadPoolExecutor(max_workers=min(10, len(parks))) as workers:
                 results = list(workers.map(collect_one, parks))
         finally:
             db.close()

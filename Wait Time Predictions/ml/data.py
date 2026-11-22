@@ -277,6 +277,11 @@ def export_firestore(settings=config):
         raise ValueError("Dataset belongs to a different park")
     if first_day > last_day:
         raise ValueError("Start date must be on or before the end date")
+    if dataset.get("firestore_start_date"):
+        first_day = max(first_day, date.fromisoformat(dataset["firestore_start_date"]))
+        if first_day > last_day:
+            print("Requested dates predate this park's Firebase collection start. No Firestore reads.", flush=True)
+            return
     days = [first_day + timedelta(days=offset) for offset in range((last_day - first_day).days + 1)]
     repaired_cache = False
     for day in days:
@@ -445,6 +450,24 @@ def export_firestore(settings=config):
     message(f"Dataset has {len(dataset['days'])} training days and {len(incomplete)} incomplete prediction days in {settings.DATASET}")
 
 
+def set_firestore_start_date(settings, value):
+    """Persist a park's historical-API/Firebase handoff in its local dataset."""
+    from ml.parks import get_park
+    park = get_park(settings.PARK)
+    value = date.fromisoformat(value).isoformat()
+    dataset = load_dataset(settings.DATASET) if settings.DATASET.exists() else {
+        "version": 1, "park_id": park.id, "days": {}, "incomplete_days": {},
+        "discarded": {}, "catalogs": {}, "schedules": {},
+    }
+    if dataset["park_id"] != park.id:
+        raise ValueError("Dataset belongs to a different park")
+    previous = dataset.get("firestore_start_date")
+    if previous and previous != value:
+        raise ValueError(f"Firebase collection already starts on {previous}; the handoff was not changed")
+    dataset["firestore_start_date"] = value
+    save_dataset(settings.DATASET, dataset)
+
+
 def export(settings=None):
     """Refresh finalized API history, then the recent Firestore tail for one park."""
     from types import SimpleNamespace
@@ -483,6 +506,7 @@ def main():
     parser.add_argument("--refresh", action="store_true", help="Rebuild historical days and refetch raw API history")
     parser.add_argument("--history-only", action="store_true", help="Skip Firestore (no Firebase credentials needed)")
     parser.add_argument("--live-only", action="store_true", help="Only refresh recent Firestore observations")
+    parser.add_argument("--firestore-start-date", help="Reserve this operating date and newer days for Firebase only")
     args = parser.parse_args()
     if args.history_only and args.live_only:
         parser.error("Choose only one of --history-only and --live-only")
@@ -491,6 +515,8 @@ def main():
     settings.END_DATE = args.until or settings.END_DATE
     settings.REFRESH = settings.REFRESH or args.refresh
     try:
+        if args.firestore_start_date:
+            set_firestore_start_date(settings, args.firestore_start_date)
         if args.live_only:
             settings.START_DATE = settings.START_DATE or (datetime.now(settings.PARK_TIMEZONE).date() - timedelta(days=settings.LIVE_DAYS - 1)).isoformat()
             export_firestore(settings)
