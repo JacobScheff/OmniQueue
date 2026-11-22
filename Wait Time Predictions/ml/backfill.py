@@ -6,8 +6,6 @@ import json
 import os
 import shutil
 import sys
-import urllib.error
-import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,14 +13,16 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml import config
+from ml.parks import get_park, settings_for, PARKS
+from ml.attractions import is_excluded
+from ml.history_api import request_json
+from time import monotonic
 from ml.data import (
-    MISSING, PARK_TIMEZONE, TICK_SECONDS, expected_ticks, load_dataset,
+    MISSING, expected_ticks, load_dataset,
     ride_token, save_dataset, validate_day,
 )
 
 PARK_ID = "7340550b-c14d-4def-80bb-acdb51d49a66"
-API = "https://api.themeparks.wiki/v1"
-PARK_PATH = f"/entity/{PARK_ID}"
 
 
 def moment(value):
@@ -32,7 +32,9 @@ def moment(value):
     return result.timestamp()
 
 
-def reconstruct(ticks, documents, attraction_ids):
+def reconstruct(ticks, documents, attraction_ids, park="disneyland"):
+    park = get_park(park)
+    PARK_ID, PARK_TIMEZONE = park.id, park.tz
     """Sample the latest state at or BEFORE each tick, including opening state.
 
     Documents are calendar days in park time; an operating day may use two.
@@ -83,21 +85,9 @@ def reconstruct(ticks, documents, attraction_ids):
     }
 
 
-def request_json(path, key):
-    request = urllib.request.Request(API + path, headers={
-        "X-API-Key": key, "User-Agent": "OmniQueueBackfill/1.0",
-    })
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        # Do not print request headers, API keys, or account details.
-        if error.code == 429:
-            raise RuntimeError(f"API rate limit reached; retry after {error.headers.get('Retry-After', 'the budget resets')} seconds") from None
-        raise RuntimeError(f"ThemeParks.wiki returned HTTP {error.code} for {path}") from None
-
-
-def reencode_cached_history(dataset_path, raw_dir):
+def reencode_cached_history(dataset_path, raw_dir, park="disneyland"):
+    park = get_park(park)
+    PARK_TIMEZONE = park.tz
     """Rebuild imported tokens from raw minutes, without network access."""
     dataset_path, raw_dir = Path(dataset_path), Path(raw_dir)
     dataset = load_dataset(dataset_path)
@@ -116,7 +106,7 @@ def reencode_cached_history(dataset_path, raw_dir):
             for path in paths:
                 with gzip.open(path, "rt", encoding="utf-8") as source:
                     documents.append(json.load(source))
-            rebuilt = reconstruct(day["timestamps"], documents, {ride["id"] for ride in day["rides"]})
+            rebuilt = reconstruct(day["timestamps"], documents, {ride["id"] for ride in day["rides"]}, park)
             if (rebuilt["timestamps"] != day["timestamps"]
                     or rebuilt["rides"] != day["rides"]):
                 raise ValueError("Raw history does not match the cached attraction catalog/timestamps")
@@ -132,10 +122,18 @@ def reencode_cached_history(dataset_path, raw_dir):
           "Refresh Firestore days with ml/data.py --refresh to reencode collected observations.", flush=True)
 
 
-def backfill(key, dataset_path, raw_dir, since=None, until=None):
+def backfill(key, dataset_path, raw_dir, since=None, until=None, *, park="disneyland", refresh=False):
+    park = get_park(park)
+    PARK_ID, PARK_TIMEZONE = park.id, park.tz
+    PARK_PATH = f"/entity/{park.id}"
     plan = request_json("/me", key)
     coverage = request_json(PARK_PATH + "/history/coverage", key)
+    if coverage.get("id") != park.id:
+        raise ValueError("Coverage response belongs to a different park")
     summary = coverage["summary"]
+    if not summary.get("archiveFrom") or not summary.get("recordedTo"):
+        print(f"{park.name}: no archived history yet", flush=True)
+        return None
     # Respect the server's dates rather than guessing the plan boundary.
     earliest = max(filter(None, [plan.get("historyEarliestDate"), summary["archiveFrom"]]))
     first = date.fromisoformat(since or earliest)
@@ -145,7 +143,8 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
                 datetime.now(PARK_TIMEZONE).date() - timedelta(days=1))
     last = min(date.fromisoformat(until), final) if until else final
     if first > last:
-        raise ValueError("No finalized history is available in this date range")
+        print("No finalized history is available in this date range", flush=True)
+        return final
     print(f"Plan: {plan['tier']}. Backfill: {first} through {last}.", flush=True)
     dataset_path, raw_dir = Path(dataset_path), Path(raw_dir)
     existed = dataset_path.exists()
@@ -160,15 +159,32 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
     # Snapshot the original cache before the first write of each run.
     backed_up = False
     attraction_ids = {row["id"] for row in coverage["entities"]
-                      if row["entityType"] == "ATTRACTION" and row.get("stillListed")}
+                      if row["entityType"] == "ATTRACTION" and row.get("stillListed")
+                      and "queue.STANDBY" in row.get("fields", []) and not is_excluded(row)}
+    eligibility_changed = dataset.get("eligible_ride_ids") != sorted(attraction_ids)
+    dataset["eligible_ride_ids"] = sorted(attraction_ids)
     refreshed_months = set()
+
+    def backup_once():
+        nonlocal backed_up
+        if existed and not backed_up:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            backup = dataset_path.with_name(f"{dataset_path.name}.before-backfill-{stamp}.bak")
+            shutil.copy2(dataset_path, backup)
+            print(f"Original cache backed up to {backup}", flush=True)
+            backed_up = True
 
     def history(day):
         path = raw_dir / f"{day}.json.gz"
-        if path.exists():
+        if path.exists() and (not refresh or day in fetched_history):
             with gzip.open(path, "rt", encoding="utf-8") as source:
                 return json.load(source)
         payload = request_json(PARK_PATH + f"/history?date={day}", key)
+        if payload.get("id") != park.id or payload.get("range", {}).get("from") != str(day):
+            raise ValueError("History response does not match the requested park/date")
+        if payload.get("next"):
+            raise ValueError("Unexpected paginated park history; incomplete response was not cached")
+        fetched_history.add(day)
         # Leave an interrupted download uncached.
         temporary = path.with_suffix(".tmp")
         with gzip.open(temporary, "wt", encoding="utf-8") as target:
@@ -177,12 +193,18 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
         return payload
 
     imported = 0
+    fetched_history = set()
+    started = monotonic()
+    total = (last - first).days + 1
     for offset in range((last - first).days + 1):
         day = first + timedelta(days=offset)
         name = day.isoformat()
-        # Preserve both complete and incomplete locally collected observations.
-        if name in dataset["days"] or (name in dataset["incomplete_days"]
-                and dataset["incomplete_days"][name].get("source") != "themeparks.wiki/history"):
+        elapsed = monotonic() - started
+        eta = elapsed / offset * (total - offset) if offset else 0
+        filled = 20 * offset // total
+        print(f"[{'#' * filled}{'-' * (20 - filled)}] {offset}/{total} days | {park.name} {name} | ETA {int(eta)}s", flush=True)
+        # Completed API imports remain cached; refresh explicitly rebuilds them.
+        if not refresh and name in dataset["days"] and dataset["days"][name].get("source") == "themeparks.wiki/history":
             print(f"{name}: kept existing observations", flush=True)
             continue
         month = day.strftime("%Y/%m")
@@ -192,7 +214,7 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
                 raise ValueError("Schedule response belongs to a different park")
             dataset["schedules"][month] = schedule["schedule"]
             refreshed_months.add(month)
-        ticks, closing = expected_ticks(day, dataset["schedules"][month])
+        ticks, closing = expected_ticks(day, dataset["schedules"][month], PARK_TIMEZONE)
         if not ticks:
             print(f"{name}: skipped; no published operating schedule", flush=True)
             continue
@@ -200,7 +222,8 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
         if calendar_days[-1] > final:
             print(f"{name}: skipped; overnight history is not finalized yet", flush=True)
             continue
-        result = reconstruct(ticks, [history(value) for value in calendar_days], attraction_ids)
+        result = reconstruct(ticks, [history(value) for value in calendar_days], attraction_ids, park)
+        result["timezone"] = park.timezone
         result.update(checked_at=datetime.now(timezone.utc).timestamp(), closing_at=closing)
         reason = None
         try:
@@ -209,6 +232,11 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
             validate_day(result)
         except ValueError as error:
             reason = str(error)
+        previous = dataset["days"].get(name) or dataset["incomplete_days"].get(name)
+        if reason and previous and (name in dataset["days"] or len(previous["timestamps"]) > len(result["timestamps"])):
+            print(f"{name}: kept better cached observations; API history incomplete: {reason}", flush=True)
+            continue
+        dataset["days"].pop(name, None)
         dataset["incomplete_days"].pop(name, None)
         dataset.get("discarded", {}).pop(name, None)
         if reason:
@@ -217,37 +245,42 @@ def backfill(key, dataset_path, raw_dir, since=None, until=None):
         else:
             dataset["days"][name] = result
             imported += 1
-        if existed and not backed_up:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup = dataset_path.with_name(f"{dataset_path.name}.before-backfill-{stamp}.bak")
-            shutil.copy2(dataset_path, backup)
-            print(f"Original cache backed up to {backup}", flush=True)
-            backed_up = True
+        backup_once()
         save_dataset(dataset_path, dataset)
         print(f"{name}: {len(result['timestamps'])} ticks, {len(result['rides'])} attractions; "
               + (reason or "ready for training"), flush=True)
+    if eligibility_changed:
+        backup_once()
+        save_dataset(dataset_path, dataset)
+    print(f"[{'#' * 20}] {total}/{total} days complete", flush=True)
     print(f"Added {imported} training days. Cache now has {len(dataset['days'])} complete days "
           f"and {len(dataset['incomplete_days'])} incomplete days.", flush=True)
+    return final
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--park", choices=PARKS, default=config.PARK)
+    parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--since", help="First local operating date, YYYY-MM-DD")
     parser.add_argument("--until", help="Last local operating date, YYYY-MM-DD")
     parser.add_argument("--key-file", type=Path, default=config.ROOT / "credentials/themeparks-api-key.txt")
-    parser.add_argument("--dataset", type=Path, default=config.DATASET)
-    parser.add_argument("--raw-dir", type=Path, default=config.ROOT / "data/themeparks-history")
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--raw-dir", type=Path)
     parser.add_argument("--reencode-cache", action="store_true",
                         help="Rebuild imported tokens from local raw history; no API key or network needed")
     args = parser.parse_args()
+    settings = settings_for(args.park)
+    args.dataset = args.dataset or settings.DATASET
+    args.raw_dir = args.raw_dir or settings.RAW_DIR
     try:
         if args.reencode_cache:
-            reencode_cached_history(args.dataset, args.raw_dir)
+            reencode_cached_history(args.dataset, args.raw_dir, args.park)
             return
         key = os.environ.get("THEMEPARKS_API_KEY") or args.key_file.read_text(encoding="utf-8-sig").strip()
         if not key:
             raise ValueError("The ThemeParks.wiki key file is empty")
-        backfill(key, args.dataset, args.raw_dir, args.since, args.until)
+        backfill(key, args.dataset, args.raw_dir, args.since, args.until, park=args.park, refresh=args.refresh)
     except (OSError, ValueError, RuntimeError) as error:
         raise SystemExit(str(error)) from None
 

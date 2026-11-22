@@ -1,10 +1,10 @@
-# Disneyland wait-time collector
+# Multi-park wait-time collector
 
-The Vercel function `POST /api/collect` stores a snapshot of Disneyland Park attractions from [ThemeParks.wiki](https://www.themeparks.wiki/api) in Cloud Firestore. It checks the park's published schedule before fetching rides. Outside published operating, extra, or event hours, the route returns `park_closed` and writes zero documents. Published schedules determine park closure, so an unannounced park-wide closure during scheduled hours can still produce a snapshot.
+The Vercel function `POST /api/collect` stores separate snapshots for Disneyland, California Adventure, Magic Kingdom, Animal Kingdom, Hollywood Studios and EPCOT from [ThemeParks.wiki](https://www.themeparks.wiki/api) in Cloud Firestore. It checks the park's published schedule before fetching rides. Outside published operating, extra, or event hours, the route returns `park_closed` and writes zero documents. Published schedules determine park closure, so an unannounced park-wide closure during scheduled hours can still produce a snapshot.
 
 ## Storage format
 
-`wait_time_snapshots` holds one document per park per five-minute UTC bucket. The document ID contains the park ID and the bucket start. The fields are `sampled_at` (Firestore timestamp), `park_date` (`YYYY-MM-DD` in Disneyland's timezone), `catalog_version`, and `rides` (Firestore bytes). The first successful write for a bucket wins, including when calls overlap.
+`wait_time_snapshots` holds one document per park per five-minute UTC bucket. The document ID contains the park ID and the bucket start. The fields are `sampled_at` (Firestore timestamp), `park_date` (`YYYY-MM-DD` in the selected park's timezone), `catalog_version`, and `rides` (Firestore bytes). The first successful write for a bucket wins, including when calls overlap.
 
 `wait_time_catalogs/{catalog_version}` contains the corresponding ordered list of attraction IDs and names. The collector creates a new catalog version when the attraction list or names change. Each snapshot retains its reference to the catalog used to write it. Only attractions present in the feed are recorded.
 
@@ -31,10 +31,16 @@ python view.py
 
 Use the same Python interpreter for both commands. If you run the viewer in a virtual environment or from VS Code, install the requirements with that environment's Python. A missing dependency at startup prints the install command for the interpreter running the viewer.
 
-The script opens `http://127.0.0.1:8765` in your browser. It initially loads the latest recorded day. Choose a date, scrub the snapshot timeline, search attractions, filter statuses, and sort waits. Refresh fetches the selected day again. Each load reads up to 400 snapshots and caches the catalogs in memory. Times are shown in Disneyland's timezone. A missing wait displays as an em dash, while a reported zero displays as zero.
+The script opens `http://127.0.0.1:8765` in your browser. It initially loads the latest recorded day. Choose a date, scrub the snapshot timeline, search attractions, filter statuses, and sort waits. Refresh fetches the selected day again. Each load reads up to 400 snapshots and caches the catalogs in memory. Times are shown in the selected park's timezone. A missing wait displays as an em dash, while a reported zero displays as zero.
 
 Credentials stay in the local Python process. The viewer reads Firestore and binds to the local loopback interface. It also accepts `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials using `PROJECT` in `ml/config.py`. Optional command-line overrides remain available. Stop with Ctrl+C.
 
 ## Prediction dataset and training
 
 See [the predictor guide](README.md) to cache complete and incomplete days locally, train the autoregressive PyTorch model on complete operating days on an NVIDIA GPU, and generate five-minute wait and DOWN-token forecasts.
+
+## Multi-park deployment
+
+Redeploy the updated function to enable collection for all six parks with the existing cron URL and credentials. Park fetches run concurrently; each catalog hash and snapshot document ID includes the park UUID. The HTTP response includes per-park results; a failed park produces a non-2xx response while successful parks retain their snapshots. Repeated calls within one bucket remain idempotent.
+
+For one park, use `POST /api/collect?park=epcot` (or another supported slug). To limit the default set, configure `COLLECTOR_PARKS=disneyland,california-adventure`; by default it includes all six. The updated local lab reads each park's UUID-prefixed Firestore documents. Old Disneyland data is still compatible. Redeployment and cron configuration are separate from local data/model changes.

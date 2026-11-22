@@ -54,6 +54,61 @@ class VisualizerTests(unittest.TestCase):
                 result = observed_ride(self.rides[0], token)
                 self.assertEqual((result["status"], result["wait"]), (status, wait))
 
+    def test_coverage_counts_real_cached_days_across_years_without_hiding_gaps(self):
+        from datetime import date
+
+        save_dataset(self.settings.DATASET, {"version": 1, "park_id": PARK_ID,
+            "days": {"2025-10-18": self.day, "2026-11-01": self.day},
+            "incomplete_days": {"2026-11-02": {**self.day, "timestamps": self.ticks[:2],
+                                "tokens": [[2], [2]], "reason": "Still collecting"},
+                                "2026-11-03": {**self.day, "timestamps": [], "tokens": []}}})
+        metadata = self.app.metadata()
+        coverage = metadata["coverage"]
+        span = (date(2026, 11, 2) - date(2025, 10, 18)).days + 1
+        self.assertEqual((coverage["first_date"], coverage["last_date"]), ("2025-10-18", "2026-11-02"))
+        self.assertEqual((coverage["cached_days"], coverage["complete_days"], coverage["partial_days"]), (3, 2, 1))
+        self.assertEqual(coverage["missing_days"], span - 3)
+        self.assertEqual(coverage["observations"], 14)
+        self.assertFalse(metadata["days"][-1]["complete"])
+        self.assertEqual(metadata["default_day"], "2026-11-02")
+
+    def test_empty_coverage_has_no_invented_dates(self):
+        self.settings.DATASET = self.root / "not-yet-downloaded.gz"
+        metadata = self.app.metadata()
+        self.assertEqual(metadata["days"], [])
+        self.assertIsNone(metadata["coverage"]["first_date"])
+        self.assertEqual(metadata["coverage"]["missing_days"], 0)
+
+    def test_incompatible_model_is_flagged_before_forecast_and_updates_after_retraining(self):
+        checkpoint = torch.load(self.settings.CHECKPOINT, weights_only=True)
+        checkpoint["rides"] = [{"id": "old", "name": "Pirate's Lair on Tom Sawyer Island"}]
+        checkpoint["train_dates"] = ["2026-10-18", "2026-11-07"]
+        torch.save(checkpoint, self.settings.CHECKPOINT)
+        original_data = self.settings.DATASET.read_bytes()
+        original_model = self.settings.CHECKPOINT.read_bytes()
+        metadata = self.app.metadata()
+        self.assertFalse(metadata["checkpoint_available"])
+        self.assertEqual(metadata["checkpoint_status"]["state"], "needs_training")
+        self.assertEqual(metadata["checkpoint_status"]["training_days"], 2)
+        self.assertIn("Pirate's Lair", metadata["checkpoint_status"]["message"])
+        with self.assertRaisesRegex(ValueError, "Start training a new model"):
+            self.app.start_forecast("2026-11-01", "08:15")
+        self.assertFalse(self.app.jobs)
+        self.assertEqual(self.settings.DATASET.read_bytes(), original_data)
+        self.assertEqual(self.settings.CHECKPOINT.read_bytes(), original_model)
+        checkpoint["rides"] = self.rides
+        torch.save(checkpoint, self.settings.CHECKPOINT)
+        self.assertTrue(self.app.metadata()["checkpoint_available"])
+
+    def test_wrong_park_or_unreadable_models_do_not_disable_archive_browsing(self):
+        checkpoint = torch.load(self.settings.CHECKPOINT, weights_only=True)
+        checkpoint["park_id"] = "another-park"
+        torch.save(checkpoint, self.settings.CHECKPOINT)
+        self.assertEqual(self.app.metadata()["checkpoint_status"]["state"], "invalid")
+        self.assertEqual(len(self.app.day_payload("2026-11-01")["snapshots"]), 6)
+        self.settings.CHECKPOINT.write_bytes(b"not a checkpoint")
+        self.assertFalse(self.app.metadata()["checkpoint_available"])
+
     def test_day_payload_distinguishes_interpolation_from_recorded_data(self):
         self.day["timestamps"] = self.ticks[:2] + self.ticks[3:]
         self.day["tokens"] = [[0], [0], [3], [4], [5]]

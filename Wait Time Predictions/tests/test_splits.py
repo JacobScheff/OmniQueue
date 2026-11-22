@@ -1,6 +1,7 @@
 """Day isolation, evaluation masking, and saved test-set regression checks."""
 
 import io
+import random
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -23,14 +24,27 @@ def day(tokens, rides=None):
 
 
 class SplitTests(unittest.TestCase):
-    def test_chronological_nonoverlapping_split_and_rounding(self):
+    def test_random_nonoverlapping_split_is_seeded_and_rounds_to_whole_days(self):
         dates = [f"2026-10-{number:02}" for number in range(1, 28)]
         groups = split_dates(reversed(dates), .70, .15, .15)
         self.assertEqual([len(group) for group in groups], [19, 4, 4])
-        self.assertEqual(sum((list(group) for group in groups), []), dates)
+        self.assertEqual(sorted(sum((list(group) for group in groups), [])), dates)
+        self.assertEqual(len(set(sum((list(group) for group in groups), []))), len(dates))
+        self.assertNotEqual(groups[0], dates[:19])
+        self.assertNotEqual(groups, split_dates(dates, .70, .15, .15, seed=43))
+        for group in groups:
+            self.assertEqual(group, sorted(group))
         self.assertEqual(groups, split_dates(dates, .70, .15, .15))
-        self.assertEqual(split_dates(dates[:3], .70, .15, .15), (dates[:1], dates[1:2], dates[2:3]))
+        self.assertEqual([len(group) for group in split_dates(dates[:3], .70, .15, .15)], [1, 1, 1])
         self.assertEqual(split_dates(dates[:1], 1., 0., 0.), (dates[:1], [], []))
+
+    def test_split_uses_a_local_rng_and_respects_explicit_seed(self):
+        dates = [str(index) for index in range(100)]
+        before = random.getstate()
+        first = split_dates(dates, .7, .15, .15, seed=123)
+        self.assertEqual(random.getstate(), before)
+        self.assertEqual(first, split_dates(reversed(dates), .7, .15, .15, seed=123))
+        self.assertNotEqual(first, split_dates(dates, .7, .15, .15, seed=124))
 
     def test_rejects_invalid_fractions_and_too_few_days(self):
         for fractions in ((.7, .2, .2), (0., .5, .5), (-.1, .5, .6),
@@ -86,7 +100,7 @@ class SplitTests(unittest.TestCase):
                 days[f"2026-11-{index + 1:02}"] = day([[index + 1, 1]] * 4, rides)
             # Incomplete and unusably short days cannot be assigned to a split.
             days["2026-11-13"] = day([[1]])
-            save_dataset(settings.DATASET, {"version": 1, "park_id": "park", "days": days,
+            save_dataset(settings.DATASET, {"version": 1, "park_id": "7340550b-c14d-4def-80bb-acdb51d49a66", "days": days,
                                            "incomplete_days": {"2026-11-14": day([[1], [1]])}})
             output = io.StringIO()
             with patch("ml.train.epoch", wraps=epoch) as calls, redirect_stdout(output):
@@ -97,11 +111,13 @@ class SplitTests(unittest.TestCase):
             expected = split_dates(sorted(days)[:12], .7, .15, .15)
             for field, dates in zip(("train_dates", "validation_dates", "test_dates"), expected):
                 self.assertEqual(checkpoint[field], dates)
+            self.assertEqual(checkpoint["split"]["method"], "random_days")
+            self.assertEqual(checkpoint["split"]["seed"], settings.SEED)
             self.assertEqual(len(calls.call_args_list[0].args[1].dataset), len(expected[0]))
             self.assertEqual(len(calls.call_args_list[1].args[1].dataset), len(expected[1]))
             # A ride found only in the holdouts cannot change the model's inputs.
             self.assertEqual({ride["id"] for ride in checkpoint["rides"]},
-                             {"common"} | {f"only-{i}" for i in range(len(expected[0]))})
+                             {"common"} | {f"only-{int(key[-2:]) - 1}" for key in expected[0]})
             self.assertIn("val NLL", output.getvalue())
             self.assertIsInstance(checkpoint["validation_loss"], float)
             self.assertIsInstance(checkpoint["validation_accuracy"], float)

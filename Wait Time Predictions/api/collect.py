@@ -1,4 +1,4 @@
-"""Collect a Disneyland wait-time snapshot while the park is scheduled to open."""
+"""Collect park wait-time snapshots while the park is scheduled to open."""
 
 import hashlib
 import hmac
@@ -9,6 +9,9 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 from struct import Struct
 from zoneinfo import ZoneInfo
+from urllib.parse import parse_qs, urlsplit
+from concurrent.futures import ThreadPoolExecutor
+from ml.parks import PARKS, get_park
 
 import httpx
 from google.api_core.exceptions import AlreadyExists, GoogleAPIError
@@ -27,23 +30,24 @@ FIRESTORE_TIMEOUT = 4
 logger = logging.getLogger(__name__)
 
 
-def fetch_park_data(client, endpoint, field):
-    response = client.get(f"{PARK_API}/{endpoint}")
+def fetch_park_data(client, endpoint, field, park=None):
+    park_id = get_park(park).id if park else PARK_ID
+    response = client.get(f"https://api.themeparks.wiki/v1/entity/{park_id}/{endpoint}")
     response.raise_for_status()
     payload = response.json()
-    if payload.get("id") != PARK_ID or not isinstance(payload.get(field), list):
+    if payload.get("id") != park_id or not isinstance(payload.get(field), list):
         raise ValueError(f"Invalid park {endpoint} response")
     return payload[field]
 
 
-def park_is_open(client, sampled_at, park_date):
+def park_is_open(client, sampled_at, park_date, park=None):
     # A session that opens on the last day of a month can close in the next month.
     months = [park_date.strftime("%Y/%m")]
     if park_date.day == 1:
         months.append((park_date - timedelta(days=1)).strftime("%Y/%m"))
 
     for month in months:
-        for session in fetch_park_data(client, f"schedule/{month}", "schedule"):
+        for session in fetch_park_data(client, f"schedule/{month}", "schedule", park):
             if session["type"] in OPERATING_HOURS:
                 opens = datetime.fromisoformat(session["openingTime"])
                 closes = datetime.fromisoformat(session["closingTime"])
@@ -52,7 +56,8 @@ def park_is_open(client, sampled_at, park_date):
     return False
 
 
-def pack_snapshot(live_data):
+def pack_snapshot(live_data, park=None):
+    park_id = get_park(park).id if park else PARK_ID
     attractions = sorted(
         (ride for ride in live_data if ride["entityType"] == "ATTRACTION"),
         key=lambda ride: ride["id"],
@@ -81,7 +86,7 @@ def pack_snapshot(live_data):
             raise ValueError("Invalid standby wait in live feed")
         packed_rides.extend(RIDE_RECORD.pack(wait, STATUS_CODES.get(status, 0)))
 
-    catalog = {"park_id": PARK_ID, "encoding_version": 1, "attractions": catalog_entries}
+    catalog = {"park_id": park_id, "encoding_version": 1, "attractions": catalog_entries}
     catalog_json = json.dumps(catalog, sort_keys=True, separators=(",", ":"))
     catalog_version = hashlib.sha256(catalog_json.encode()).hexdigest()
     return catalog_version, catalog, bytes(packed_rides)
@@ -94,6 +99,7 @@ def firestore_client(service_account_json):
 
 
 def store_snapshot(db, sampled_at, park_date, catalog_version, catalog, rides):
+    park_id = catalog["park_id"]
     bucket = sampled_at.replace(minute=sampled_at.minute // 5 * 5, second=0, microsecond=0)
     catalog_ref = db.collection("wait_time_catalogs").document(catalog_version)
     rpc_options = {"retry": None, "timeout": FIRESTORE_TIMEOUT}
@@ -104,7 +110,7 @@ def store_snapshot(db, sampled_at, park_date, catalog_version, catalog, rides):
         except AlreadyExists:
             pass  # Another invocation published this catalog version.
 
-    snapshot_ref = db.collection("wait_time_snapshots").document(f"{PARK_ID}_{bucket:%Y%m%dT%H%MZ}")
+    snapshot_ref = db.collection("wait_time_snapshots").document(f"{park_id}_{bucket:%Y%m%dT%H%MZ}")
     try:
         snapshot_ref.create({
             "sampled_at": sampled_at,
@@ -127,29 +133,42 @@ class handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(authorization.encode(), f"Bearer {secret}".encode()):
             return self.respond(401, error="unauthorized")
 
-        sampled_at = datetime.now(timezone.utc)
-        park_date = sampled_at.astimezone(PARK_TIMEZONE).date()
+        requested = parse_qs(urlsplit(self.path).query).get("park")
         try:
-            with httpx.Client(timeout=5, headers={"User-Agent": "OmniQueueWaitCollector/1.0"}) as client:
-                if not park_is_open(client, sampled_at, park_date):
-                    return self.respond(200, status="park_closed", inserted=0)
-                catalog_version, catalog, rides = pack_snapshot(fetch_park_data(client, "live", "liveData"))
-        except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
-            logger.exception("Disneyland schedule or live feed unavailable")
-            return self.respond(502, error="park_data_unavailable")
-
+            parks = [get_park(requested[0])] if requested else [
+                get_park(slug.strip()) for slug in os.environ.get("COLLECTOR_PARKS", ",".join(PARKS)).split(",")]
+        except ValueError:
+            return self.respond(400, error="unknown_park")
+        sampled_at = datetime.now(timezone.utc)
         try:
             db = firestore_client(service_account_json)
-        except (GoogleAuthError, ValueError, KeyError, TypeError, AttributeError) as error:
-            logger.error("Firestore credentials are invalid (%s)", type(error).__name__)
+        except (GoogleAuthError, ValueError, KeyError, TypeError, AttributeError):
             return self.respond(500, error="collector_not_configured")
 
+        def collect_one(park):
+            park_date = sampled_at.astimezone(park.tz).date()
+            try:
+                with httpx.Client(timeout=5, headers={"User-Agent": "OmniQueueWaitCollector/2.0"}) as client:
+                    if not park_is_open(client, sampled_at, park_date, park):
+                        return {"park": park.slug, "status": "park_closed", "inserted": 0}
+                    version, catalog, rides = pack_snapshot(fetch_park_data(client, "live", "liveData", park), park)
+                inserted = store_snapshot(db, sampled_at, park_date, version, catalog, rides)
+                return {"park": park.slug, "status": "collected", "inserted": inserted}
+            except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
+                logger.exception("Park data unavailable: %s", park.slug)
+                return {"park": park.slug, "error": "park_data_unavailable", "inserted": 0}
+            except (GoogleAPIError, GoogleAuthError):
+                logger.exception("Firestore write failed: %s", park.slug)
+                return {"park": park.slug, "error": "database_unavailable", "inserted": 0}
+
         try:
-            inserted = store_snapshot(db, sampled_at, park_date, catalog_version, catalog, rides)
-        except (GoogleAPIError, GoogleAuthError) as error:
-            logger.error("Firestore write failed (%s)", type(error).__name__)
-            return self.respond(503, error="database_unavailable")
-        return self.respond(200, status="collected", inserted=inserted)
+            with ThreadPoolExecutor(max_workers=6) as workers:
+                results = list(workers.map(collect_one, parks))
+        finally:
+            db.close()
+        failed = any("error" in result for result in results)
+        return self.respond(502 if failed else 200, status="partial_failure" if failed else "collected",
+                            inserted=sum(result["inserted"] for result in results), parks=results)
 
     def respond(self, status_code, **data):
         body = json.dumps(data).encode()

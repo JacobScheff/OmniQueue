@@ -38,6 +38,21 @@ EXCLUDED_NAME_PARTS = tuple(map(normalized_name, (
     "Walt Disney Magic Life", "Walt Disney A Magical Life", "Opera House",
     "Pixar Short Film", "Sailing Ship Columbia", "Sleeping Beauty Walkthrough",
     "Sleeping Beauty Castle Walkthrough", "Disney Gallery", "Tiki Room",
+    # Walkthroughs, play areas, transport and untimed presentations in the six parks.
+    # Shows with a real posted standby queue (e.g. Philharmagic) remain eligible.
+    "Redwood Creek Challenge", "Animation Academy", "Sorcerer's Workshop",
+    "Walt Disney Imagineering Blue Sky", "Disney Junior Dance",
+    "Country Bear", "Hall of Presidents", "Carousel of Progress",
+    "Swiss Family Treehouse", "Tom Sawyer Island", "Frontierland Shootin",
+    "Liberty Square Riverboat", "Walt Disney World Railroad",
+    "Gorilla Falls", "Maharajah Jungle Trek", "Discovery Island Trails",
+    "Oasis Exhibits", "Rafiki", "Affection Section", "Wilderness Explorers",
+    "Conservation Station", "Wildlife Express Train", "Boneyard",
+    "Indiana Jones Epic Stunt", "Beauty and the Beast Live on Stage",
+    "Fantasmic", "Walt Disney Presents", "Vacation Fun", "Lightning McQueen Racing Academy",
+    "Awesome Planet", "Canada Far and Wide", "Impressions de France",
+    "American Adventure", "Reflections of China", "Disney and Pixar Short Film",
+    "Journey of Water", "ImageWorks", "House of the Whispering Willows",
 )))
 
 
@@ -46,9 +61,10 @@ def is_excluded(ride):
     return ride["id"] in EXCLUDED_ATTRACTIONS or any(part in name for part in EXCLUDED_NAME_PARTS)
 
 
-def modeling_day(day):
+def modeling_day(day, eligible_ids=None):
     """Project ride metadata and token columns together without changing the cache."""
-    indices = [index for index, ride in enumerate(day["rides"]) if not is_excluded(ride)]
+    indices = [index for index, ride in enumerate(day["rides"])
+               if not is_excluded(ride) and (eligible_ids is None or ride["id"] in eligible_ids)]
     if len(indices) == len(day["rides"]):
         return day
     return {**day, "rides": [day["rides"][index] for index in indices],

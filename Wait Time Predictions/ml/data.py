@@ -70,11 +70,11 @@ def save_dataset(path, dataset):
             os.unlink(temporary)
 
 
-def time_features(timestamps):
+def time_features(timestamps, park_timezone=PARK_TIMEZONE):
     """Calendar features available for observed and future ticks, in park time."""
     rows = []
     for timestamp in timestamps:
-        local = datetime.fromtimestamp(timestamp, PARK_TIMEZONE)
+        local = datetime.fromtimestamp(timestamp, park_timezone)
         cycles = (local.hour * 60 + local.minute, local.weekday(), local.timetuple().tm_yday - 1)
         rows.append([
             value
@@ -121,9 +121,9 @@ def history_from_json(path):
     return result
 
 
-def expected_ticks(day, schedule):
+def expected_ticks(day, schedule, park_timezone=PARK_TIMEZONE):
     """An operating day includes sessions opening that date, even past midnight."""
-    from api.collect import OPERATING_HOURS, PARK_TIMEZONE
+    from api.collect import OPERATING_HOURS
 
     ticks = set()
     closing = 0
@@ -134,7 +134,7 @@ def expected_ticks(day, schedule):
         closes = datetime.fromisoformat(session["closingTime"])
         if opens.tzinfo is None or closes.tzinfo is None or closes <= opens:
             raise ValueError("Invalid scheduled operating hours")
-        if opens.astimezone(PARK_TIMEZONE).date() != day:
+        if opens.astimezone(park_timezone).date() != day:
             continue
         start, end = int(opens.timestamp()), int(closes.timestamp())
         closing = max(closing, end)
@@ -222,6 +222,7 @@ def interpolate_day(day):
 
 def validate_day(day, before=None):
     """Require every scheduled bucket and ride, optionally through a cutoff."""
+    local_zone = ZoneInfo(day["timezone"]) if day.get("timezone") else PARK_TIMEZONE
     # Legacy complete days were already checked by the old exporter.
     expected = day.get("expected_timestamps", day["timestamps"])
     if not expected:
@@ -235,11 +236,11 @@ def validate_day(day, before=None):
             if int(tick) < before <= right
         })
     if missing:
-        first = datetime.fromtimestamp(missing[0], PARK_TIMEZONE)
+        first = datetime.fromtimestamp(missing[0], local_zone)
         raise ValueError(f"Missing {len(missing)} of {len(required)} scheduled snapshots. First missing {first:%Y-%m-%d %H:%M %Z}")
     for tick, tokens in zip(day["timestamps"], day["tokens"]):
         if (before is None or tick < before) and any(token == MISSING for token in tokens):
-            moment = datetime.fromtimestamp(tick, PARK_TIMEZONE)
+            moment = datetime.fromtimestamp(tick, local_zone)
             raise ValueError(f"Attractions missing from snapshot at {moment:%Y-%m-%d %H:%M %Z}")
 
 
@@ -256,9 +257,12 @@ def needs_refresh(day, now):
     return checked < closing and int(checked) // TICK_SECONDS < int(now) // TICK_SECONDS
 
 
-def export(settings=config):
+def export_firestore(settings=config):
     print("Preparing dataset export...", flush=True)
-    from api.collect import PARK_ID, PARK_TIMEZONE, fetch_park_data, firestore_client
+    from api.collect import firestore_client, fetch_park_data
+    from ml.parks import get_park
+    park = get_park(getattr(settings, "PARK", "disneyland"))
+    PARK_ID, PARK_TIMEZONE = park.id, park.tz
 
     first_day = date.fromisoformat(settings.START_DATE)
     now = datetime.now(timezone.utc).timestamp()
@@ -350,7 +354,7 @@ def export(settings=config):
         db = firestore_client(os.environ["FIRESTORE_SERVICE_ACCOUNT_JSON"])
     else:
         db = firestore.Client(project=settings.PROJECT)
-    archive = Archive(db)
+    archive = Archive(db, park_id=PARK_ID)
 
     def catalog(version):
         if version not in dataset["catalogs"]:
@@ -365,9 +369,9 @@ def export(settings=config):
                 key, month = day.isoformat(), day.strftime("%Y/%m")
                 if month not in refreshed_months:
                     progress(f"Fetching schedule {month}")
-                    dataset["schedules"][month] = fetch_park_data(client, f"schedule/{month}", "schedule")
+                    dataset["schedules"][month] = fetch_park_data(client, f"schedule/{month}", "schedule", park)
                     refreshed_months.add(month)
-                ticks, closing = expected_ticks(day, dataset["schedules"][month])
+                ticks, closing = expected_ticks(day, dataset["schedules"][month], PARK_TIMEZONE)
                 if ticks:
                     start = datetime.fromtimestamp(ticks[0], timezone.utc)
                     stop = datetime.fromtimestamp(ticks[-1] + TICK_SECONDS, timezone.utc)
@@ -383,6 +387,15 @@ def export(settings=config):
                         progress(f"{key} Firestore {len(snapshots)}/{len(ticks)} snapshots")
                 progress(f"{key} checking {len(snapshots)}/{len(ticks)} snapshots")
                 result = collect_day(ticks, snapshots, catalog)
+                from ml.attractions import modeling_day
+                result = modeling_day(result, set(dataset["eligible_ride_ids"]) if "eligible_ride_ids" in dataset else None)
+                result["timezone"] = str(PARK_TIMEZONE)
+                result["source"] = "firestore"
+                previous = dataset["days"].get(key) or incomplete.get(key)
+                if not result["timestamps"] and previous and previous["timestamps"]:
+                    completed += 1
+                    message(f"{key}: no Firestore observations; kept cached history")
+                    continue
                 result["checked_at"] = datetime.now(timezone.utc).timestamp()
                 result["closing_at"] = closing or datetime.combine(day + timedelta(days=1), datetime.min.time(), PARK_TIMEZONE).timestamp()
                 reason = ""
@@ -392,6 +405,10 @@ def export(settings=config):
                         reason = "Operating day is still in progress"
                 except ValueError as error:
                     reason = str(error)
+                if reason and previous and (key in dataset["days"] or len(previous["timestamps"]) > len(result["timestamps"])):
+                    completed += 1
+                    message(f"{key}: kept better cached observations; Firestore history is incomplete")
+                    continue
                 dataset["days"].pop(key, None)
                 dataset.get("discarded", {}).pop(key, None)
                 incomplete.pop(key, None)
@@ -428,18 +445,63 @@ def export(settings=config):
     message(f"Dataset has {len(dataset['days'])} training days and {len(incomplete)} incomplete prediction days in {settings.DATASET}")
 
 
+def export(settings=None):
+    """Refresh finalized API history, then the recent Firestore tail for one park."""
+    from types import SimpleNamespace
+    from ml.parks import settings_for
+    from ml.backfill import backfill
+
+    settings = settings or settings_for(config.PARK)
+    key = os.environ.get("THEMEPARKS_API_KEY")
+    if not key:
+        key = Path(settings.KEY_FILE).read_text(encoding="utf-8-sig").strip()
+    if not key:
+        raise ValueError("The ThemeParks.wiki API key is empty")
+    final = backfill(key, settings.DATASET, settings.RAW_DIR,
+                     settings.START_DATE, settings.END_DATE,
+                     park=getattr(settings, "PARK", "disneyland"), refresh=settings.REFRESH)
+    today = datetime.now(settings.PARK_TIMEZONE).date()
+    # Overlap the archive boundary: its operating day may close after midnight.
+    first = final if final else today - timedelta(days=settings.LIVE_DAYS - 1)
+    if settings.START_DATE:
+        first = max(first, date.fromisoformat(settings.START_DATE))
+    last = date.fromisoformat(settings.END_DATE) if settings.END_DATE else today
+    if first <= last:
+        live_settings = SimpleNamespace(**{**vars(settings), "START_DATE": first.isoformat()})
+        export_firestore(live_settings)
+    return final
+
+
 def main():
     import argparse
-    from types import SimpleNamespace
+    from ml.parks import PARKS, settings_for
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--refresh", action="store_true", help="Refetch configured dates, including cached days")
+    parser.add_argument("--park", choices=PARKS, default=config.PARK)
+    parser.add_argument("--since", help="First local date; default: all available paid history")
+    parser.add_argument("--until", help="Last local date; default: today")
+    parser.add_argument("--refresh", action="store_true", help="Rebuild historical days and refetch raw API history")
+    parser.add_argument("--history-only", action="store_true", help="Skip Firestore (no Firebase credentials needed)")
+    parser.add_argument("--live-only", action="store_true", help="Only refresh recent Firestore observations")
     args = parser.parse_args()
-    settings = SimpleNamespace(**{name: getattr(config, name) for name in dir(config) if name.isupper()})
+    if args.history_only and args.live_only:
+        parser.error("Choose only one of --history-only and --live-only")
+    settings = settings_for(args.park)
+    settings.START_DATE = args.since or settings.START_DATE
+    settings.END_DATE = args.until or settings.END_DATE
     settings.REFRESH = settings.REFRESH or args.refresh
     try:
-        export(settings)
-    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        if args.live_only:
+            settings.START_DATE = settings.START_DATE or (datetime.now(settings.PARK_TIMEZONE).date() - timedelta(days=settings.LIVE_DAYS - 1)).isoformat()
+            export_firestore(settings)
+        elif args.history_only:
+            from ml.backfill import backfill
+            key = os.environ.get("THEMEPARKS_API_KEY") or settings.KEY_FILE.read_text(encoding="utf-8-sig").strip()
+            backfill(key, settings.DATASET, settings.RAW_DIR, settings.START_DATE, settings.END_DATE,
+                     park=args.park, refresh=settings.REFRESH)
+        else:
+            export(settings)
+    except (OSError, ValueError, RuntimeError) as error:
         raise SystemExit(str(error)) from error
 
 

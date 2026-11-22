@@ -59,11 +59,13 @@ def summarize(paths, rides, timestamps):
 
 
 def print_predictions(result):
-    observed = datetime.fromisoformat(result["as_of"]).astimezone(PARK_TIMEZONE)
+    from zoneinfo import ZoneInfo
+    local_zone = ZoneInfo(result.get("timezone", str(PARK_TIMEZONE)))
+    observed = datetime.fromisoformat(result["as_of"]).astimezone(local_zone)
     print(f"Forecast for {result['day']} | {result['samples']} samples", flush=True)
     print(f"Observed through {observed:%Y-%m-%d %H:%M %Z}. Wait percentiles apply when operating.", flush=True)
     for snapshot in result["snapshots"]:
-        moment = datetime.fromisoformat(snapshot["time"]).astimezone(PARK_TIMEZONE)
+        moment = datetime.fromisoformat(snapshot["time"]).astimezone(local_zone)
         print(f"\n{moment:%Y-%m-%d %H:%M %Z}", flush=True)
         for ride in snapshot["rides"]:
             if ride.get("status"):
@@ -78,18 +80,18 @@ def print_predictions(result):
                       f"p10 {wait['p10']}, p90 {wait['p90']} | {down}", flush=True)
 
 
-def park_timestamp(opening_date, clock_text, first_timestamp):
+def park_timestamp(opening_date, clock_text, first_timestamp, park_timezone=PARK_TIMEZONE):
     """Resolve a park-local clock time on the selected operating day."""
     clock = time.fromisoformat(clock_text)
     if clock.tzinfo is not None:
         raise ValueError("Use a park-local time such as 18:00")
-    moment = datetime.combine(date.fromisoformat(opening_date), clock, PARK_TIMEZONE)
+    moment = datetime.combine(date.fromisoformat(opening_date), clock, park_timezone)
     if moment.timestamp() < first_timestamp:
         moment += timedelta(days=1)
     return math.ceil(moment.timestamp() / TICK_SECONDS) * TICK_SECONDS
 
 
-def forecast_boundary(day, opening_date, start_time):
+def forecast_boundary(day, opening_date, start_time, park_timezone=PARK_TIMEZONE):
     """Use observed tokens strictly before the first predicted five-minute tick."""
     timestamps = day["timestamps"]
     if any(b <= a for a, b in zip(timestamps, timestamps[1:])):
@@ -102,7 +104,7 @@ def forecast_boundary(day, opening_date, start_time):
             raise ValueError("No observations are available before the prediction start")
         cutoff = timestamps[-1] + TICK_SECONDS
     else:
-        cutoff = park_timestamp(opening_date, start_time, expected[0])
+        cutoff = park_timestamp(opening_date, start_time, expected[0], park_timezone)
     validate_day(day, before=cutoff)
     count = bisect_left(timestamps, cutoff)
     if not count:
@@ -120,12 +122,17 @@ def predict(settings=config, target_time=None, *, print_output=True):
     checkpoint = torch.load(settings.CHECKPOINT, map_location=device, weights_only=True)
     if checkpoint.get("version") != 1 or checkpoint["token_labels"] != TOKEN_LABELS:
         raise ValueError("Unsupported checkpoint or token vocabulary")
+    from ml.parks import get_park
+    park = get_park(getattr(settings, "PARK", checkpoint["park_id"]))
+    park_timezone = park.tz
+    if checkpoint["park_id"] != park.id:
+        raise ValueError("Checkpoint belongs to a different park")
     validate_checkpoint_rides(checkpoint["rides"])
     model = build_model(**checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model_state"])
     if settings.HISTORY:
         day = history_from_json(settings.HISTORY)
-        key = settings.PREDICT_DAY or datetime.fromtimestamp(day["timestamps"][0], PARK_TIMEZONE).date().isoformat()
+        key = settings.PREDICT_DAY or datetime.fromtimestamp(day["timestamps"][0], park_timezone).date().isoformat()
         if "expected_timestamps" not in day:
             cache = load_dataset(settings.DATASET) if settings.DATASET.exists() else {}
             cached_day = cache.get("days", {}).get(key) or cache.get("incomplete_days", {}).get(key)
@@ -133,7 +140,7 @@ def predict(settings=config, target_time=None, *, print_output=True):
                 day["expected_timestamps"] = cached_day.get("expected_timestamps", cached_day["timestamps"])
             else:
                 schedule = cache.get("schedules", {}).get(date.fromisoformat(key).strftime("%Y/%m"), [])
-                day["expected_timestamps"], _ = expected_ticks(date.fromisoformat(key), schedule)
+                day["expected_timestamps"], _ = expected_ticks(date.fromisoformat(key), schedule, park_timezone)
     else:
         dataset = load_dataset(settings.DATASET)
         if dataset["park_id"] != checkpoint["park_id"]:
@@ -145,8 +152,8 @@ def predict(settings=config, target_time=None, *, print_output=True):
         if key not in available:
             raise ValueError(f"Dataset has no cached day for {key}. Run data.py to fetch it.")
         day = available[key]
-    day = interpolate_day(modeling_day(day))
-    count, cutoff = forecast_boundary(day, key, settings.PREDICT_START_TIME)
+    day = interpolate_day(modeling_day(day, {ride["id"] for ride in checkpoint["rides"]}))
+    count, cutoff = forecast_boundary(day, key, settings.PREDICT_START_TIME, park_timezone)
     timestamps = day["timestamps"][:count]
     # Later observations supply the replay's end time, while history contains
     # only the tokens available before the forecast starts.
@@ -154,9 +161,9 @@ def predict(settings=config, target_time=None, *, print_output=True):
     tokens = align_day(history_day, checkpoint["rides"])
     steps = settings.STEPS
     if target_time is not None:
-        target = park_timestamp(key, target_time, day["timestamps"][0])
+        target = park_timestamp(key, target_time, day["timestamps"][0], park_timezone)
         if target < cutoff:
-            start = datetime.fromtimestamp(cutoff, PARK_TIMEZONE)
+            start = datetime.fromtimestamp(cutoff, park_timezone)
             raise ValueError(f"Requested time must be at or after the prediction start, {start:%H:%M %Z}")
         steps = (target - cutoff) // TICK_SECONDS + 1
     elif steps is None:
@@ -165,7 +172,7 @@ def predict(settings=config, target_time=None, *, print_output=True):
         if steps <= 0:
             steps = 24
     future = [cutoff + TICK_SECONDS * step for step in range(steps)]
-    features = torch.tensor(time_features(timestamps[1:] + future), dtype=torch.float32, device=device)
+    features = torch.tensor(time_features(timestamps[1:] + future, park_timezone), dtype=torch.float32, device=device)
     paths = model.forecast(tokens.to(device), features,
                            steps=steps, samples=settings.SAMPLES, temperature=settings.TEMPERATURE,
                            history_timestamps=timestamps)
@@ -173,7 +180,7 @@ def predict(settings=config, target_time=None, *, print_output=True):
         paths = paths[:, -1:]
         future = future[-1:]
     result = {"as_of": datetime.fromtimestamp(timestamps[-1], timezone.utc).isoformat(),
-              "day": key, "prediction_start": datetime.fromtimestamp(cutoff, timezone.utc).isoformat(),
+              "day": key, "timezone": park.timezone, "prediction_start": datetime.fromtimestamp(cutoff, timezone.utc).isoformat(),
               "samples": settings.SAMPLES, "snapshots": summarize(paths, checkpoint["rides"], future)}
     if print_output:
         print_predictions(result)
@@ -183,9 +190,11 @@ def predict(settings=config, target_time=None, *, print_output=True):
 def main():
     parser = argparse.ArgumentParser(description="Print ride predictions at a park-local time.")
     parser.add_argument("time", metavar="HH:MM", help="Target time, generated from PREDICT_START_TIME in config.py")
+    from ml.parks import PARKS, settings_for
+    parser.add_argument("--park", choices=PARKS, default=config.PARK)
     args = parser.parse_args()
     try:
-        predict(target_time=args.time)
+        predict(settings_for(args.park), target_time=args.time)
     except (ValueError, KeyError, FileNotFoundError) as error:
         raise SystemExit(str(error)) from error
 

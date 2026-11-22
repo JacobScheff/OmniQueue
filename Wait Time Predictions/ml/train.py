@@ -1,4 +1,4 @@
-"""Train on whole operating days, with chronological validation/test holdouts."""
+"""Train on whole operating days, with seeded random validation/test holdouts."""
 
 import math
 import random
@@ -28,13 +28,13 @@ from ml.availability import advance_ages, fit_breakdown_hazards
 class Days(Dataset):
     """Each sequence starts with the first observation of its operating day."""
 
-    def __init__(self, days, rides):
+    def __init__(self, days, rides, park_timezone=None):
         self.days = []
         for day in days:
             tokens = align_day(day, rides)
             if len(tokens) < 2:
                 continue
-            features = torch.tensor(time_features(day["timestamps"]), dtype=torch.float32)
+            features = torch.tensor(time_features(day["timestamps"], **({"park_timezone": park_timezone} if park_timezone else {})), dtype=torch.float32)
             timestamps = np.asarray(day["timestamps"], dtype=np.int64)
             if np.any(np.diff(timestamps) <= 0):
                 raise ValueError("Day timestamps must be strictly increasing")
@@ -71,8 +71,8 @@ def collate_days(days):
     )
 
 
-def split_dates(dates, train_fraction, val_fraction, test_fraction):
-    """Allocate whole days in chronological order, keeping enabled splits nonempty."""
+def split_dates(dates, train_fraction, val_fraction, test_fraction, *, seed=config.SEED):
+    """Randomly assign whole days, reproducibly, keeping enabled splits nonempty."""
     fractions = (train_fraction, val_fraction, test_fraction)
     if (any(not math.isfinite(value) or value < 0 for value in fractions)
             or train_fraction <= 0 or not math.isclose(sum(fractions), 1.0, abs_tol=1e-9)):
@@ -94,7 +94,9 @@ def split_dates(dates, train_fraction, val_fraction, test_fraction):
                     key=lambda i: targets[i] - counts[i])
         counts[index] += 1
     train_end, val_end = counts[0], counts[0] + counts[1]
-    return dates[:train_end], dates[train_end:val_end], dates[val_end:]
+    random.Random(seed).shuffle(dates)
+    # Sorting within a group keeps logs readable; membership is randomized.
+    return tuple(sorted(group) for group in (dates[:train_end], dates[train_end:val_end], dates[val_end:]))
 
 
 def rollout_loss(model, tokens, features, targets, logits, states, *, steps, origins,
@@ -292,20 +294,27 @@ def train(settings=config):
     if not settings.DATASET.exists():
         raise ValueError("No local dataset. Set the export dates in config.py and run python data.py first.")
     dataset = load_dataset(settings.DATASET)
+    from ml.parks import get_park
+    park = get_park(getattr(settings, "PARK", dataset["park_id"]))
+    if dataset["park_id"] != park.id:
+        raise ValueError("Dataset belongs to a different park")
     dates = sorted(day for day, row in dataset["days"].items() if len(row["timestamps"]) >= 2)
     if not dates:
         raise ValueError("Dataset contains no complete days with at least two snapshots")
     train_dates, validation_dates, test_dates = split_dates(
         dates, settings.TRAIN_SPLIT, settings.VAL_SPLIT, settings.TEST_SPLIT,
+        seed=settings.SEED,
     )
     training = [dataset["days"][day] for day in train_dates]
-    excluded_ids = {ride["id"] for day in training for ride in day["rides"] if is_excluded(ride)}
+    eligible = set(dataset["eligible_ride_ids"]) if "eligible_ride_ids" in dataset else None
+    excluded_ids = {ride["id"] for day in training for ride in day["rides"]
+                    if is_excluded(ride) or (eligible is not None and ride["id"] not in eligible)}
     ride_by_id = {ride["id"]: ride for day in training for ride in day["rides"]
                   if ride["id"] not in excluded_ids}
     rides = [ride_by_id[key] for key in sorted(ride_by_id)]
     if not rides:
         raise ValueError("Dataset contains no eligible attractions after exclusions")
-    train_days = Days(training, rides)
+    train_days = Days(training, rides, park.tz)
     if not train_days:
         raise ValueError("Dataset needs an operating day with at least two snapshots")
     train_loader = DataLoader(train_days, batch_size=settings.BATCH_SIZE, shuffle=True,
@@ -313,7 +322,7 @@ def train(settings=config):
     validation_loader = None
     if validation_dates:
         validation_loader = DataLoader(
-            Days([dataset["days"][day] for day in validation_dates], rides),
+            Days([dataset["days"][day] for day in validation_dates], rides, park.tz),
             batch_size=settings.BATCH_SIZE, shuffle=False,
             pin_memory=device.type == "cuda", collate_fn=collate_days,
         )
@@ -333,7 +342,7 @@ def train(settings=config):
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.LEARNING_RATE)
     description = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
     print(f"Training on {device} ({description}), {sum(p.numel() for p in model.parameters()):,} parameters", flush=True)
-    print(f"Whole-day chronological split: {len(train_dates)} train, "
+    print(f"Random whole-day split (seed {settings.SEED}): {len(train_dates)} train, "
           f"{len(validation_dates)} validation, {len(test_dates)} test; {len(rides)} rides", flush=True)
     for label, selected in (("Train", train_dates), ("Validation", validation_dates), ("Test", test_dates)):
         if selected:
@@ -365,10 +374,11 @@ def train(settings=config):
         print(metrics, flush=True)
         checkpoint = {
             "version": 1, "model_config": model_config, "model_state": model.state_dict(),
+            "run_name": getattr(settings, "RUN_NAME", None),
             "rides": rides, "token_labels": TOKEN_LABELS, "history": "full_day",
-            "park_id": dataset["park_id"], "train_dates": train_dates,
+            "park_id": dataset["park_id"], "timezone": park.timezone, "train_dates": train_dates,
             "validation_dates": validation_dates, "test_dates": test_dates,
-            "split": {"method": "chronological_days", "train": settings.TRAIN_SPLIT,
+            "split": {"method": "random_days", "seed": settings.SEED, "train": settings.TRAIN_SPLIT,
                       "validation": settings.VAL_SPLIT, "test": settings.TEST_SPLIT},
             "epoch": number, "training_loss": training_loss, "training_accuracy": accuracy,
             "validation_loss": validation_loss, "validation_accuracy": validation_accuracy,
@@ -392,8 +402,28 @@ def train(settings=config):
 
 
 def main():
+    import argparse
+    from ml.parks import PARKS, settings_for
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--park", choices=PARKS, default=config.PARK)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default=config.DEVICE)
+    parser.add_argument("--epochs", type=int, default=config.EPOCHS)
+    parser.add_argument("--seed", type=int, default=config.SEED)
+    parser.add_argument("--checkpoint", type=Path, help="Destination for this training run's best model")
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--run-name", help="Display name stored with this model")
+    parser.add_argument("--train-split", type=float, default=config.TRAIN_SPLIT)
+    parser.add_argument("--val-split", type=float, default=config.VAL_SPLIT)
+    parser.add_argument("--test-split", type=float, default=config.TEST_SPLIT)
+    args = parser.parse_args()
     try:
-        train()
+        settings = settings_for(args.park, DEVICE=args.device, EPOCHS=args.epochs, SEED=args.seed, RUN_NAME=args.run_name,
+                                TRAIN_SPLIT=args.train_split, VAL_SPLIT=args.val_split, TEST_SPLIT=args.test_split)
+        if args.checkpoint:
+            settings.CHECKPOINT = args.checkpoint.resolve()
+        if args.dataset:
+            settings.DATASET = args.dataset.resolve()
+        train(settings)
     except (ValueError, KeyError, FileNotFoundError, PermissionError) as error:
         raise SystemExit(str(error)) from error
 

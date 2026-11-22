@@ -79,6 +79,9 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
     V3 queries each saved origin directly; older models consume generated tokens.
     Future observations are read only when collecting scoring targets.
     """
+    from zoneinfo import ZoneInfo
+    from ml.data import PARK_TIMEZONE
+    park_timezone = ZoneInfo(day["timezone"]) if day.get("timezone") else PARK_TIMEZONE
     model.eval()
     validate_day(day)
     timestamps = day["timestamps"]
@@ -90,7 +93,7 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
     for index in range(len(timestamps) - 2, -1, -1):
         if timestamps[index + 1] - timestamps[index] == TICK_SECONDS:
             remaining[index] = remaining[index + 1] + 1
-    observed_features = torch.tensor(time_features(timestamps[1:]), dtype=torch.float32, device=device)
+    observed_features = torch.tensor(time_features(timestamps[1:], park_timezone), dtype=torch.float32, device=device)
     origins, states, first_logits, locks, absences, outage_ages = [], [], [], [], [], []
     hidden = None
     ages = torch.zeros(len(rides), dtype=torch.long, device=device)
@@ -149,7 +152,7 @@ def forecast_day(model, day, rides, device, batch_size, *, transition_totals=Non
                                     tokens[indices + step].cpu()))
             if step < steps:
                 future = [timestamps[index] + (step + 1) * TICK_SECONDS for index in selected]
-                features = torch.tensor(time_features(future), dtype=torch.float32, device=device).unsqueeze(1)
+                features = torch.tensor(time_features(future, park_timezone), dtype=torch.float32, device=device).unsqueeze(1)
                 if hasattr(model, "horizon_logits"):
                     logits = model.horizon_logits(origin_states, origin_tokens, features, [[step + 1]])
                 else:
@@ -244,6 +247,10 @@ def evaluate(settings=config):
         raise ValueError("BATCH_SIZE must be positive")
     device = select_device(settings.DEVICE)
     checkpoint = torch.load(settings.CHECKPOINT, map_location=device, weights_only=True)
+    if hasattr(settings, "PARK"):
+        from ml.parks import get_park
+        if checkpoint.get("park_id") != get_park(settings.PARK).id:
+            raise ValueError("Checkpoint belongs to a different park")
     if checkpoint.get("version") != 1 or checkpoint.get("token_labels") != TOKEN_LABELS:
         raise ValueError("Unsupported checkpoint or token vocabulary")
     validate_checkpoint_rides(checkpoint["rides"])
@@ -276,7 +283,8 @@ def evaluate(settings=config):
     transitions = empty_transitions()
     totals = {minutes: {"correct": 0, "scored": 0, "forecasts": 0, "numeric_actual": 0, "errors": []}
               for minutes in HORIZON_MINUTES}
-    for key in dates:
+    for index, key in enumerate(dates, 1):
+        print(f"Evaluating test day {index}/{len(dates)}: {key}", flush=True)
         for minutes, origins, predictions, targets in forecast_day(
                 model, modeling_day(dataset["days"][key]), checkpoint["rides"], device, settings.BATCH_SIZE,
                 transition_totals=transitions):
@@ -303,8 +311,46 @@ def evaluate(settings=config):
 
 
 def main():
+    import argparse
+    from ml.parks import PARKS, settings_for
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--park", choices=PARKS, default=config.PARK)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default=config.DEVICE)
+    parser.add_argument("--checkpoint", type=Path, help="Evaluate this saved model's own test dates")
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--output", type=Path, help="Save test metrics as JSON")
+    args = parser.parse_args()
     try:
-        evaluate()
+        settings = settings_for(args.park, DEVICE=args.device)
+        if args.checkpoint:
+            settings.CHECKPOINT = args.checkpoint.resolve()
+        if args.dataset:
+            settings.DATASET = args.dataset.resolve()
+        evaluated_stat = settings.CHECKPOINT.stat()
+        results = evaluate(settings)
+        if args.output:
+            import json
+            import os
+            import tempfile
+            from datetime import datetime, timezone
+
+            stat = settings.CHECKPOINT.stat()
+            if (stat.st_mtime_ns, stat.st_size) != (evaluated_stat.st_mtime_ns, evaluated_stat.st_size):
+                raise ValueError("The model changed during testing. Run the test again for the saved model.")
+            report = {"version": 1, "park_id": settings.PARK_ID,
+                      "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                      "checkpoint_mtime_ns": stat.st_mtime_ns, "checkpoint_size": stat.st_size,
+                      **results}
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(dir=args.output.parent, suffix=".tmp")
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+                    json.dump(report, target, allow_nan=False)
+                os.replace(temporary, args.output)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            print(f"Test report saved to {args.output}", flush=True)
     except (ValueError, KeyError, FileNotFoundError) as error:
         raise SystemExit(str(error)) from error
 

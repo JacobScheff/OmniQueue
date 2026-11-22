@@ -14,7 +14,7 @@ import torch
 from api.collect import PARK_ID, pack_snapshot
 from ml.data import (
     CLOSED, DOWN, MISSING, OVERFLOW, REFURBISHMENT, TOKEN_LABELS, UNKNOWN, VOCAB_SIZE,
-    align_day, collect_day, complete_day, expected_ticks, export, interpolate_day, load_dataset,
+    align_day, collect_day, complete_day, expected_ticks, export_firestore as export, interpolate_day, load_dataset,
     ride_token, save_dataset, time_features, validate_day,
 )
 from ml.model import WaitPredictor, token_loss

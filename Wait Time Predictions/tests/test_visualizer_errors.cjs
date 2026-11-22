@@ -20,6 +20,7 @@ function visualizer() {
       return elements.get(id);
     },
     createElement: element, createElementNS: element,
+    querySelectorAll() { return []; },
   }});
   const source = fs.readFileSync(path.join(__dirname, "../ml/visualizer/app.js"), "utf8");
   // Load the real UI functions without starting network requests or the map.

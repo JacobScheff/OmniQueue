@@ -1,6 +1,44 @@
 # Wait time predictions
 
-The ML code and interactive map are in `ml/`.
+The ML code and interactive map are in `ml/`. Start the shared park lab from this folder:
+
+```powershell
+.venv/Scripts/python.exe app.py --device auto
+```
+
+Or use `python app.py --device auto` with an interpreter containing `requirements-model.txt`. The lab opens at `http://127.0.0.1:8766`. Choose **Disneyland**, **California Adventure**, **Magic Kingdom**, **Animal Kingdom**, **Hollywood Studios**, or **EPCOT**. Each park has independent dates, raw history, attraction coordinates, trained models, and model selection. Anaheim uses Pacific time; Florida uses Eastern time, including daylight saving changes. The aerial map covers all six parks and can fall back to streets if imagery is unavailable.
+
+**Data & models** opens a full-width model workshop. Name a new model, choose the maximum epochs and train/validation/test percentages, and review the randomized whole-day counts, ranges and exact date assignments before starting. Each run saves separately, so new training never overwrites an earlier named run. With validation enabled, the best validation checkpoint and latest completed epoch are saved automatically; without validation, the final training epoch is saved. **Use this model for forecasts when training finishes** is checked by default; uncheck it to keep the current map model active.
+
+Choose a saved model to inspect its name, epoch, training range and split counts. **Use for forecasts** explicitly activates it and returns to the map; merely selecting a model leaves the map unchanged. New runs use seeded random day splits; existing models retain their original saved splits until retrained. The active model is remembered separately for each park across app restarts. **Save a named copy** preserves a selected best/latest checkpoint under another name without switching the map automatically. Existing Best/Latest/Saved slots remain accessible as earlier models.
+
+**Move model to Deleted** moves a named run's best/latest checkpoints and test reports into `checkpoints/<park>/deleted/<deletion-id>/`. Earlier checkpoint slots move only the selected checkpoint and its report. Expand **Deleted models** and choose **Restore** to return files to the library, then **Use for forecasts** to activate them. Deleting an active model pauses forecasts and remembers that choice after restarting. Restoration never overwrites an existing model. Back up the entire park checkpoint folder to preserve models, deleted files, and their recovery manifests.
+
+**Evaluate test split** evaluates exactly the test dates saved inside the selected checkpoint, even after more data is downloaded. It never trains or updates weights and rejects overlapping/missing saved splits. Results show accuracy, MAE, MSE (squared minutes), RMSE and numeric-pair coverage at each forecast horizon, plus the exact held-out dates. The complete report is saved alongside that model and displayed again when selected. Reports are ignored if the model file has changed. Models without a test split need a new training run with a nonzero test percentage before testing.
+
+**Stop & discard model** stops queued or running UI training and removes that unfinished run, including its best/latest checkpoints and temporary save files. It keeps the previously active model selected and retains the job log. Completed models cannot be discarded through this training control.
+
+Training and evaluation automatically expand a large log console with epoch/test-day progress, elapsed time, follow/pause output, and a full-log download. **Show model controls** returns to the forms while a job runs; the job keeps logging. Jobs run sequentially, and other parks remain browsable. Keep the server open until the job finishes.
+
+Refresh controls are under **Refresh park data** in the sidebar. **Refresh all data** downloads uncached paid history and recent Firestore observations; **Refresh live only** reads recent Firestore data; **Re-fetch history** also replaces cached API downloads. Refreshing does not train a model.
+
+Data remains in `data/<park>/waits.json.gz`, raw history in `data/<park>/themeparks-history/`, and coordinates in `data/<park>/attraction_locations.json`. New named models use `checkpoints/<park>/runs/<run-id>/best.pt` and `best.latest.pt`; test reports use `.test.json`, and complete job logs are under `data/<park>/jobs/`. `checkpoints/<park>/active-model.json` remembers the model used by the UI. The **Where files are stored** section shows the absolute local paths for the selected park. Main datasets and raw daily history are gzip-compressed JSON; `.pt` checkpoints contain PyTorch weights, architecture settings, ride IDs, the seed and exact train/validation/test dates. Model training does not upload weights to Firebase. Existing `waits.pt`, `waits.latest.pt` and `waits.saved.pt` remain available. On first use, legacy Disneyland files are copied into its park folders without overwriting newer files. Models containing excluded untimed attractions require a new training run.
+
+Command-line equivalents accept `--park` with `disneyland`, `california-adventure`, `magic-kingdom`, `animal-kingdom`, `hollywood-studios`, or `epcot`:
+
+```powershell
+python ml/data.py --park epcot
+python ml/data.py --park epcot --history-only
+python ml/data.py --park epcot --live-only
+python ml/train.py --park epcot --device auto --epochs 200
+python ml/visualize.py --park epcot --device auto
+python ml/run.py 18:00 --park epcot
+python ml/test.py --park epcot
+```
+
+The existing ThemeParks.wiki key file and `THEMEPARKS_API_KEY` continue to work. Firestore uses `CREDENTIALS`, defaults to `credentials/credentials.json` if present, then tries `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application credentials. New parks need observations from the updated collector; redeploy it to have the existing cron endpoint collect all six parks, or use `?park=epcot` to collect one. This source change does not deploy the collector.
+
+The downloader obtains each park's actual archive bounds and the key's history allowance, shares a persistent local budget of 600 REST requests/minute and 1,200 history requests/hour across runs, honors Retry-After, and retries transient failures. A full six-park initial download may pause for hourly quota recovery; cached days and raw responses survive interruption. Other programs using the same key can still consume quota. Only currently listed attractions with archived standby-queue coverage enter newly imported history; curated untimed shows, walkthroughs and play areas are also excluded. Temporary downtime/refurbishment of a wait-bearing ride remains useful data.
 
 New training runs learn CLOSED as an output and save an outage-duration estimate fitted only on training days. The ride-specific estimate gives the probability of reopening in the next five minutes, conditional on how long it has already been DOWN. Sparse observations borrow evidence from other rides. Only observed operating-to-DOWN onsets establish training durations; session breaks, interpolated/unknown observations, and DOWN-to-CLOSED changes censor them. An outage already underway at the first history tick has an unknown onset, so its observed age is a lower bound. Forecasted DOWN states advance the duration without using later actual observations.
 
@@ -24,13 +62,13 @@ ml/
 
 Edit `ml/config.py` to set dates, credentials, paths, and model settings. Run the following commands from `Wait Time Predictions`. Dataset and checkpoint paths default to this folder regardless of where Python is launched.
 
-Fetch and cache observations from Firestore for training and prediction.
+Fetch and cache historical API observations and recent Firestore observations for training and prediction.
 
 ```powershell
 python ml/data.py
 ```
 
-Set `START_DATE`, optionally `END_DATE`, and `CREDENTIALS` in the config. `END_DATE = None` includes today. Credentials can also come from `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials. Completed days and finished incomplete days are cached. Current-day observations refresh once per five-minute bucket, with a final read after closing. Set `REFRESH = True` to recheck the configured date range.
+Leave `START_DATE = None` for the full paid history window, or set it and optionally `END_DATE` to restrict dates. Set `CREDENTIALS` in the config if needed. `END_DATE = None` includes today. Credentials can also come from `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials. Completed days and finished incomplete days are cached. Current-day observations refresh once per five-minute bucket, with a final read after closing. Set `REFRESH = True` to recheck the configured date range.
 
 To add history from before your collector started, save a ThemeParks.wiki API key in `credentials/themeparks-api-key.txt` (only the key), or set `THEMEPARKS_API_KEY`, then run:
 
@@ -38,15 +76,15 @@ To add history from before your collector started, save a ThemeParks.wiki API ke
 python ml/backfill.py
 ```
 
-The backfill reads the key's permitted history window and downloads finalized Disneyland history through the archive's recorded date, which can trail live data by several days. Existing complete days and incomplete Firestore days are preserved. The original dataset is backed up before the first write, and raw responses are cached under `data/themeparks-history/` so interrupted runs can resume. Optional `--since YYYY-MM-DD` and `--until YYYY-MM-DD` restrict the operating dates. Key files, raw responses, and dataset backups are excluded from Git.
+The backfill reads the key's permitted history window and downloads finalized history for the selected park through the archive's recorded date, which can trail live data by several days. Completed API imports are reused unless `--refresh` is passed. Better complete local observations are preserved if an API response is incomplete. The original dataset is backed up before the first write, and raw responses are cached under `data/<park>/themeparks-history/` so interrupted runs can resume. Optional `--since YYYY-MM-DD` and `--until YYYY-MM-DD` restrict the operating dates. Key files, raw responses, and dataset backups are excluded from Git.
 
-Historical change records are sampled onto the published operating schedule every five minutes, using only the latest state at or before each tick. The API's opening state supplies unchanged values; missing observations remain missing, and degraded opening states stop the import. Operating days that cross midnight use both calendar days. Imported days carry source and sampling metadata and train alongside collected days automatically; no change to the Firestore export start date is needed. The importer selects currently listed attractions, using the names in each historical response. Source archive gaps may still exist even when every reconstructed bucket is present. Powered by [ThemeParks.wiki](https://www.themeparks.wiki/).
+Historical change records are sampled onto the published operating schedule every five minutes, using only the latest state at or before each tick. The API's opening state supplies unchanged values; missing observations remain missing, and degraded opening states stop the import. Operating days that cross midnight use both calendar days. Imported days carry source and sampling metadata and train alongside collected days automatically; no change to the Firestore export start date is needed. The importer selects currently listed attractions with archived standby queues, applies untimed-attraction exclusions, and uses the names in each historical response. Source archive gaps may still exist even when every reconstructed bucket is present. History API: [ThemeParks.wiki](https://www.themeparks.wiki/api).
 
 The exporter shows days checked, elapsed time, estimated time remaining, and its current stage. While reading Firestore, it reports received snapshots against the day's expected count. The first export can take several minutes depending on the number of days, authentication, and network latency. Fully cached exports finish quickly. Each finished day is saved, so a restarted export reuses that work.
 
 An empty Firestore response records an incomplete day and moves on. Firestore reads use a 30-second request timeout with automatic query retries disabled. A failed request reports its error and leaves that day uncached so it can be retried on the next run.
 
-Set `TRAIN_SPLIT`, `VAL_SPLIT`, and `TEST_SPLIT` in `ml/config.py` (defaults: `0.70`, `0.15`, `0.15`, summing to 1). Complete operating days are sorted chronologically: the oldest days train, the next days validate, and the newest days test. A day is assigned to only one group, including any operating hours past midnight. Counts are rounded to whole days, with at least one day per enabled split; the default requires at least three complete days with two snapshots each. Incomplete days are excluded. Set a holdout fraction to zero to disable that group.
+Set `TRAIN_SPLIT`, `VAL_SPLIT`, and `TEST_SPLIT` in `ml/config.py` (defaults: `0.70`, `0.15`, `0.15`, summing to 1). Complete operating days are randomly assigned to train, validation and test using `SEED` (default 42). The same dates, fractions and seed reproduce the same assignment regardless of input order. Each operating day keeps its observations in time order. A day is assigned to only one group, including any operating hours past midnight. Counts are rounded to whole days, with at least one day per enabled split; the default requires at least three complete days with two snapshots each. Incomplete days are excluded. Set a holdout fraction to zero to disable that group.
 
 Train the model and print training and validation NLL loss, token accuracy, and the validation forecast objective after each epoch. Only training days update weights, and the attraction catalog comes from training days. With validation enabled, `CHECKPOINT` contains the weights with the best validation forecast objective, rather than the final epoch. `waits.latest.pt` retains the latest completed epoch for recovery and inspection. Without validation, `CHECKPOINT` retains the final epoch. `EARLY_STOPPING_PATIENCE` stops an unproductive run (40 epochs by default; zero disables stopping).
 
@@ -105,13 +143,15 @@ python ml/visualize.py
 
 The program opens [the local visualizer](http://127.0.0.1:8766) in your browser. It reads the dataset saved by `ml/data.py` and the checkpoint saved by `ml/train.py`; no Firestore credentials or additional Python packages are required for visualization. You can browse recorded waits without a checkpoint. Run the exporter again and reload the page to include newly collected data.
 
-Choose an **operating day** and **Predictions start** time, then click **Generate forecast**. The initial selection uses `PREDICT_DAY` and `PREDICT_START_TIME` from `ml/config.py`. Select **Viewing time** directly or drag the bottom slider in five-minute steps. Play advances the timeline automatically. The visualizer generates through the final scheduled tick once per day/start selection, so dragging the slider does not run the model again. Times between buckets round up. All controls use Disneyland local time, including the overnight portion of an operating day.
+The coverage card shows the actual oldest and newest cached observations, complete and partial day counts, gaps inside that range, and a clickable monthly overview. Empty collection attempts do not extend the displayed range. In **Explore & forecast**, type an operating date or expand **Browse calendar** to jump by month and year. Green dates have complete data, amber dates are partial, and uncached dates are disabled. Previous/next skips to the next cached date; **Latest available** and **Earliest available** jump to the archive endpoints. The calendar supports archives spanning multiple years.
+
+Choose a **Start predicting at** time (or a time preset), then click **Generate forecast**. Recorded waits remain visible until you explicitly generate a forecast. Data refresh, training, model slots and job logs are under **Data & models**. The initial selection uses `PREDICT_DAY` and `PREDICT_START_TIME` from `ml/config.py`. Select **Viewing time** directly or drag the bottom slider in five-minute steps. Play advances the timeline automatically. The visualizer generates through the final scheduled tick once per day/start selection, so dragging the slider does not run the model again. Times between buckets round up. All controls use the selected park's local time, including the overnight portion of an operating day.
 
 Green solid pins show **recorded data** before the prediction start. Purple dashed pins show **model predictions** at and after the start, even when later actual observations exist in the cache. Amber pins identify **interpolated data**. Missing observations and scheduled breaks have explicit labels. An interpolation that needs an endpoint at or after the forecast start cannot enter prediction history. Unresolved earlier gaps produce an error; move the start to a valid history boundary or refresh the dataset.
 
 When a recorded actual is available for the same ride and time, a badge beside the predicted wait shows the signed error (**predicted − recorded**): yellow for 0–5 minutes of absolute error, orange for 6–15, and red above 15. Wait/status token mismatches (including a numeric wait versus Closed or Down) are red; matching status or `300+` tokens show **Match**. Overflow (`300+`) comparisons never invent an exact minute error. Hover a badge or select the ride to see the recorded value. Missing, unknown, and interpolated actuals are excluded. These comparisons only affect the display and never enter prediction history.
 
-Pan and zoom the map, search or sort the attraction list, and select a ride to see its wait history, forecast, p10/p90 interval, and chance of being down. Predicted waits are medians conditional on operating; the down probability is reported separately. The map uses [Leaflet](https://leafletjs.com/reference-1.9.4.html), public [Orange County aerial imagery](https://www.ocgis.com/arcpub/rest/services/Aerial_Imagery_Countywide/OC_Aerial_3in_WGS84/ImageServer), and an optional [OpenStreetMap](https://www.openstreetmap.org/copyright) street layer. These layers require no API key. The aerial layer requests detailed imagery for each visible map tile through native zoom 20, with larger image requests on high-density displays, instead of enlarging the former zoom-16 USGS tiles. Imagery is a geographic backdrop and does not match the selected historical day. Internet access is needed for map tiles and the Leaflet library. Public attraction coordinates from [ThemeParks.wiki](https://api.themeparks.wiki/docs/v1/) are cached in `data/attraction_locations.json`; attractions without coordinates remain available in the list. Only public map/coordinate requests leave the machine; forecasting uses the local dataset and checkpoint.
+Pan and zoom the map, search or sort the attraction list, and select a ride to see its wait history, forecast, p10/p90 interval, and chance of being down. Predicted waits are medians conditional on operating; the down probability is reported separately. The map uses [Leaflet](https://leafletjs.com/reference-1.9.4.html), public [Esri World Imagery](https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer), and an optional [OpenStreetMap](https://www.openstreetmap.org/copyright) street layer. These layers require no API key. The aerial layer covers both Anaheim and Orlando through native zoom 19, with additional zoom available for viewing markers. Imagery is a geographic backdrop and does not match the selected historical day. Internet access is needed for map tiles and the Leaflet library. Public attraction coordinates from [ThemeParks.wiki](https://api.themeparks.wiki/docs/v1/) are cached in `data/<park>/attraction_locations.json`; attractions without coordinates remain available in the list. Only public map/coordinate requests leave the machine; forecasting uses the local dataset and checkpoint.
 
 Map zoom buttons use quarter-level steps. Mouse-wheel zoom uses Leaflet's normal sensitivity and event timing, with quarter-level snapping and animated transitions.
 
@@ -119,7 +159,7 @@ Optional launch settings:
 
 ```powershell
 python ml/visualize.py --device auto --samples 100 --port 8766
-python ml/visualize.py --dataset data/waits.json.gz --checkpoint checkpoints/waits.pt
+python ml/visualize.py --park epcot --device auto
 python ml/visualize.py --refresh-locations --no-browser
 ```
 

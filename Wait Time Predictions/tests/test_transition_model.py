@@ -157,7 +157,7 @@ class TransitionModelTests(unittest.TestCase):
                                        EARLY_STOPPING_PATIENCE=2)
             source = {"rides": [{"id": "ride", "name": "Ride"}],
                       "timestamps": [0, 300, 600], "tokens": [[1], [1], [1]]}
-            save_dataset(settings.DATASET, {"version": 1, "park_id": "park",
+            save_dataset(settings.DATASET, {"version": 1, "park_id": "7340550b-c14d-4def-80bb-acdb51d49a66",
                                            "days": {str(i): source for i in range(5)}})
             validations = iter([1., .8, 1.2, 1.3])
             def fake_epoch(model, loader, device, optimizer=None, *, metrics, **kwargs):

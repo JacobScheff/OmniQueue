@@ -43,7 +43,8 @@ def decode(snapshot, catalog):
 
 
 class Archive:
-    def __init__(self, db):
+    def __init__(self, db, park_id=PARK_ID):
+        self.park_id = park_id
         self.db = db
         self.snapshots = db.collection("wait_time_snapshots")
 
@@ -53,7 +54,7 @@ class Archive:
         if not doc.exists:
             raise ValueError("The snapshot's ride catalog is missing")
         catalog = doc.to_dict()
-        if catalog["park_id"] != PARK_ID:
+        if catalog["park_id"] != self.park_id:
             raise ValueError("The catalog belongs to a different park")
         return catalog
 
