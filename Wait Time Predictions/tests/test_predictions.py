@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 import torch
 
@@ -51,6 +52,22 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(len(ticks), 5)
         self.assertEqual(closing, ticks[-1] + 300)
         self.assertEqual(expected_ticks(date(2026, 11, 2), sessions), ([], 0))
+
+    def test_misdated_midnight_closes_keep_only_ticks_before_midnight(self):
+        park_timezone = ZoneInfo("America/New_York")
+        early = {"type": "OPERATING", "openingTime": "2025-12-01T09:00:00-05:00",
+                 "closingTime": "2025-12-01T19:00:00-05:00"}
+        for hour in ("00", "01"):
+            with self.subTest(hour=hour):
+                late = {"type": "OPERATING", "openingTime": "2025-12-31T08:00:00-05:00",
+                        "closingTime": f"2025-12-31T{hour}:00:00-05:00"}
+                early_ticks, _ = expected_ticks(date(2025, 12, 1), [early, late], park_timezone)
+                self.assertEqual(len(early_ticks), 120)
+                ticks, closing = expected_ticks(date(2025, 12, 31), [early, late], park_timezone)
+                midnight = datetime(2026, 1, 1, tzinfo=park_timezone).timestamp()
+                self.assertEqual(len(ticks), 192)
+                self.assertEqual(closing, midnight)
+                self.assertEqual(ticks[-1], midnight - 300)
 
     def test_day_requires_both_boundaries_and_fills_short_interior_gaps(self):
         ticks = [1793548800 + 300 * i for i in range(4)]

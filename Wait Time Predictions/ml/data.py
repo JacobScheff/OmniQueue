@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 from bisect import bisect_left
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from zoneinfo import ZoneInfo
@@ -131,11 +131,21 @@ def expected_ticks(day, schedule, park_timezone=PARK_TIMEZONE):
         if session["type"] not in OPERATING_HOURS:
             continue
         opens = datetime.fromisoformat(session["openingTime"])
-        closes = datetime.fromisoformat(session["closingTime"])
-        if opens.tzinfo is None or closes.tzinfo is None or closes <= opens:
+        if opens.tzinfo is None:
             raise ValueError("Invalid scheduled operating hours")
         if opens.astimezone(park_timezone).date() != day:
             continue
+        closes = datetime.fromisoformat(session["closingTime"])
+        if closes.tzinfo is None:
+            raise ValueError("Invalid scheduled operating hours")
+        local_close = closes.astimezone(park_timezone)
+        if (session["type"] == "OPERATING" and closes < opens
+                and local_close.date() == day and local_close.time() in (time(0), time(1))):
+            # Some archived overnight closes use the opening date. Keep only
+            # the part of those sessions before midnight.
+            closes = datetime.combine(day + timedelta(days=1), time.min, park_timezone)
+        if closes <= opens:
+            raise ValueError("Invalid scheduled operating hours")
         start, end = int(opens.timestamp()), int(closes.timestamp())
         closing = max(closing, end)
         ticks.update(range(start // TICK_SECONDS * TICK_SECONDS, end, TICK_SECONDS))
