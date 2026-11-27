@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OmniQueue · DP route explorer</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101619;color:#e1e8e9;font:14px system-ui}header{padding:20px 26px;border-bottom:1px solid #344147}h1{font-size:23px;margin:0 0 5px}p{line-height:1.5;color:#b2c0c5}main{display:grid;grid-template-columns:330px 1fr;gap:20px;padding:20px}aside{max-height:85vh;overflow:auto}label{display:block;margin:10px 0}input,select,button{font:inherit;background:#202c31;color:inherit;border:1px solid #53646c;border-radius:4px;padding:6px}input[type=number]{width:80px}button{cursor:pointer}button.primary{background:#146a66;width:100%;padding:12px;font-weight:600}button:disabled{opacity:.5}details{margin:15px 0}summary{cursor:pointer;font-weight:600}.ride{display:grid;grid-template-columns:1fr 62px 25px 25px;gap:6px;align-items:center;border-bottom:1px solid #29363c;padding:8px 0}.ride input[type=number]{width:62px}.ride input[type=checkbox]{accent-color:#54c0b6}.muted{color:#a4b5bc;font-size:12px}.options{display:flex;gap:10px;margin:12px 0;flex-wrap:wrap}.options button.active{border-color:#63d7c8;background:#174542}svg{background:#192329;width:100%;max-height:64vh;border:1px solid #344147}#status{white-space:pre-wrap;line-height:1.5;margin:12px 0}#timeline{width:100%}#stops{padding-left:22px;line-height:1.8}#player{display:flex;gap:12px;align-items:center;margin:12px 0}.warning{color:#e5bf82}.stats{font-size:16px;color:#82d5ca}@media(max-width:850px){main{grid-template-columns:1fr}aside{max-height:none}svg{max-height:60vh}}
+</style>
+<header><h1>OmniQueue · Route explorer</h1><span class="muted">Personalized DP itineraries · remaining-day planning · protected must-dos</span></header>
+<main><aside>
+<label>Operating day <input id="day" type="date"></label><label>History observed through <input id="start" type="time" value="10:00" step="300"></label>
+<label>Leave by <input id="leave" type="time" value="23:00"></label>
+<label>Current location <select id="location"></select></label>
+<label>Walking preference <select id="walk"><option value="6">Minimize walking</option><option value="2" selected>Balanced</option><option value="0">Happy to walk</option></select></label>
+<label>Walking speed (m/s) <input id="speed" type="number" value="1.4" min=".2" max="3" step=".1"></label>
+<details><summary>Search and safety settings</summary>
+<label>Search budget (seconds) <input id="seconds" type="number" value="10" min=".1" max="30"></label>
+<label>Beam width <input id="beam" type="number" value="200" min="1" max="2000"></label>
+<label>Extra buffer per ride (minutes) <input id="buffer" type="number" value="5" min="0" max="30"></label>
+<label>Time grid <select id="step"><option value="5">5 minutes</option><option value="1">1 minute (slower)</option></select></label>
+</details><details open><summary>Attraction preferences</summary><p class="muted">Weight · M = must-do · D = already done</p><div id="rides"></div></details>
+<button id="run" class="primary">Build routes</button>
+</aside><section>
+<div id="status" role="status">Choose preferences and must-dos, then build a route.</div>
+<p id="horizon" class="warning" role="status"></p>
+<div id="options" class="options"></div><div id="stats" class="stats"></div><p id="risk" class="warning" style="white-space:pre-line"></p>
+<div id="player"><button id="play">Play</button><input id="timeline" type="range" min="0" max="1" value="0"><output id="clock"></output></div>
+<svg id="map" viewBox="0 0 1000 1000" aria-label="Park walkways and selected itinerary"><g id="base"></g><g id="route"></g><g id="markers"></g><circle id="guest" r="9" fill="#fff" stroke="#101619" stroke-width="3"/></svg>
+<ol id="stops"></ol><p class="warning">Schedules use p90 waits plus your buffer. Availability, ride-specific closing hours, eligibility and interruptions are assumptions, not a guarantee or calibrated success probability. Plan when ready to choose your next activity.</p>
+</section></main>
+<script>
+const $=id=>document.getElementById(id), NS='http://www.w3.org/2000/svg';let catalog,result,selected=0,timer=null;
+function svg(tag,attrs,parent){let e=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,v));parent.append(e);return e}
+const time=s=>new Date(s*1000).toLocaleTimeString('en-US',{timeZone:'America/Los_Angeles',hour:'numeric',minute:'2-digit'});
+const minutes=s=>Math.round(s/60)+' min';
+function path(points,parent,color,width=4){return svg('polyline',{points:points.map(p=>p.join(',')).join(' '),fill:'none',stroke:color,'stroke-width':width,'stroke-linejoin':'round'},parent)}
+async function init(){try{catalog=await(await fetch('/api/catalog')).json();$('day').value=catalog.day;$('start').value=catalog.start;
+if(catalog.fixed){$('day').disabled=$('start').disabled=true}
+const opt=document.createElement('option');opt.value=catalog.rides.length;opt.textContent='Entrance';$('location').append(opt);
+catalog.paths.forEach(p=>path(p,$('base'),'#35434a',2));
+catalog.rides.forEach(r=>{let o=document.createElement('option');o.value=r.id;o.textContent=r.name;$('location').append(o);
+const row=document.createElement('div');row.className='ride';const name=document.createElement('span');name.textContent=r.name;row.append(name);
+const weight=document.createElement('input');weight.type='number';weight.min=0;weight.max=1000;weight.value=r.preference;weight.id='p'+r.id;weight.setAttribute('aria-label',r.name+' preference');row.append(weight);
+for(const prefix of ['m','d']){let input=document.createElement('input');input.type='checkbox';input.id=prefix+r.id;input.setAttribute('aria-label',r.name+(prefix==='m'?' must-do':' already completed'));row.append(input)}$('rides').append(row);
+let dot=svg('circle',{cx:r.x,cy:r.y,r:4,fill:'#889bA4'},$('base'));let title=svg('title',{},dot);title.textContent=r.name});
+if(catalog.demo)$('status').textContent='Synthetic demo: 10am–11pm. Waits are illustrative; walking paths use the park network.';
+}catch(e){$('status').textContent=e.message}}
+$('run').onclick=async()=>{clearInterval(timer);timer=null;$('play').textContent='Play';$('run').disabled=true;$('status').textContent='Building forecast and routes… Forecast generation may take longer than the search budget.';
+try{const body={day:$('day').value||null,start:$('start').value,leave:$('leave').value,location:+$('location').value,walk_cost:+$('walk').value,speed:+$('speed').value,seconds:+$('seconds').value,beam:+$('beam').value,buffer:+$('buffer').value,step:+$('step').value,preferences:catalog.rides.map(r=>+$('p'+r.id).value),must_dos:catalog.rides.filter(r=>$('m'+r.id).checked).map(r=>r.id),completed:catalog.rides.filter(r=>$('d'+r.id).checked).map(r=>r.id)};
+const response=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(data.error);result=data;
+$('horizon').textContent=data.departure_limited_by_forecast?`Planning cutoff: ${time(data.leave)} — forecast coverage ends then. Your requested departure is ${time(data.requested_leave)}. The planner cannot schedule beyond the forecast horizon.`:`Planning cutoff: ${time(data.leave)}.`;
+$('status').textContent=`${data.source} · observed through ${time(data.now)}\n${data.status.replaceAll('_',' ')} · ${data.elapsed_sec}s search${data.timed_out?' · budget reached':''}${data.beam_pruned?' · bounded search':''}${data.reason?'\n'+data.reason:''}`;
+$('options').replaceChildren();data.routes.forEach((r,i)=>{let b=document.createElement('button');b.textContent=`Route ${i+1} · ${r.score} points`;b.onclick=()=>show(i);$('options').append(b)});
+if(data.routes.length)show(0);else{$('route').replaceChildren();$('markers').replaceChildren();$('stops').replaceChildren();$('stats').textContent='';$('guest').setAttribute('visibility','hidden')}
+}catch(e){$('status').textContent=e.message}finally{$('run').disabled=false}};
+function show(index){selected=index;const r=result.routes[index];$('risk').textContent=(r.warnings||[]).join('\n');[...$('options').children].forEach((b,i)=>b.classList.toggle('active',i===index));$('route').replaceChildren();$('markers').replaceChildren();$('stops').replaceChildren();
+$('stats').textContent=`${r.stops.length} attractions · ${(r.total_walk_m/1000).toFixed(2)} km walking · exit ${time(r.exit_time)}`;
+r.stops.forEach((s,i)=>{path(s.path,$('route'),'#60d1bf',5);const p=catalog.rides[s.ride_id];svg('circle',{cx:p.x,cy:p.y,r:12,fill:s.must_do?'#e2b56e':'#1c776d',stroke:'#101619','stroke-width':2},$('markers'));svg('text',{x:p.x,y:p.y+4,'text-anchor':'middle',fill:'#fff','font-size':12},$('markers')).textContent=i+1;
+const li=document.createElement('li');li.textContent=`${s.must_do?'Must-do · ':''}${s.name} — join ${time(s.join)}, finish by ${time(s.finish)} · walk ${Math.round(s.walk_m)} m · wait ${minutes(s.wait_sec)}`;$('stops').append(li)});path(r.exit_path,$('route'),'#a4b5bc',3);$('timeline').min=result.now;$('timeline').max=r.exit_time;$('timeline').value=result.now;animate()}
+function interpolate(points,f){let lens=[0];for(let i=1;i<points.length;i++)lens.push(lens[i-1]+Math.hypot(points[i][0]-points[i-1][0],points[i][1]-points[i-1][1]));let x=f*lens.at(-1);for(let i=1;i<points.length;i++)if(x<=lens[i]){let a=(x-lens[i-1])/(lens[i]-lens[i-1]||1);return points[i].map((p,k)=>points[i-1][k]+a*(p-points[i-1][k]))}return points.at(-1)}
+function animate(){if(!result?.routes.length)return;const r=result.routes[selected],t=+$('timeline').value;let point=result.location===catalog.rides.length?[catalog.entrance.x,catalog.entrance.y]:[catalog.rides[result.location].x,catalog.rides[result.location].y];for(const s of r.stops){if(t<s.depart)break;if(t<s.depart+s.walk_sec){point=interpolate(s.path,(t-s.depart)/Math.max(1,s.walk_sec));break}point=s.path.at(-1)}
+const exitStart=r.exit_time-r.exit_walk_sec;if(t>=exitStart)point=interpolate(r.exit_path,(t-exitStart)/Math.max(1,r.exit_walk_sec));$('guest').setAttribute('visibility','visible');$('guest').setAttribute('cx',point[0]);$('guest').setAttribute('cy',point[1]);$('clock').textContent=time(t)}
+$('timeline').oninput=animate;$('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;$('play').textContent='Play';return}if(!result?.routes.length)return;if(+$('timeline').value>=+$('timeline').max)$('timeline').value=$('timeline').min;$('play').textContent='Pause';timer=setInterval(()=>{$('timeline').value=Math.min(+$('timeline').max,+$('timeline').value+60);animate();if(+$('timeline').value>=+$('timeline').max){clearInterval(timer);timer=null;$('play').textContent='Play'}},60)};init();
+</script>
+<script>
+// Aerial image and vector overlays share the same exported park projection.
+const map=$('map');let zoomLevel=1,viewX=0,viewY=0,selectedRide=null;
+const toolbar=document.createElement('div');toolbar.className='options';
+const layer=document.createElement('select');layer.setAttribute('aria-label','Map background');
+for(const text of ['Aerial imagery','Schematic']){let o=document.createElement('option');o.textContent=text;layer.append(o)}
+toolbar.append(layer);
+for(const [text,fn] of [['Zoom in',()=>zoomMap(1.5)],['Zoom out',()=>zoomMap(1/1.5)],['Fit park',()=>{zoomLevel=1;viewX=viewY=0;updateView()}]]){let b=document.createElement('button');b.textContent=text;b.onclick=fn;toolbar.append(b)}
+map.before(toolbar);
+const detail=document.createElement('div');detail.className='stats';detail.style.margin='8px 0';detail.textContent='Select a ride marker or itinerary stop to highlight its walking approach.';map.before(detail);
+const attribution=document.createElement('p');attribution.className='muted';
+const credit=document.createElement('a');credit.href='https://www.ocgis.com/ocpw/historicalimagery/index.html';credit.textContent='Aerial imagery: County of Orange';credit.style.color='#82d5ca';credit.target='_blank';credit.rel='noopener';attribution.append(credit,document.createTextNode(' · Map paths are simplified planning geometry; local alignment may differ. Imagery needs internet.'));map.after(attribution);
+const aerial=document.createElementNS(NS,'image');for(const [key,value] of Object.entries({x:0,y:0,width:1000,height:1000,preserveAspectRatio:'none'}))aerial.setAttribute(key,value);map.insertBefore(aerial,map.firstChild);
+const shade=document.createElementNS(NS,'rect');for(const [k,v] of Object.entries({x:0,y:0,width:1000,height:1000,fill:'#000',opacity:.18,'pointer-events':'none'}))shade.setAttribute(k,v);aerial.after(shade);
+const highlight=svg('g',{'pointer-events':'none'},map);
+function background(){const enabled=layer.selectedIndex===0;aerial.style.display=shade.style.display=enabled?'':'none';$('base').setAttribute('opacity',enabled?'.48':'1')}
+layer.onchange=background;aerial.onerror=()=>{layer.selectedIndex=1;background();attribution.append(document.createTextNode(' Aerial imagery unavailable; showing schematic.'))};
+const observer=new MutationObserver(()=>{if(catalog){aerial.setAttribute('href',catalog.aerial_url);background();observer.disconnect()}});observer.observe($('base'),{childList:true});
+function updateView(){const span=1000/zoomLevel;viewX=Math.max(0,Math.min(1000-span,viewX));viewY=Math.max(0,Math.min(1000-span,viewY));map.setAttribute('viewBox',`${viewX} ${viewY} ${span} ${span}`)}
+function zoomMap(factor,cx=viewX+500/zoomLevel,cy=viewY+500/zoomLevel){zoomLevel=Math.max(1,Math.min(7,zoomLevel*factor));viewX=cx-500/zoomLevel;viewY=cy-500/zoomLevel;updateView()}
+function selectRide(id){selectedRide=id;renderSelection()}
+function renderSelection(){highlight.replaceChildren();if(selectedRide===null||!catalog)return;const ride=catalog.rides[selectedRide],route=result?.routes[selected],stop=route?.stops.find(s=>s.ride_id===selectedRide);
+if(stop){path(stop.path,highlight,'#111',10);path(stop.path,highlight,'#ffe08a',6)}
+svg('circle',{cx:ride.x,cy:ride.y,r:18,fill:'none',stroke:'#ffe08a','stroke-width':3},highlight);
+detail.textContent=ride.name+(stop?` · join ${time(stop.join)} · finish ${time(stop.finish)} · ${Math.round(stop.walk_m)} m approach`:' · not in selected itinerary');}
+const oldShow=show;show=function(index){oldShow(index);renderSelection()};
+map.addEventListener('click',event=>{const p=new DOMPoint(event.clientX,event.clientY).matrixTransform(map.getScreenCTM().inverse());const near=catalog?.rides.map(r=>[r,Math.hypot(r.x-p.x,r.y-p.y)]).sort((a,b)=>a[1]-b[1])[0];if(near&&near[1]<25/Math.sqrt(zoomLevel))selectRide(near[0].id)});
+$('stops').addEventListener('click',event=>{let li=event.target.closest('li');if(li){const index=[...$('stops').children].indexOf(li);selectRide(result.routes[selected].stops[index].ride_id)}});
+$('rides').addEventListener('click',event=>{if(event.target.tagName==='SPAN'){const row=event.target.parentElement;selectRide([...$('rides').children].indexOf(row))}});
+let drag=null;map.style.touchAction='none';map.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY,viewX,viewY];map.setPointerCapture(e.pointerId)});map.addEventListener('pointermove',e=>{if(!drag)return;const rect=map.getBoundingClientRect(),ratio=1000/zoomLevel/Math.min(rect.width,rect.height);viewX=drag[2]-(e.clientX-drag[0])*ratio;viewY=drag[3]-(e.clientY-drag[1])*ratio;updateView()});map.addEventListener('pointerup',()=>drag=null);map.addEventListener('pointercancel',()=>drag=null);
+map.addEventListener('wheel',e=>{e.preventDefault();const p=new DOMPoint(e.clientX,e.clientY).matrixTransform(map.getScreenCTM().inverse());zoomMap(e.deltaY<0?1.2:1/1.2,p.x,p.y)},{passive:false});
+</script></html>

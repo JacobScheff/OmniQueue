@@ -1,0 +1,8 @@
+credentials/
+__pycache__/
+Park/comparisons/
+Park/comparison-*.log
+
+# Local multi-park datasets, API rate budgets, and trained model slots.
+Wait Time Predictions/data/
+Wait Time Predictions/checkpoints/*/

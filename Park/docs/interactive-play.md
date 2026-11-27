@@ -8,6 +8,10 @@ A **new** interactive program (separate from Phase 4 `visualize.py` replay) wher
 
 Walks use the same near-shortest path sampler as the AI (including idle **Wander**).
 
+For the trained RL policy versus the history-aware DP planner on a complete day
+of real recorded waits, use [`compare.py`](compare.md). It saves both runs and
+provides synchronized route/score replay with automatic DP replanning after rides.
+
 ## Run
 
 ```bash

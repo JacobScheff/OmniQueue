@@ -13,6 +13,7 @@ dependencies = [
     "networkx>=3.0",
     "torch>=2.0",
     "gymnasium>=0.29",
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

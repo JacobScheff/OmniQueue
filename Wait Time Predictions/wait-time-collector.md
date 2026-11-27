@@ -1,0 +1,50 @@
+# Multi-park wait-time collector
+
+The Vercel function `POST /api/collect` stores separate snapshots for Disneyland, California Adventure, Magic Kingdom, Animal Kingdom, Hollywood Studios, EPCOT, Universal Studios Hollywood, Universal Studios Florida, Islands of Adventure and Epic Universe from [ThemeParks.wiki](https://www.themeparks.wiki/api) in Cloud Firestore. It checks the park's published schedule before fetching rides. Outside published operating, extra, or event hours, the route returns `park_closed` and writes zero documents. Published schedules determine park closure, so an unannounced park-wide closure during scheduled hours can still produce a snapshot.
+
+## Storage format
+
+`wait_time_snapshots` holds one document per park per five-minute UTC bucket. The document ID contains the park ID and the bucket start. The fields are `sampled_at` (Firestore timestamp), `park_date` (`YYYY-MM-DD` in the selected park's timezone), `catalog_version`, and `rides` (Firestore bytes). The first successful write for a bucket wins, including when calls overlap.
+
+`wait_time_catalogs/{catalog_version}` contains the corresponding ordered list of attraction IDs and names. The collector creates a new catalog version when the attraction list or names change. Each snapshot retains its reference to the catalog used to write it. Only attractions present in the feed are recorded.
+
+For catalog `encoding_version` 1, each ride takes three bytes in catalog order. Decode the two-byte little-endian unsigned standby wait and the one-byte status with `struct.iter_unpack("<HB", snapshot["rides"])` in Python. Wait `65535` means unavailable and `0` means a reported zero-minute wait. The status values are `0` for `UNKNOWN`, `1` for `OPERATING`, `2` for `DOWN` (temporarily unavailable), `3` for `CLOSED`, and `4` for `REFURBISHMENT`. Non-operating attractions always have an unavailable wait. The snapshot timestamp applies to every ride in the document.
+
+## Setup
+
+1. In the Firebase Console, create or choose a project and open **Firestore Database → Create database**. Create the `(default)` database in **Standard edition** and **Production mode**. The collector creates its collections on the first successful write. [Firestore setup](https://firebase.google.com/docs/firestore/quickstart)
+2. In the same project's Google Cloud Console, go to **IAM & Admin → Service Accounts**. Create a dedicated collector account with the **Cloud Datastore User** role. Under **Keys**, select **Add key → Create new key → JSON**. Keep the downloaded key out of the repository. [Firestore IAM](https://firebase.google.com/docs/firestore/security/iam), [service account keys](https://docs.cloud.google.com/iam/docs/keys-create-delete)
+3. In Firestore **Indexes → Single field**, add index exemptions for `rides`, `catalog_version`, and `park_date` in `wait_time_snapshots`, and for `attractions` in `wait_time_catalogs`. Keep `sampled_at` indexed for time range queries. The exemptions keep each 50-ride snapshot below the 1 KiB storage budget. [Index exemptions](https://firebase.google.com/docs/firestore/query-data/indexing)
+4. Import OmniQueue into Vercel as a separate project with root directory `Wait Time Predictions` and the **Other** framework preset. For an existing collector project, update its **Root Directory** to `Wait Time Predictions` before deploying the moved files. Add `FIRESTORE_SERVICE_ACCOUNT_JSON` with the full contents of the downloaded JSON key and `CRON_SECRET` with a long random token. Set both for **Production** and deploy. [Vercel project settings](https://vercel.com/docs/project-configuration/project-settings)
+5. In the cron-job.org console, create a job for `https://<production-domain>/api/collect`. Set it to **Every 5 minutes** (`*/5 * * * *`), select **POST** with an empty body, and add the `Authorization` header with value `Bearer <CRON_SECRET>`. [cron-job.org console](https://console.cron-job.org/jobs)
+6. Run a test request during published park hours. HTTP 200 with `status` of `collected` and `inserted` of `1` indicates a new snapshot. A repeat call in the same bucket reports `0`. `park_closed` always reports `0`. Check `wait_time_snapshots` and the matching catalog in the Firebase Console. Upstream and database failures return non-2xx responses.
+
+## Local archive viewer
+
+From the repository root, open the collector folder and install its dependencies. Set `CREDENTIALS` in `ml/config.py` to the service account JSON path you downloaded during setup, then start the viewer.
+
+```powershell
+cd "Wait Time Predictions"
+python -m pip install -r requirements.txt
+python view.py
+```
+
+Use the same Python interpreter for both commands. If you run the viewer in a virtual environment or from VS Code, install the requirements with that environment's Python. A missing dependency at startup prints the install command for the interpreter running the viewer.
+
+The script opens `http://127.0.0.1:8765` in your browser. It initially loads the latest recorded day. Choose a date, scrub the snapshot timeline, search attractions, filter statuses, and sort waits. Refresh fetches the selected day again. Each load reads up to 400 snapshots and caches the catalogs in memory. Times are shown in the selected park's timezone. A missing wait displays as an em dash, while a reported zero displays as zero.
+
+Credentials stay in the local Python process. The viewer reads Firestore and binds to the local loopback interface. It also accepts `FIRESTORE_SERVICE_ACCOUNT_JSON` or Google application default credentials using `PROJECT` in `ml/config.py`. Optional command-line overrides remain available. Stop with Ctrl+C.
+
+## Prediction dataset and training
+
+See [the predictor guide](README.md) to cache complete and incomplete days locally, train the autoregressive PyTorch model on complete operating days on an NVIDIA GPU, and generate five-minute wait and DOWN-token forecasts.
+
+## Multi-park deployment
+
+The existing `omniqueue-waits` Vercel project tracks `wait-time-data-collection` as its **Production** branch, with automatic production-domain assignment enabled. Pushing a commit to that branch automatically builds and updates `https://omniqueue-waits.vercel.app`; a local commit takes effect after it is pushed. Other branches remain previews. The read-only readiness response includes `source_commit` so the live build can be matched to GitHub without exposing any credentials.
+
+Redeploy the updated function to enable collection for all ten parks with the existing cron URL and credentials. All ten park fetches can run concurrently within the function timeout; each catalog hash and snapshot document ID includes the park UUID. The HTTP response includes per-park results; a failed park produces a non-2xx response while successful parks retain their snapshots. Repeated calls within one bucket remain idempotent.
+
+For one park, use `POST /api/collect?park=epcot` (or another supported slug). To limit the default set, configure `COLLECTOR_PARKS=disneyland,california-adventure`; by default it includes all ten. The new Universal slugs are `universal-studios-hollywood`, `universal-studios-florida`, `islands-of-adventure`, and `epic-universe`. An explicit production override must include them. The updated local lab reads each park's UUID-prefixed Firestore documents. Old Disneyland data is still compatible. Redeployment and cron configuration are separate from local data/model changes.
+
+`GET /api/collect` reports readiness, collector version, active park slugs, and the five-minute snapshot bucket size. It exposes no credentials and makes no upstream requests or database writes. Use it to verify the production deployment before waiting 6–7 minutes for the existing scheduler. Check Firebase afterward for fresh UUID-prefixed snapshots; closed parks correctly wait until opening. Then backfill earlier available history with the local `--firestore-start-date` handoff option described in [the predictor guide](README.md), keeping new operating days Firebase-only.
