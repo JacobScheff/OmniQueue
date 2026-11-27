@@ -7,6 +7,7 @@ const state = {
   dates: [], daysByDate: new Map(), selectedDate: null, calendarMonth: null,
   models: [], selectedModel: null, modelPreview: null, catalogPark: null, loadedPark: null, libraryGeneration: 0,
   jobBusy: false, submitting: false, handledJob: null, jobId: null, stopping: false,
+  liveAllSubmitting: false, liveAllBusy: false, liveAllHandled: null,
 };
 let clockFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit",
@@ -981,12 +982,43 @@ function renderStopTraining(task) {
   $("stop-training").textContent = task.state === "cancelling" ? "Stopping & discarding..." : "Stop & discard model";
 }
 
+function renderAllLive(task) {
+  state.liveAllBusy = ["queued", "running"].includes(task?.state);
+  $("live-all-data").disabled = state.liveAllSubmitting || state.liveAllBusy;
+  if (!task) return false;
+  $("live-all-status").textContent = task.state === "queued" ? "Queued for live refresh."
+    : task.state === "running" ? `Refreshing live data. ${task.current}/${task.total} parks processed.`
+    : task.state === "complete" ? `Live refresh finished for all ${task.total} parks.`
+    : `${task.current}/${task.total} parks processed. ${task.error}`;
+  if (state.liveAllBusy || state.liveAllHandled === task.id) return false;
+  state.liveAllHandled = task.id;
+  return true;
+}
+
+async function refreshAllLive() {
+  if (state.liveAllSubmitting || state.liveAllBusy) return;
+  state.liveAllSubmitting = true;
+  $("live-all-data").disabled = true;
+  $("live-all-status").textContent = "Starting live refresh…";
+  try {
+    await api("/api/action", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: "live-all"})});
+    await pollTask();
+  } catch (error) {
+    $("live-all-status").textContent = error.message;
+  } finally {
+    state.liveAllSubmitting = false;
+    $("live-all-data").disabled = state.liveAllBusy;
+  }
+}
+
 async function pollTask() {
   clearTimeout(taskTimer);
   const park = state.park;
   try {
     const task = await api("/api/task");
     if (park !== state.park) return;
+    const refreshFinished = renderAllLive(task.live_all);
     const busy = ["queued", "running", "cancelling"].includes(task.state);
     state.jobBusy = busy;
     renderStopTraining(task);
@@ -1005,12 +1037,14 @@ async function pollTask() {
     $("task-log").scrollTop = $("follow-log").checked ? $("task-log").scrollHeight : logPosition;
     $("download-log").disabled = !task.id;
     syncModelButtons();
+    let reloaded = false;
     if (task.id && !busy && state.handledJob !== task.id) {
       state.handledJob = task.id;
       if (task.state === "cancelled") state.selectedModel = null;
       else if (task.model_id) state.selectedModel = task.model_id;
       if (["complete", "cancelled"].includes(task.state)) {
         await reloadPark();
+        reloaded = true;
         if (task.action === "test") {
           showJobConsole(false);
           $("training-setup").open = false;
@@ -1022,6 +1056,7 @@ async function pollTask() {
         message(task.error, true);
       }
     }
+    if (refreshFinished && !reloaded) await reloadPark();
   } catch (error) { $("task-status").textContent = error.message; }
   taskTimer = setTimeout(pollTask, 1500);
 }
@@ -1080,6 +1115,7 @@ $("park").addEventListener("change", async () => {
 for (const [id, action] of [["refresh-data", "refresh"], ["rebuild-data", "rebuild"], ["live-data", "live"], ["train-model", "train"], ["test-model", "test"], ["load-model", "load"], ["save-model", "save"], ["delete-model", "delete"]]) {
   $(id).addEventListener("click", () => manage(action));
 }
+$("live-all-data").addEventListener("click", refreshAllLive);
 $("model-slot").addEventListener("change", () => {
   state.selectedModel = $("model-slot").value;
   renderSavedModel().catch(error => { $("model-action-note").textContent = error.message; });

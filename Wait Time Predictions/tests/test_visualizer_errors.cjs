@@ -9,7 +9,7 @@ function visualizer() {
   const elements = new Map();
   const element = () => ({
     children: [], value: "", scrollTop: 0, style: {}, html: "",
-    addEventListener() {}, setAttribute() {},
+    listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }, setAttribute() {},
     append(...children) { this.children.push(...children); },
     replaceChildren() { this.children = []; },
     insertAdjacentHTML(position, html) { this.html += html; },
@@ -31,6 +31,26 @@ function visualizer() {
   ui.state.observed.set(100, {source: "observed", rides: []});
   return {...ui, context, elements};
 }
+
+test("all-park live refresh submits one action and displays global progress", async () => {
+  const ui = visualizer();
+  const requests = [];
+  ui.context.recordAction = (path, body) => requests.push([path, JSON.parse(body)]);
+  vm.runInContext(`
+    api = async (path, options) => { recordAction(path, options.body); };
+    pollTask = async () => renderAllLive({id: "job", state: "running", current: 2, total: 10});
+  `, ui.context);
+  const click = ui.elements.get("live-all-data").listeners.click;
+  await click();
+  assert.deepEqual(requests, [["/api/action", {action: "live-all"}]]);
+  assert.equal(ui.elements.get("live-all-data").disabled, true);
+  assert.match(ui.elements.get("live-all-status").textContent, /2\/10 parks processed/);
+  await click();
+  assert.equal(requests.length, 1);
+  assert.equal(vm.runInContext('renderAllLive({id: "job", state: "complete", current: 10, total: 10})', ui.context), true);
+  assert.equal(ui.elements.get("live-all-data").disabled, false);
+  assert.match(ui.elements.get("live-all-status").textContent, /all 10 parks/);
+});
 
 const ride = (wait, status = "OPERATING", id = "a") => ({id, name: "Ride A", wait, status});
 const frame = {source: "predicted", timestamp: 100};

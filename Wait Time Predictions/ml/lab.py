@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ml import config
-from ml.parks import get_park, settings_for
+from ml.parks import PARKS, get_park, settings_for
 from ml.model_library import ModelLibrary, model_name, split_preview
 
 
@@ -42,11 +42,17 @@ class ParkLab:
         park = get_park(slug)
         with self.lock:
             task = self.tasks.get(park.slug)
-            if not task:
-                return {"state": "idle", "log": []}
-            return {**{key: list(value) if key == "log" else value
-                       for key, value in task.items() if key != "future" and not key.startswith("_")},
-                    "elapsed_seconds": max(0, int(task.get("finished_at", time.time()) - task.get("started_at", time.time())))}
+            result = {"state": "idle", "log": []}
+            if task:
+                result.update({key: list(value) if key == "log" else value
+                               for key, value in task.items() if key != "future" and not key.startswith("_")})
+                result["elapsed_seconds"] = max(
+                    0, int(task.get("finished_at", time.time()) - task.get("started_at", time.time()))
+                )
+            bulk = self.tasks.get("live-all")
+            if bulk:
+                result["live_all"] = {key: bulk[key] for key in ("id", "state", "current", "total", "error")}
+            return result
 
     def catalog(self, slug, percentages=None):
         with self.lock:
@@ -101,9 +107,25 @@ class ParkLab:
                 self._stop_process(task.get("_process"))
             return {"state": task["state"], "message": "Stopping training and discarding its unfinished model."}
 
+    def refresh_all_live(self):
+        with self.lock:
+            existing = self.tasks.get("live-all")
+            if existing and existing["state"] in ("queued", "running"):
+                return {"state": existing["state"]}
+            job_id = uuid4().hex
+            task = {"id": job_id, "state": "queued", "action": "live-all",
+                    "log": deque(maxlen=4000), "error": "", "current": 0, "total": len(PARKS),
+                    "_log_path": config.ROOT / "data" / "jobs" / f"{job_id}.log"}
+            command = [sys.executable, "-u", "-m", "ml.data", "--live-only", "--all-parks"]
+            self.tasks["live-all"] = task
+            task["future"] = self.worker.submit(self.run, command, task, None)
+            return {"state": "queued"}
+
     def action(self, payload):
-        park = get_park(payload.get("park", config.PARK))
         action = payload.get("action")
+        if action == "live-all":
+            return self.refresh_all_live()
+        park = get_park(payload.get("park", config.PARK))
         if action not in ("refresh", "rebuild", "live", "train", "test", "load", "save", "cancel", "delete", "restore"):
             raise ValueError("Choose refresh, rebuild, live, train, test, load, save, cancel, delete, or restore")
         app = self.app(park.slug)
@@ -206,6 +228,10 @@ class ParkLab:
                             task["current"] = int(epoch[1])
                         if test_day:
                             task.update(current=int(test_day[1]), total=int(test_day[2]))
+                        if task["action"] == "live-all":
+                            progress = re.search(r"Live refresh progress: (\d+)/(\d+)", line)
+                            if progress:
+                                task.update(current=int(progress[1]), total=int(progress[2]))
                 code = process.wait()
             with self.lock:
                 task.pop("_process", None)
@@ -220,6 +246,8 @@ class ParkLab:
                 task["state"] = "complete" if code == 0 else "failed"
                 task["finished_at"] = time.time()
                 task["error"] = "" if code == 0 else f"Job exited with code {code}. See the log; saved progress is preserved."
+                if code != 0 and task["action"] == "live-all" and task["log"]:
+                    task["error"] = task["log"][-1]
         except Exception as error:
             with self.lock:
                 task.pop("_process", None)

@@ -5,7 +5,9 @@ from datetime import date, datetime
 import io
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import Mock, patch
 
@@ -14,6 +16,7 @@ import torch
 from api.collect import pack_snapshot, store_snapshot
 from api import collect
 from ml.backfill import backfill, reconstruct
+from ml import data as data_module
 from ml.data import expected_ticks, export, export_firestore, load_dataset, save_dataset, set_firestore_start_date, time_features
 from ml.history_api import RateBudget, retry_delay
 from ml.lab import ParkLab
@@ -24,6 +27,48 @@ from ml.visualize import Visualizer, load_locations
 
 
 class ParkTests(unittest.TestCase):
+    def test_bulk_live_refresh_uses_firestore_for_every_park_even_after_a_failure(self):
+        attempted = []
+        concurrent_start = Barrier(4)
+        first_batch = set(list(PARKS)[:4])
+
+        def live(settings):
+            attempted.append(settings.PARK)
+            self.assertIsNotNone(settings.START_DATE)
+            if settings.PARK in first_batch:
+                concurrent_start.wait(timeout=5)
+            if settings.PARK == "epcot":
+                raise RuntimeError("Temporary read problem")
+
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()) as output:
+            configure = lambda slug: settings_for(slug, root=root, migrate=False)
+            with patch.object(sys, "argv", ["data.py", "--all-parks", "--live-only"]), \
+                    patch("ml.parks.settings_for", side_effect=configure), \
+                    patch("ml.config.LIVE_REFRESH_WORKERS", 4), \
+                    patch("ml.data.export_firestore", side_effect=live), patch("ml.data.export") as history:
+                with self.assertRaisesRegex(SystemExit, "Live refresh failed for: EPCOT"):
+                    data_module.main()
+            history.assert_not_called()
+        self.assertCountEqual(attempted, list(PARKS))
+        self.assertEqual(concurrent_start.n_waiting, 0)
+        self.assertFalse(concurrent_start.broken)
+        self.assertIn(f"Live refresh progress: {len(PARKS)}/{len(PARKS)}", output.getvalue())
+
+    def test_bulk_live_job_is_visible_from_any_park_and_is_not_queued_twice(self):
+        lab = ParkLab()
+        try:
+            with patch.object(lab, "run") as run:
+                self.assertEqual(lab.action({"action": "live-all", "park": "epcot"}), {"state": "queued"})
+                task = lab.tasks["live-all"]
+                task["future"].result(timeout=5)
+                self.assertEqual(lab.action({"action": "live-all", "park": "disneyland"}), {"state": "queued"})
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0][-3:], ["ml.data", "--live-only", "--all-parks"])
+                self.assertEqual(lab.status("epcot")["live_all"], lab.status("disneyland")["live_all"])
+                self.assertEqual(lab.status("epcot")["live_all"]["total"], len(PARKS))
+        finally:
+            lab.close()
+
     def test_collector_collects_all_parks_and_keeps_successes_when_one_fails(self):
         handler = object.__new__(collect.handler)
         handler.path = "/api/collect"

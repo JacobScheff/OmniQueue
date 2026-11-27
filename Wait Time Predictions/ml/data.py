@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 from bisect import bisect_left
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -536,6 +537,35 @@ def export(settings=None):
     return final
 
 
+def export_live(settings):
+    settings.START_DATE = settings.START_DATE or (
+        datetime.now(settings.PARK_TIMEZONE).date() - timedelta(days=settings.LIVE_DAYS - 1)
+    ).isoformat()
+    export_firestore(settings)
+
+
+def export_all_live(parks, configure):
+    def refresh(park):
+        print(f"Refreshing live data for {park.name}", flush=True)
+        export_live(configure(park.slug))
+
+    failed = []
+    with ThreadPoolExecutor(max_workers=config.LIVE_REFRESH_WORKERS) as workers:
+        jobs = {workers.submit(refresh, park): park for park in parks}
+        for index, job in enumerate(as_completed(jobs), 1):
+            park = jobs[job]
+            try:
+                job.result()
+            except Exception as error:
+                failed.append(park.name)
+                print(f"{park.name}: {error}", flush=True)
+            sys.stdout.write(f"Live refresh progress: {index}/{len(parks)}\n")
+            sys.stdout.flush()
+
+    if failed:
+        raise RuntimeError("Live refresh failed for: " + ", ".join(sorted(failed)))
+
+
 def main():
     import argparse
     from ml.parks import PARKS, settings_for
@@ -547,20 +577,30 @@ def main():
     parser.add_argument("--refresh", action="store_true", help="Rebuild historical days and refetch raw API history")
     parser.add_argument("--history-only", action="store_true", help="Skip Firestore (no Firebase credentials needed)")
     parser.add_argument("--live-only", action="store_true", help="Only refresh recent Firestore observations")
+    parser.add_argument("--all-parks", action="store_true", help="Refresh live data for all supported parks")
     parser.add_argument("--firestore-start-date", help="Reserve this operating date and newer days for Firebase only")
     args = parser.parse_args()
     if args.history_only and args.live_only:
         parser.error("Choose only one of --history-only and --live-only")
-    settings = settings_for(args.park)
-    settings.START_DATE = args.since or settings.START_DATE
-    settings.END_DATE = args.until or settings.END_DATE
-    settings.REFRESH = settings.REFRESH or args.refresh
+    if args.all_parks and (not args.live_only or args.firestore_start_date):
+        parser.error("--all-parks requires --live-only and cannot set the Firestore start date")
+
+    def configure(park):
+        settings = settings_for(park)
+        settings.START_DATE = args.since or settings.START_DATE
+        settings.END_DATE = args.until or settings.END_DATE
+        settings.REFRESH = settings.REFRESH or args.refresh
+        return settings
+
     try:
+        if args.all_parks:
+            export_all_live(tuple(PARKS.values()), configure)
+            return
+        settings = configure(args.park)
         if args.firestore_start_date:
             set_firestore_start_date(settings, args.firestore_start_date)
         if args.live_only:
-            settings.START_DATE = settings.START_DATE or (datetime.now(settings.PARK_TIMEZONE).date() - timedelta(days=settings.LIVE_DAYS - 1)).isoformat()
-            export_firestore(settings)
+            export_live(settings)
         elif args.history_only:
             from ml.backfill import backfill
             key = os.environ.get("THEMEPARKS_API_KEY") or settings.KEY_FILE.read_text(encoding="utf-8-sig").strip()

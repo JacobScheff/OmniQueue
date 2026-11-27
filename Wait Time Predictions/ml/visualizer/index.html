@@ -37,6 +37,10 @@
 </section>
 <section id="manage-panel" class="management" role="tabpanel" aria-labelledby="manage-tab" hidden>
 <h1>Your model workshop.</h1><p class="intro">Create a model, measure it on unseen days, then choose it for the map.</p>
+<section class="management-card all-live-card" aria-label="Refresh live data for every park">
+<button id="live-all-data" type="button" class="primary" disabled>Refresh live data for all parks</button>
+<p id="live-all-status" class="hint" role="status">Read recent Firebase snapshots for every park.</p>
+</section>
 <div class="model-steps"><div><b>1</b><span><strong>Train a new model</strong><small>Give it a name. Each run saves separately.</small></span></div><div><b>2</b><span><strong>Test on held-out days</strong><small>Evaluate the test split saved with that model.</small></span></div><div><b>3</b><span><strong>Use it for forecasts</strong><small>Choose exactly which saved model runs.</small></span></div></div>
 <button id="focus-training" class="primary">Create a new model <span aria-hidden="true">&nearr;</span></button><button id="focus-library" class="secondary wide">Browse saved models</button>
 <div class="active-model-card"><span class="eyebrow">POWERING THE MAP</span><strong id="active-model-name">No model selected</strong><p id="model-status" class="hint"></p></div>

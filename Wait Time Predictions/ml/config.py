@@ -21,6 +21,7 @@ PROJECT = "omniqueue-9ce1b"
 REFRESH = False  # True rechecks the selected dates, including previously discarded days.
 KEY_FILE = ROOT / "credentials/themeparks-api-key.txt"
 LIVE_DAYS = 14  # Firestore lookback when no archive coverage is available.
+LIVE_REFRESH_WORKERS = 4  # Parks to refresh concurrently in the all-park job.
 
 # Training.
 # Fractions must sum to 1. Whole days are randomly assigned using SEED;
