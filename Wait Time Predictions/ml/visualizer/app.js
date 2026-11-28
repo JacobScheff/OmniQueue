@@ -76,6 +76,7 @@ function syncModelButtons() {
   for (const id of ["refresh-data", "rebuild-data", "live-data"]) $(id).disabled = busy;
   $("train-model").disabled = busy || !state.modelPreview?.ready || !$("run-name").value.trim();
   $("load-model").disabled = busy || !model?.ready;
+  $("publish-model").disabled = busy || !model?.ready;
   $("save-model").disabled = busy || !model?.ready || !$("copy-name").value.trim();
   $("test-model").disabled = busy || !model?.test_ready;
   $("delete-model").disabled = busy || !model?.can_delete;
@@ -1063,6 +1064,7 @@ async function pollTask() {
 
 async function manage(action, deletedId = null) {
   if (state.jobBusy || state.submitting) return;
+  if (action === "publish" && !window.confirm("Publish the selected model to iOS and make it active for this park?")) return;
   if (action === "refresh" || action === "rebuild") {
     const prompt = action === "rebuild"
       ? "Re-fetch history? This downloads historical data again, replacing cached historical downloads, and refreshes recent Firebase observations. This can take a while. Continue?"
@@ -1112,7 +1114,7 @@ $("park").addEventListener("change", async () => {
   await reloadPark();
   await pollTask();
 });
-for (const [id, action] of [["refresh-data", "refresh"], ["rebuild-data", "rebuild"], ["live-data", "live"], ["train-model", "train"], ["test-model", "test"], ["load-model", "load"], ["save-model", "save"], ["delete-model", "delete"]]) {
+for (const [id, action] of [["refresh-data", "refresh"], ["rebuild-data", "rebuild"], ["live-data", "live"], ["train-model", "train"], ["test-model", "test"], ["load-model", "load"], ["publish-model", "publish"], ["save-model", "save"], ["delete-model", "delete"]]) {
   $(id).addEventListener("click", () => manage(action));
 }
 $("live-all-data").addEventListener("click", refreshAllLive);

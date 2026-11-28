@@ -15,33 +15,22 @@ final class AppSession {
     var isRefreshingWaits = false
     var isPlanning = false
     var errorMessage: String?
-    var selectedTab: Tab = .plan
     var showDisclaimer = false
-    /// Destination appearance. System chrome follows this immediately; `themeBlend` eases to it.
-    var usesLightTheme = false
-    /// 0 = dark, 1 = light. Animate this so palette colors ease between modes.
-    var themeBlend: CGFloat = 0
+    var appearance: Appearance = .system {
+        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: themeKey) }
+    }
     /// Basic = Skip/Low/Medium/High. Advanced = 0–100 per ride.
     var usesAdvancedPrefs = false
 
-    enum Tab: String, CaseIterable, Identifiable {
-        case plan, rides, me
-        var id: String { rawValue }
-        var title: String {
+    enum Appearance: String, CaseIterable {
+        case system, light, dark
+
+        var colorScheme: ColorScheme? {
             switch self {
-            case .plan: return "Plan"
-            case .rides: return "Rides"
-            case .me: return "Me"
+            case .system: return nil
+            case .light: return .light
+            case .dark: return .dark
             }
-        }
-
-        var index: Int {
-            Self.allCases.firstIndex(of: self) ?? 0
-        }
-
-        static func from(index: Int) -> Tab {
-            let cases = Self.allCases
-            return cases[min(max(index, 0), cases.count - 1)]
         }
     }
 
@@ -69,10 +58,8 @@ final class AppSession {
             error: nil
         )
         self.waits = WaitTimeService(catalog: catalog)
-        if UserDefaults.standard.string(forKey: themeKey) == "light" {
-            usesLightTheme = true
-            themeBlend = 1
-        }
+        if let saved = UserDefaults.standard.string(forKey: themeKey),
+           let selection = Appearance(rawValue: saved) { appearance = selection }
         usesAdvancedPrefs = UserDefaults.standard.string(forKey: prefModeKey) == "advanced"
         if usesAdvancedPrefs, state.fillMissingScores() {
             persist()
@@ -135,18 +122,6 @@ final class AppSession {
     func acknowledgeDisclaimer() {
         UserDefaults.standard.set(true, forKey: disclaimerKey)
         showDisclaimer = false
-    }
-
-    var preferredScheme: ColorScheme {
-        usesLightTheme ? .light : .dark
-    }
-
-    func toggleTheme() {
-        usesLightTheme.toggle()
-        UserDefaults.standard.set(usesLightTheme ? "light" : "dark", forKey: themeKey)
-        withAnimation(.easeInOut(duration: 0.35)) {
-            themeBlend = usesLightTheme ? 1 : 0
-        }
     }
 
     func setAdvancedPrefs(_ on: Bool) {

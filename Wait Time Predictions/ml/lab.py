@@ -126,8 +126,8 @@ class ParkLab:
         if action == "live-all":
             return self.refresh_all_live()
         park = get_park(payload.get("park", config.PARK))
-        if action not in ("refresh", "rebuild", "live", "train", "test", "load", "save", "cancel", "delete", "restore"):
-            raise ValueError("Choose refresh, rebuild, live, train, test, load, save, cancel, delete, or restore")
+        if action not in ("refresh", "rebuild", "live", "train", "test", "load", "save", "cancel", "delete", "restore", "publish"):
+            raise ValueError("Choose a supported data or model action")
         app = self.app(park.slug)
         if action == "cancel":
             return self.cancel_training(app, payload.get("job_id"))
@@ -152,6 +152,25 @@ class ParkLab:
                     app.jobs.clear()
                     app.checkpoint_cache = None
                     return result
+            if action == "publish":
+                from ml.forecast_admin import publish_model
+                from ml.forecast_store import ForecastStore
+
+                identifier = payload.get("model", "best")
+                path = self.library.resolve(app, identifier)
+                try:
+                    published = publish_model(ForecastStore(), park, path, samples=self.samples)
+                except ImportError as error:
+                    raise ValueError("Install requirements-forecast.txt to publish models.") from error
+                except Exception as error:
+                    from google.api_core.exceptions import GoogleAPIError
+                    from google.auth.exceptions import GoogleAuthError
+
+                    if isinstance(error, (GoogleAPIError, GoogleAuthError)):
+                        raise ValueError("Model publication failed. Check the bucket and cloud credentials.") from error
+                    raise
+                return {"state": "complete", "model_id": identifier,
+                        "message": f"Published {published['name']} to iOS ({published['version'][:12]})."}
             if action in ("load", "save"):
                 if action == "save" and "name" in payload:
                     identifier = self.library.save_copy(app, payload.get("model", "best"), payload["name"])

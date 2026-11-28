@@ -1,5 +1,40 @@
 # Wait time predictions
 
+## iOS forecast service
+
+The iOS forecast feature serves the collector’s five-minute data over HTTPS and runs the same PyTorch prediction code as the local lab. The existing Vercel collector can continue independently. The app loads a single operating day in park-local time. The service publishes compact day archives in private Cloud Storage, uses Firestore for archive indexes and active-model metadata, and keeps live-issued forecasts and retrospective replays labeled separately.
+
+### Local-cache backfill
+
+Run these from `Wait Time Predictions`. The default dry run reads only local files and reports complete, partial, and absent dates by park. Both the dry run and upload use `data/<park>/waits.json.gz` and make zero ThemeParks.wiki requests.
+
+```powershell
+python -m ml.forecast_admin import-local
+python -m ml.forecast_admin import-local --park disneyland --since 2025-11-01
+python -m ml.forecast_admin import-local --apply
+```
+
+The upload uses Application Default Credentials with `GOOGLE_CLOUD_PROJECT` and `OMNIQUEUE_FORECAST_BUCKET` set. Rerun after a failed import or resume with `--since`. Day artifacts are content-addressed. A rerun preserves a collector day that already has better coverage. Exact Firestore-source days can appear in the app. Paid, mixed-source, and unlabeled days are indexed privately for internal use. Confirm public display rights before changing that behavior.
+
+### Model publication
+
+Install `requirements-forecast.txt`, configure the project and private bucket as above, and select a checkpoint in Data & models → **Publish to iOS**. The lab checks the artifact and runs a local CPU sample forecast before activation. Training and test splits stay in the existing lab. The app can serve recorded waits for parks without a published model.
+
+```powershell
+python -m ml.forecast_admin publish --park disneyland --checkpoint path/to/best.pt
+python -m ml.forecast_admin activate --park disneyland --version FULL_PUBLISHED_VERSION
+```
+
+The second command reactivates an existing published version after checking its checksum again.
+
+### Cloud Run
+
+1. Use a dedicated, private bucket with public access prevention and uniform bucket-level access. The serving identity needs Firestore read access, read access to forecast artifacts, and permission to create objects under `forecasts/` and `issued/`. Keep publishing and archive writes on a separate administrator or job identity. Review access logs and retention before release.
+2. Deploy the included Dockerfile to a Cloud Run service near Firestore with `GOOGLE_CLOUD_PROJECT` and `OMNIQUEUE_FORECAST_BUCKET` set. Start at 2 CPUs, 2 GiB memory, concurrency 8, and a small maximum instance count. Confirm `/health` and `/v1/parks`, then test a park’s `/day` and `/forecast` with a published model. Profile warm refresh and cold starts before submitting the app. The app’s read routes need an HTTPS endpoint reachable by guests without Google credentials. Apply appropriate request throttling and instance limits before opening public access.
+3. Schedule a daily Cloud Run job using the same image and environment. Override its command to `python -m ml.forecast_admin archive-live` and run it after the parks’ overnight operating hours. It copies the two previous operating days from the existing collector to the public archive index, and allows another try after a delayed snapshot. Set the HTTPS service URL on the iOS target as described in the [companion README](../Companion%20app/README.md).
+
+## Local lab
+
 The ML code and interactive map are in `ml/`. Start the shared park lab from this folder:
 
 ```powershell

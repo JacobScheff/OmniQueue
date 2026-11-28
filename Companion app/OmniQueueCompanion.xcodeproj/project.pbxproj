@@ -13,6 +13,7 @@
 		8B0400000000000000000020 /* ObservationBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000001F /* ObservationBuilder.swift */; };
 		8B0400000000000000000022 /* OnnxRecommender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000021 /* OnnxRecommender.swift */; };
 		8B0400000000000000000024 /* WaitTimeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000023 /* WaitTimeService.swift */; };
+		8B0400000000000000000055 /* ForecastClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000054 /* ForecastClient.swift */; };
 		8B040000000000000000004E /* FuzzyMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000004D /* FuzzyMatch.swift */; };
 		8B0400000000000000000026 /* GuestState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000025 /* GuestState.swift */; };
 		8B0400000000000000000028 /* ParkCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000027 /* ParkCatalog.swift */; };
@@ -20,16 +21,13 @@
 		8B040000000000000000002C /* WaitBoard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000002B /* WaitBoard.swift */; };
 		8B040000000000000000002E /* OmniQueueCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000002D /* OmniQueueCompanionApp.swift */; };
 		8B0400000000000000000030 /* StateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000002F /* StateStore.swift */; };
-		8B0400000000000000000032 /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000031 /* Palette.swift */; };
-		8B0400000000000000000034 /* TicketChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000033 /* TicketChrome.swift */; };
 		8B0400000000000000000036 /* DisclaimerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000035 /* DisclaimerView.swift */; };
-		8B0400000000000000000038 /* RouteTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000037 /* RouteTimeline.swift */; };
-		8B040000000000000000003A /* WaitChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000039 /* WaitChip.swift */; };
 		8B040000000000000000003C /* LocationPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000003B /* LocationPicker.swift */; };
 		8B040000000000000000003E /* MeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000003D /* MeView.swift */; };
 		8B0400000000000000000040 /* PlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B040000000000000000003F /* PlanView.swift */; };
 		8B0400000000000000000042 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000041 /* RidesView.swift */; };
 		8B0400000000000000000044 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000043 /* RootView.swift */; };
+		8B0400000000000000000053 /* ForecastsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000052 /* ForecastsView.swift */; };
 		8B0400000000000000000046 /* ParkData.json in Resources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000045 /* ParkData.json */; };
 		8B0400000000000000000048 /* v2.json in Resources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000047 /* v2.json */; };
 		8B040000000000000000004A /* v2.onnx in Resources */ = {isa = PBXBuildFile; fileRef = 8B0400000000000000000049 /* v2.onnx */; };
@@ -44,6 +42,7 @@
 		8B040000000000000000001F /* ObservationBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationBuilder.swift; sourceTree = "<group>"; };
 		8B0400000000000000000021 /* OnnxRecommender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnnxRecommender.swift; sourceTree = "<group>"; };
 		8B0400000000000000000023 /* WaitTimeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitTimeService.swift; sourceTree = "<group>"; };
+		8B0400000000000000000054 /* ForecastClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForecastClient.swift; sourceTree = "<group>"; };
 		8B040000000000000000004D /* FuzzyMatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzyMatch.swift; sourceTree = "<group>"; };
 		8B0400000000000000000025 /* GuestState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestState.swift; sourceTree = "<group>"; };
 		8B0400000000000000000027 /* ParkCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParkCatalog.swift; sourceTree = "<group>"; };
@@ -51,21 +50,19 @@
 		8B040000000000000000002B /* WaitBoard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitBoard.swift; sourceTree = "<group>"; };
 		8B040000000000000000002D /* OmniQueueCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmniQueueCompanionApp.swift; sourceTree = "<group>"; };
 		8B040000000000000000002F /* StateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStore.swift; sourceTree = "<group>"; };
-		8B0400000000000000000031 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
-		8B0400000000000000000033 /* TicketChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketChrome.swift; sourceTree = "<group>"; };
 		8B0400000000000000000035 /* DisclaimerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisclaimerView.swift; sourceTree = "<group>"; };
-		8B0400000000000000000037 /* RouteTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTimeline.swift; sourceTree = "<group>"; };
-		8B0400000000000000000039 /* WaitChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitChip.swift; sourceTree = "<group>"; };
 		8B040000000000000000003B /* LocationPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationPicker.swift; sourceTree = "<group>"; };
 		8B040000000000000000003D /* MeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeView.swift; sourceTree = "<group>"; };
 		8B040000000000000000003F /* PlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanView.swift; sourceTree = "<group>"; };
 		8B0400000000000000000041 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
 		8B0400000000000000000043 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		8B0400000000000000000052 /* ForecastsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForecastsView.swift; sourceTree = "<group>"; };
 		8B0400000000000000000045 /* ParkData.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ParkData.json; sourceTree = "<group>"; };
 		8B0400000000000000000047 /* v2.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = v2.json; sourceTree = "<group>"; };
 		8B0400000000000000000049 /* v2.onnx */ = {isa = PBXFileReference; lastKnownFileType = text; path = v2.onnx; sourceTree = "<group>"; };
 		8B040000000000000000004B /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		8B040000000000000000004F /* AppLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLinks.swift; sourceTree = "<group>"; };
+		8B0400000000000000000056 /* ForecastConfig.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = ForecastConfig.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -100,7 +97,6 @@
 			isa = PBXGroup;
 			children = (
 				8B0400000000000000000018 /* Assets.xcassets */,
-				8B040000000000000000000A /* Theme */,
 				8B040000000000000000000B /* Models */,
 				8B040000000000000000000C /* Engine */,
 				8B040000000000000000000D /* Persistence */,
@@ -108,19 +104,11 @@
 				8B0400000000000000000010 /* Resources */,
 				8B040000000000000000004B /* PrivacyInfo.xcprivacy */,
 				8B040000000000000000004F /* AppLinks.swift */,
+				8B0400000000000000000056 /* ForecastConfig.plist */,
 				8B040000000000000000001D /* AppSession.swift */,
 				8B040000000000000000002D /* OmniQueueCompanionApp.swift */,
 			);
 			path = OmniQueueCompanion;
-			sourceTree = "<group>";
-		};
-		8B040000000000000000000A /* Theme */ = {
-			isa = PBXGroup;
-			children = (
-				8B0400000000000000000031 /* Palette.swift */,
-				8B0400000000000000000033 /* TicketChrome.swift */,
-			);
-			path = Theme;
 			sourceTree = "<group>";
 		};
 		8B040000000000000000000B /* Models */ = {
@@ -140,6 +128,7 @@
 				8B040000000000000000001F /* ObservationBuilder.swift */,
 				8B0400000000000000000021 /* OnnxRecommender.swift */,
 				8B0400000000000000000023 /* WaitTimeService.swift */,
+				8B0400000000000000000054 /* ForecastClient.swift */,
 				8B040000000000000000004D /* FuzzyMatch.swift */,
 			);
 			path = Engine;
@@ -162,6 +151,7 @@
 				8B040000000000000000003F /* PlanView.swift */,
 				8B0400000000000000000041 /* RidesView.swift */,
 				8B0400000000000000000043 /* RootView.swift */,
+				8B0400000000000000000052 /* ForecastsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -170,8 +160,6 @@
 			isa = PBXGroup;
 			children = (
 				8B0400000000000000000035 /* DisclaimerView.swift */,
-				8B0400000000000000000037 /* RouteTimeline.swift */,
-				8B0400000000000000000039 /* WaitChip.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -293,6 +281,7 @@
 				8B0400000000000000000020 /* ObservationBuilder.swift in Sources */,
 				8B0400000000000000000022 /* OnnxRecommender.swift in Sources */,
 				8B0400000000000000000024 /* WaitTimeService.swift in Sources */,
+				8B0400000000000000000055 /* ForecastClient.swift in Sources */,
 				8B040000000000000000004E /* FuzzyMatch.swift in Sources */,
 				8B0400000000000000000026 /* GuestState.swift in Sources */,
 				8B0400000000000000000028 /* ParkCatalog.swift in Sources */,
@@ -300,16 +289,13 @@
 				8B040000000000000000002C /* WaitBoard.swift in Sources */,
 				8B040000000000000000002E /* OmniQueueCompanionApp.swift in Sources */,
 				8B0400000000000000000030 /* StateStore.swift in Sources */,
-				8B0400000000000000000032 /* Palette.swift in Sources */,
-				8B0400000000000000000034 /* TicketChrome.swift in Sources */,
 				8B0400000000000000000036 /* DisclaimerView.swift in Sources */,
-				8B0400000000000000000038 /* RouteTimeline.swift in Sources */,
-				8B040000000000000000003A /* WaitChip.swift in Sources */,
 				8B040000000000000000003C /* LocationPicker.swift in Sources */,
 				8B040000000000000000003E /* MeView.swift in Sources */,
 				8B0400000000000000000040 /* PlanView.swift in Sources */,
 				8B0400000000000000000042 /* RidesView.swift in Sources */,
 				8B0400000000000000000044 /* RootView.swift in Sources */,
+				8B0400000000000000000053 /* ForecastsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -442,6 +428,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OmniQueueCompanion/ForecastConfig.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OmniQueue;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
@@ -477,6 +464,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OmniQueueCompanion/ForecastConfig.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OmniQueue;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
