@@ -123,7 +123,7 @@ test("iOS Models shows local and published statuses and targets the chosen park"
         submitted = JSON.parse(options.body);
         return {message: "Published EPCOT"};
       }
-      return {cloud: {project: "example", bucket: "artifacts"}, parks: [
+      return {cloud: {project: "example"}, parks: [
         {slug: "disneyland", name: "Disneyland", models: [], published: null},
         {slug: "epcot", name: "EPCOT", models: [
           {id: "best", name: "Local Epcot", ready: true, sha256: "abc", epoch: 20},

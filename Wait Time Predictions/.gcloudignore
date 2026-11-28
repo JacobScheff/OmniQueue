@@ -1,9 +1,0 @@
-.gcloudignore
-.git
-.venv
-credentials
-data
-checkpoints
-tests
-**/__pycache__
-**/*.pyc

@@ -74,16 +74,11 @@ def publish_model(store, park, checkpoint_path, *, samples=config.SAMPLES, model
         copy = Path(directory) / "model.pt"
         copy.write_bytes(data)
         manifest = verify_model(copy, park, samples=samples)
-    manifest["sha256"] = digest(data)
+    manifest.update(sha256=digest(data), checkpoint_bytes=len(data))
     if model_id is not None:
         manifest["source_model_id"] = model_id
-    version = digest(encode(manifest))
-    manifest.update(version=version, path=f"models/{park.slug}/{manifest['sha256']}.pt")
-    if not store.write_once(manifest["path"], data, "application/octet-stream"):
-        existing = store.read(manifest["path"])
-        if existing is None or digest(existing) != manifest["sha256"]:
-            raise ValueError("The existing model artifact does not match its checksum.")
-    store.write_json(f"models/{park.slug}/{version}.json.gz", manifest)
+    manifest["version"] = digest(encode(manifest))
+    store.save_checkpoint(park.slug, manifest, data)
     store.activate(park.slug, manifest)
     return manifest
 
@@ -91,18 +86,16 @@ def publish_model(store, park, checkpoint_path, *, samples=config.SAMPLES, model
 def activate_model(store, park, version):
     if not re.fullmatch(r"[0-9a-f]{64}", version):
         raise ValueError("Provide the full version from the publish command.")
-    manifest = store.read_json(f"models/{park.slug}/{version}.json.gz")
+    manifest = store.version(park.slug, version)
     if not manifest or manifest["park_id"] != park.id or manifest["version"] != version:
         raise ValueError("This version has not been published for this park.")
-    data = store.read(manifest["path"])
-    if data is None or digest(data) != manifest["sha256"]:
+    if store.read_checkpoint(park.slug, manifest) is None:
         raise ValueError("The stored model artifact does not match its manifest.")
     store.activate(park.slug, manifest)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bucket")
     parser.add_argument("--project")
     commands = parser.add_subparsers(dest="command", required=True)
     publish = commands.add_parser("publish")
@@ -112,7 +105,7 @@ def main():
     rollback.add_argument("--park", choices=PARKS, required=True)
     rollback.add_argument("--version", required=True)
     args = parser.parse_args()
-    store = ForecastStore(args.bucket, args.project)
+    store = ForecastStore(project=args.project)
     if args.command == "publish":
         model = publish_model(store, get_park(args.park), args.checkpoint)
         print(f"Published {model['name']} ({model['version']}) for {args.park}.")

@@ -7,7 +7,7 @@ Open `OmniQueueCompanion.xcodeproj` in a current Xcode release with the iOS 17+ 
 ```bash
 xcodebuild -project OmniQueueCompanion.xcodeproj -scheme OmniQueueCompanion \
   -destination 'generic/platform=iOS Simulator' \
-  OMNIQUEUE_FORECAST_URL="https://YOUR-SERVICE.run.app" build
+  OMNIQUEUE_FORECAST_URL="https://YOUR-SERVICE.onrender.com" build
 ```
 
 See the [forecast service setup](../Wait%20Time%20Predictions/README.md#ios-forecast-service) to deploy, publish a model, and seed history before testing Forecasts.

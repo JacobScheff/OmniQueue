@@ -1,4 +1,4 @@
-"""Private Cloud Storage artifacts and Firestore indexes for the iOS forecast service."""
+"""Private checkpoint storage, activations, and archive reads on Firestore."""
 
 import gzip
 import hashlib
@@ -9,6 +9,7 @@ from ml.config import PROJECT
 
 
 FORECAST_PARKS = "forecast_parks"
+CHECKPOINT_CHUNK_SIZE = 768 * 1024
 
 
 def encode(value):
@@ -23,17 +24,24 @@ def forecast_project(override=None):
     return override or os.environ.get("GOOGLE_CLOUD_PROJECT") or PROJECT
 
 
+def forecast_firestore(project=None):
+    from google.cloud import firestore
+    from google.oauth2 import service_account
+
+    key = os.environ.get("FIRESTORE_SERVICE_ACCOUNT_JSON")
+    credentials = service_account.Credentials.from_service_account_info(json.loads(key)) if key else None
+    return firestore.Client(project=forecast_project(project), credentials=credentials)
+
+
 def published_models(slugs):
     """Read all selected park activations in one Firestore request."""
     from google.api_core.exceptions import GoogleAPIError
     from google.auth.exceptions import GoogleAuthError
-    from google.cloud import firestore
 
-    status = {"project": forecast_project(),
-              "bucket": os.environ.get("OMNIQUEUE_FORECAST_BUCKET"), "error": None, "parks": {}}
+    status = {"project": forecast_project(), "error": None, "parks": {}}
     db = None
     try:
-        db = firestore.Client(project=status["project"])
+        db = forecast_firestore(status["project"])
         status["project"] = db.project
         collection = db.collection(FORECAST_PARKS)
         records = db.get_all([collection.document(slug) for slug in slugs],
@@ -63,52 +71,74 @@ def publication_summary(record):
 
 
 class ForecastStore:
-    def __init__(self, bucket=None, project=None):
-        from google.cloud import firestore, storage
-
-        bucket = bucket or os.environ.get("OMNIQUEUE_FORECAST_BUCKET")
-        if not bucket:
-            raise ValueError("Set OMNIQUEUE_FORECAST_BUCKET to the private forecast artifact bucket.")
-        project = forecast_project(project)
-        self.db = firestore.Client(project=project)
-        self.bucket = storage.Client(project=project).bucket(bucket)
-
-    def read(self, path):
-        from google.api_core.exceptions import NotFound
-
-        try:
-            return self.bucket.blob(path).download_as_bytes(timeout=10)
-        except NotFound:
-            return None
-
-    def write_once(self, path, data, content_type):
-        from google.api_core.exceptions import PreconditionFailed
-
-        try:
-            self.bucket.blob(path).upload_from_string(data, content_type=content_type,
-                                                      if_generation_match=0, timeout=25)
-            return True
-        except PreconditionFailed:
-            return False
-
-    def read_json(self, path):
-        data = self.read(path)
-        return json.loads(gzip.decompress(data)) if data is not None else None
-
-    def write_json(self, path, value):
-        return self.write_once(path, gzip.compress(encode(value), mtime=0), "application/gzip")
-
-    def first_issued(self, park, key):
-        prefix = f"issued/{park}/{key}/"
-        first = next(iter(self.bucket.list_blobs(prefix=prefix, max_results=1, timeout=5)), None)
-        return self.read_json(first.name) if first is not None else None
+    def __init__(self, project=None):
+        self.db = forecast_firestore(project)
 
     def park(self, slug):
         return self.db.collection(FORECAST_PARKS).document(slug)
 
+    def checkpoint_chunks(self, slug, checksum, size):
+        chunks = self.park(slug).collection("checkpoints").document(checksum).collection("forecast_model_chunks")
+        count = (size + CHECKPOINT_CHUNK_SIZE - 1) // CHECKPOINT_CHUNK_SIZE
+        return [chunks.document(str(index)) for index in range(count)]
+
+    def save_checkpoint(self, slug, manifest, data):
+        from google.api_core.exceptions import AlreadyExists
+
+        size, checksum = manifest["checkpoint_bytes"], manifest["sha256"]
+        if size != len(data) or digest(data) != checksum:
+            raise ValueError("The checkpoint bytes do not match the model manifest.")
+        references = self.checkpoint_chunks(slug, checksum, size)
+        pieces = [data[offset:offset + CHECKPOINT_CHUNK_SIZE] for offset in range(0, size, CHECKPOINT_CHUNK_SIZE)]
+        # Content-addressed chunks can be retried after a partial write. Publish
+        # the version only after every chunk has been written and checked.
+        for ref, piece in zip(references, pieces):
+            try:
+                ref.create({"payload": piece}, timeout=15)
+            except AlreadyExists:
+                if ref.get(timeout=8).get("payload") != piece:
+                    raise ValueError("A stored checkpoint chunk failed verification.") from None
+        if self.read_checkpoint(slug, manifest) != data:
+            raise ValueError("The uploaded checkpoint failed verification.")
+        reference = self.park(slug).collection("versions").document(manifest["version"])
+        try:
+            reference.create(manifest, timeout=10)
+        except AlreadyExists:
+            if reference.get(timeout=8).to_dict() != manifest:
+                raise ValueError("The stored model manifest differs from this version.") from None
+
+    def read_checkpoint(self, slug, manifest):
+        size, checksum = manifest["checkpoint_bytes"], manifest["sha256"]
+        if type(size) is not int or size < 1:
+            return None
+        references = self.checkpoint_chunks(slug, checksum, size)
+        rows = {row.id: row.to_dict().get("payload") for row in self.db.get_all(references, timeout=15) if row.exists}
+        pieces = [rows.get(reference.id) for reference in references]
+        if any(not isinstance(piece, bytes) for piece in pieces):
+            return None
+        data = b"".join(pieces)
+        return data if len(data) == size and digest(data) == checksum else None
+
+    def version(self, slug, version):
+        return self.park(slug).collection("versions").document(version).get(timeout=8).to_dict()
+
+    def issued(self, park, key):
+        record = self.park(park).collection("issued_forecasts").document(str(key)).get(timeout=5).to_dict()
+        return json.loads(gzip.decompress(record["forecast_gzip"])) if record else None
+
+    def save_issued(self, park, key, value):
+        from google.api_core.exceptions import AlreadyExists
+
+        reference = self.park(park).collection("issued_forecasts").document(str(key))
+        try:
+            reference.create({"forecast_gzip": gzip.compress(encode(value), compresslevel=3)}, timeout=8)
+        except AlreadyExists:
+            pass
+
     def active_model(self, slug):
         value = self.park(slug).get(timeout=5).to_dict()
-        return value.get("active_model") if value else None
+        model = value.get("active_model") if value else None
+        return model if model and "checkpoint_bytes" in model else None
 
     def activate(self, slug, manifest):
         from google.cloud.firestore import SERVER_TIMESTAMP, transactional

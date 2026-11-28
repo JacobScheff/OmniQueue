@@ -415,7 +415,7 @@ function iosRunList(park, cloud) {
     button.setAttribute("aria-label", exact ? `${model.name} is published for ${park.name}`
       : `Publish the ${checkpoint.toLowerCase()} for ${model.name} at ${park.name} to iOS`);
     button.disabled = exact || !model.ready || park.busy || Boolean(state.iosPublishing) || state.iosLoading
-      || !cloud.bucket || Boolean(cloud.error);
+      || Boolean(cloud.error);
     if (park.busy) button.title = "Wait for the park’s current job to finish.";
     button.addEventListener("click", () => publishIOSModel(park, model));
     item.append(label, button);
@@ -430,10 +430,8 @@ function renderIOSModels() {
   if (!result) return;
   const {parks, cloud} = result;
   $("ios-project").textContent = cloud.project || "Not configured";
-  $("ios-bucket").textContent = cloud.bucket || "Not configured";
   $("ios-cloud-access").textContent = cloud.error ? "Unavailable" : "Connected";
-  $("ios-setup-note").textContent = cloud.error || (!cloud.bucket
-    ? "Wait data is available from Firebase. Publishing requires a private Cloud Storage bucket for model files. Set OMNIQUEUE_FORECAST_BUCKET before starting the lab." : "");
+  $("ios-setup-note").textContent = cloud.error || "Publishing saves the checkpoint and activates it for this park in Firestore.";
   const published = parks.filter(park => park.published).length;
   $("ios-count").textContent = cloud.error ? "Published status is unavailable." : `${published} of ${parks.length} parks have an iOS model`;
   $("ios-models").replaceChildren();

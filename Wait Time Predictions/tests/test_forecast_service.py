@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from ml.data import MISSING
 from ml.forecast_admin import publish_model
 from ml.forecast_service import ForecastBusy, ForecastService, legal_starts
-from ml.forecast_store import ForecastStore, published_models
+from ml.forecast_store import CHECKPOINT_CHUNK_SIZE, ForecastStore, digest, published_models
 from ml.parks import get_park
 
 
@@ -48,10 +48,41 @@ class ForecastServiceTests(unittest.TestCase):
             with patch("ml.forecast_admin.verify_model", return_value={"name": "Best"}) as verify:
                 manifest = publish_model(store, get_park("disneyland"), latest)
             self.assertEqual(verify.call_count, 1)
-            store.write_once.assert_called_once_with(manifest["path"], b"best weights", "application/octet-stream")
+            store.save_checkpoint.assert_called_once_with("disneyland", manifest, b"best weights")
+            store.activate.assert_called_once_with("disneyland", manifest)
             best.unlink()
             with self.assertRaisesRegex(ValueError, "no best checkpoint"):
                 publish_model(store, get_park("disneyland"), latest)
+
+    def test_checkpoint_read_reassembles_chunks_and_checks_the_digest(self):
+        first = b"a" * CHECKPOINT_CHUNK_SIZE
+        last = b"b"
+        manifest = {"checkpoint_bytes": len(first + last), "sha256": digest(first + last)}
+        store = ForecastStore.__new__(ForecastStore)
+        store.db = Mock()
+        store.checkpoint_chunks = Mock(return_value=[Mock(id="0"), Mock(id="1")])
+        chunk_zero = Mock(id="0", exists=True)
+        chunk_zero.to_dict.return_value = {"payload": first}
+        chunk_one = Mock(id="1", exists=True)
+        chunk_one.to_dict.return_value = {"payload": last}
+        store.db.get_all.return_value = [chunk_one, chunk_zero]
+        self.assertEqual(store.read_checkpoint("epcot", manifest), first + last)
+        chunk_one.to_dict.return_value["payload"] = b"x"
+        self.assertIsNone(store.read_checkpoint("epcot", manifest))
+
+    def test_only_one_issued_forecast_is_saved_per_operating_day(self):
+        store = Mock()
+        service = ForecastService(store)
+        try:
+            key = date(2026, 11, 27)
+            first = service.finish_forecast("epcot", key, {"start": 300}, True)
+            second = service.finish_forecast("epcot", key, {"start": 600}, True)
+            replay = service.finish_forecast("epcot", key, {"start": 900}, False)
+            self.assertEqual((first["kind"], second["kind"], replay["kind"]), ("live", "live", "replay"))
+            store.save_issued.assert_called_once_with("epcot", key, first)
+        finally:
+            service.client.close()
+            service.workspace.cleanup()
 
     def test_activation_replaces_the_parks_active_model_in_one_document(self):
         store = ForecastStore.__new__(ForecastStore)

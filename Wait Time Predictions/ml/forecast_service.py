@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+from collections import OrderedDict
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -12,6 +13,7 @@ from threading import Lock
 from time import time as epoch
 
 import httpx
+from google.api_core.exceptions import GoogleAPIError
 
 from api.collect import fetch_park_data
 from ml.attractions import modeling_day
@@ -83,6 +85,8 @@ class ForecastService:
         self.day_locks = {slug: Lock() for slug in PARKS}
         self.day_cache = {}
         self.inference = Lock()
+        self.forecasts = OrderedDict()
+        self.issued_days = {}
         self.workspace = tempfile.TemporaryDirectory(prefix="omniqueue-forecast-")
 
     @lru_cache(maxsize=40)
@@ -238,14 +242,14 @@ class ForecastService:
         # Replay near an hour after opening by default, with earlier choices available.
         return min(starts, key=lambda tick: abs(tick - day["expected_timestamps"][0] - 3600))
 
-    def checkpoint(self, park, path, sha256):
+    def checkpoint(self, park, manifest):
         # The inference lock protects these per-park scratch files while PyTorch reads them.
         folder = Path(self.workspace.name) / park.slug
-        local = folder / f"{sha256}.pt"
+        local = folder / f"{manifest['sha256']}.pt"
         if local.is_file():
             return local
-        data = self.store.read(path)
-        if data is None or digest(data) != sha256:
+        data = self.store.read_checkpoint(park.slug, manifest)
+        if data is None:
             raise ForecastUnavailable("The published model is temporarily unavailable.")
         folder.mkdir(exist_ok=True)
         pending = local.with_suffix(".tmp")
@@ -261,38 +265,33 @@ class ForecastService:
         model = self.model(park.slug, int(epoch()) // 15)
         starts = legal_starts(day, model["ride_ids"]) if model else []
         default = self.default_start(day, starts, key == today, now)
-        if cutoff is None and key != today:
-            issued = self.store.first_issued(park.slug, key)
-            if issued is not None:
+        is_live = key == today and default is not None and cutoff in (None, default)
+        if not is_live:
+            issued = self.store.issued(park.slug, key)
+            if issued is not None and (cutoff == issued["start"] or (cutoff is None and key != today)):
                 return issued
         cutoff = default if cutoff is None else cutoff
         if cutoff is None:
             raise ForecastUnavailable("There is no forecast start available for this operating day.")
         if cutoff not in day.get("expected_timestamps", []):
             raise ForecastUnavailable("Choose a five-minute forecast start during park hours.")
-        issued_path = f"issued/{park.slug}/{key}/{cutoff}.json.gz"
-        is_live = key == today and cutoff == default
-        if not is_live:
-            saved = self.store.read_json(issued_path)
-            if saved is not None:
-                return saved
         if not model or cutoff not in starts:
             raise ForecastUnavailable("This start time needs enough recorded waits and a published park model.")
         revision = digest(encode(day))
-        path = f"forecasts/{park.slug}/{key}/{cutoff}/{model['version']}/{revision}.json.gz"
-        saved = self.store.read_json(path)
-        if saved is not None:
-            return self.finish_forecast(saved, is_live, issued_path)
+        cache_key = (park.slug, key, cutoff, model["version"], revision)
         if not self.inference.acquire(blocking=False):
             raise ForecastBusy("Another forecast is running. Try again shortly.")
         try:
-            saved = self.store.read_json(path)
-            if saved is None:
+            saved = self.forecasts.get(cache_key)
+            if saved is not None:
+                self.forecasts.move_to_end(cache_key)
+                result = json.loads(gzip.decompress(saved))
+            else:
                 from ml.run import predict
                 settings = settings_for(park, migrate=False, PREDICT_DAY=key.isoformat(),
                                         DEVICE=os.environ.get("OMNIQUEUE_FORECAST_DEVICE", "cpu"),
                                         SAMPLES=model["samples"], SEED=model["seed"], TEMPERATURE=model["temperature"],
-                                        CHECKPOINT=self.checkpoint(park, model["path"], model["sha256"]))
+                                        CHECKPOINT=self.checkpoint(park, model))
                 result = predict(settings, print_output=False, day_override=day, start_timestamp=cutoff)
                 snapshots = []
                 for frame in result["snapshots"]:
@@ -306,17 +305,24 @@ class ForecastService:
                                       "rides": rides})
                 split = next((label for label in ("train", "validation", "test")
                               if key.isoformat() in model[f"{label}_dates"]), None)
-                saved = {"snapshots": snapshots, "start": cutoff, "as_of": result["as_of"],
-                         "model_name": model["name"], "model_version": model["version"], "split": split,
-                         "date": key.isoformat()}
-                self.store.write_json(path, saved)
-            return self.finish_forecast(saved, is_live, issued_path)
+                result = {"snapshots": snapshots, "start": cutoff, "as_of": result["as_of"],
+                          "model_name": model["name"], "model_version": model["version"], "split": split,
+                          "date": key.isoformat()}
+                self.forecasts[cache_key] = gzip.compress(encode(result), compresslevel=3)
+                if len(self.forecasts) > 16:
+                    self.forecasts.popitem(last=False)
+            return self.finish_forecast(park.slug, key, result, is_live)
         finally:
             self.inference.release()
 
-    def finish_forecast(self, result, live, issued_path):
+    def finish_forecast(self, park, key, result, live):
         if not live:
             return {**result, "kind": "replay"}
         issued = {**result, "kind": "live", "issued_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
-        self.store.write_json(issued_path, issued)
+        if self.issued_days.get(park) != key:
+            try:
+                self.store.save_issued(park, key, issued)
+            except GoogleAPIError:
+                logging.exception("Could not save the issued forecast for %s on %s", park, key)
+            self.issued_days[park] = key
         return issued

@@ -227,7 +227,7 @@ class ParkLab:
                     from google.auth.exceptions import GoogleAuthError
 
                     if isinstance(error, (GoogleAPIError, GoogleAuthError)):
-                        raise ValueError("Model publication failed. Check the bucket and cloud credentials.") from error
+                        raise ValueError("Model publication failed. Check Firestore write access and the cloud credentials.") from error
                     raise
                 return {"state": "complete", "model_id": identifier,
                         "message": f"Published {published['name']} to iOS ({published['version'][:12]})."}

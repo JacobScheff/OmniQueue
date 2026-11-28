@@ -163,7 +163,8 @@ actor ForecastClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.timeoutIntervalForRequest = 35
+        configuration.timeoutIntervalForRequest = 100
+        configuration.timeoutIntervalForResource = 120
         session = URLSession(configuration: configuration)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

@@ -1,4 +1,4 @@
-# Free single-service deploy for the live park companion (SPA + API + ONNX).
+# Free web services for the live companion and iOS forecast API.
 # https://render.com/docs/blueprint-spec
 services:
   - type: web
@@ -11,3 +11,14 @@ services:
     envVars:
       - key: COMPANION_DEVICE
         value: cpu
+  - type: web
+    name: omniqueue-forecasts
+    runtime: docker
+    plan: free
+    rootDir: "Wait Time Predictions"
+    healthCheckPath: /health
+    envVars:
+      - key: GOOGLE_CLOUD_PROJECT
+        value: omniqueue-9ce1b
+      - key: FIRESTORE_SERVICE_ACCOUNT_JSON
+        sync: false
