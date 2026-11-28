@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ml import config
 from ml.forecast_store import ForecastStore, digest, encode
+from ml.model_library import is_best_checkpoint
 from ml.parks import PARKS, get_park, settings_for
 
 
@@ -22,6 +23,8 @@ def verify_model(path, park, *, samples=config.SAMPLES):
     if (checkpoint.get("version"), checkpoint.get("park_id"), checkpoint.get("token_labels")) != (
             1, park.id, TOKEN_LABELS):
         raise ValueError("This checkpoint has the wrong park or an unsupported model format.")
+    if not is_best_checkpoint(checkpoint):
+        raise ValueError("Select the run's best checkpoint to publish to iOS.")
     rides = checkpoint["rides"]
     ride_ids = {ride["id"] for ride in rides}
     if not rides or len(ride_ids) != len(rides):
@@ -48,6 +51,7 @@ def verify_model(path, park, *, samples=config.SAMPLES):
             raise ValueError("Sample forecast returned unexpected dimensions.")
         return {
             "park_id": park.id, "name": checkpoint.get("run_name") or "Park wait model",
+            "epoch": checkpoint.get("epoch"),
             "architecture": checkpoint["model_config"].get("architecture", "park_gru_v1"),
             "samples": samples, "seed": settings.SEED, "temperature": settings.TEMPERATURE,
             "ride_ids": sorted(ride_ids),
@@ -58,14 +62,21 @@ def verify_model(path, park, *, samples=config.SAMPLES):
     raise ValueError("No complete local day matches this checkpoint's ride catalog for a sample forecast.")
 
 
-def publish_model(store, park, checkpoint_path, *, samples=config.SAMPLES):
+def publish_model(store, park, checkpoint_path, *, samples=config.SAMPLES, model_id=None):
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.name.lower().endswith(".latest.pt"):
+        checkpoint_path = checkpoint_path.with_name(checkpoint_path.name[:-len(".latest.pt")] + ".pt")
+        if not checkpoint_path.is_file():
+            raise ValueError("This run has no best checkpoint to publish.")
     # Verify and publish the same bytes even if the lab replaces the source checkpoint.
-    data = Path(checkpoint_path).read_bytes()
+    data = checkpoint_path.read_bytes()
     with tempfile.TemporaryDirectory() as directory:
         copy = Path(directory) / "model.pt"
         copy.write_bytes(data)
         manifest = verify_model(copy, park, samples=samples)
     manifest["sha256"] = digest(data)
+    if model_id is not None:
+        manifest["source_model_id"] = model_id
     version = digest(encode(manifest))
     manifest.update(version=version, path=f"models/{park.slug}/{manifest['sha256']}.pt")
     if not store.write_once(manifest["path"], data, "application/octet-stream"):

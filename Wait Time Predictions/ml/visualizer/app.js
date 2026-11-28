@@ -1,5 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
+const panels = ["forecast", "manage", "ios"];
 const state = {
   meta: null, day: null, observed: new Map(), predicted: new Map(), index: 0,
   cutoff: Infinity, generation: 0, loading: false, forecastError: "", timer: null,
@@ -8,6 +9,7 @@ const state = {
   models: [], selectedModel: null, modelPreview: null, catalogPark: null, loadedPark: null, libraryGeneration: 0,
   jobBusy: false, submitting: false, handledJob: null, jobId: null, stopping: false,
   liveAllSubmitting: false, liveAllBusy: false, liveAllHandled: null,
+  iosLoading: false, iosPublishing: null, iosStatus: null,
 };
 let clockFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit",
@@ -44,7 +46,7 @@ function archiveMonths(days) {
 }
 
 function setPanel(panel, focus = false) {
-  for (const name of ["forecast", "manage"]) {
+  for (const name of panels) {
     const active = name === panel;
     $(`${name}-tab`).setAttribute("aria-selected", String(active));
     $(`${name}-tab`).tabIndex = active ? 0 : -1;
@@ -52,12 +54,16 @@ function setPanel(panel, focus = false) {
   }
   $("sidebar-content").scrollTop = 0;
   $("model-workspace").hidden = panel !== "manage";
-  $("map-stage").hidden = panel === "manage";
-  $("map-timeline").hidden = panel === "manage";
-  $("workspace").classList.toggle("is-managing", panel === "manage");
+  $("ios-workspace").hidden = panel !== "ios";
+  $("map-stage").hidden = panel !== "forecast";
+  $("map-timeline").hidden = panel !== "forecast";
+  $("workspace").classList.toggle("is-managing", panel !== "forecast");
+  $("workspace").classList.toggle("is-managing-ios", panel === "ios");
+  if (panel !== "forecast") stopPlayback();
   if (panel === "manage") {
-    stopPlayback();
     if (state.park && state.meta) loadModels().catch(error => message(error.message, true));
+  } else if (panel === "ios") {
+    refreshIOSModels();
   } else if (state.map) state.map.invalidateSize();
   if (focus) $(`${panel}-tab`).focus();
 }
@@ -355,6 +361,154 @@ async function api(path, options = {}) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
   return result;
+}
+
+function iosNotice(text, error = false) {
+  const notice = $("ios-notice");
+  notice.hidden = !text;
+  notice.textContent = text;
+  notice.classList.toggle("error", error);
+}
+
+function iosCell(label, details = []) {
+  const cell = document.createElement("td");
+  const name = document.createElement("strong");
+  name.textContent = label;
+  cell.append(name);
+  for (const detail of details.filter(Boolean)) {
+    const line = document.createElement("span");
+    line.textContent = detail;
+    cell.append(line);
+  }
+  return cell;
+}
+
+function iosRunList(park, cloud) {
+  if (!park.models.length) return iosCell("No saved models");
+  const cell = document.createElement("td");
+  cell.className = "ios-runs";
+  const published = park.published;
+  const publishedId = published?.source_model_id || (published?.sha256
+    ? park.models.find(model => model.sha256 === published.sha256)?.id : null);
+  for (const model of park.models) {
+    const item = document.createElement("div");
+    item.className = "ios-run";
+    const label = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = model.name || "Local model unavailable";
+    label.append(name);
+    const exact = publishedId === model.id && published?.sha256 === model.sha256;
+    const checkpoint = model.selection === "final_epoch" ? "Final checkpoint" : "Best checkpoint";
+    for (const detail of [
+      model.ready && model.epoch != null ? `${checkpoint} · epoch ${model.epoch}` : model.error,
+      model.lab_active === "latest" ? "Local lab uses latest epoch" : model.lab_active ? "Active in local lab" : "",
+      publishedId === model.id && !exact ? "An older checkpoint from this run is published" : "",
+    ].filter(Boolean)) {
+      const line = document.createElement("span");
+      line.textContent = detail;
+      label.append(line);
+    }
+    const button = document.createElement("button");
+    const publishing = state.iosPublishing?.park === park.slug && state.iosPublishing?.model === model.id;
+    button.className = "secondary ios-publish";
+    button.textContent = publishing ? "Publishing…" : exact ? "Published" : model.selection === "final_epoch" ? "Publish final" : "Publish best";
+    button.setAttribute("aria-label", exact ? `${model.name} is published for ${park.name}`
+      : `Publish the ${checkpoint.toLowerCase()} for ${model.name} at ${park.name} to iOS`);
+    button.disabled = exact || !model.ready || park.busy || Boolean(state.iosPublishing) || state.iosLoading
+      || !cloud.bucket || Boolean(cloud.error);
+    if (park.busy) button.title = "Wait for the park’s current job to finish.";
+    button.addEventListener("click", () => publishIOSModel(park, model));
+    item.append(label, button);
+    cell.append(item);
+  }
+  return cell;
+}
+
+function renderIOSModels() {
+  const result = state.iosStatus;
+  $("ios-refresh").disabled = state.iosLoading || Boolean(state.iosPublishing);
+  if (!result) return;
+  const {parks, cloud} = result;
+  $("ios-project").textContent = cloud.project || "Not configured";
+  $("ios-bucket").textContent = cloud.bucket || "Not configured";
+  $("ios-cloud-access").textContent = cloud.error ? "Unavailable" : "Connected";
+  $("ios-setup-note").textContent = cloud.error || (!cloud.bucket
+    ? "Wait data is available from Firebase. Publishing requires a private Cloud Storage bucket for model files. Set OMNIQUEUE_FORECAST_BUCKET before starting the lab." : "");
+  const published = parks.filter(park => park.published).length;
+  $("ios-count").textContent = cloud.error ? "Published status is unavailable." : `${published} of ${parks.length} parks have an iOS model`;
+  $("ios-models").replaceChildren();
+  for (const park of parks) {
+    const row = document.createElement("tr");
+    const title = document.createElement("th");
+    title.scope = "row";
+    title.textContent = park.name;
+    row.append(title);
+    row.append(iosRunList(park, cloud));
+    const model = park.published;
+    if (model) {
+      const date = model.activated_at && new Date(model.activated_at);
+      const activated = date && !Number.isNaN(date.getTime())
+        ? `Activated ${date.toLocaleString(undefined, {dateStyle: "medium", timeStyle: "short"})}` : "";
+      const version = model.version && `Version ${model.version.slice(0, 12)}`;
+      const previous = model.previous_version && `Previous ${model.previous_version.slice(0, 12)}`;
+      const epoch = model.epoch == null ? "" : `Epoch ${model.epoch}`;
+      const cell = iosCell(model.name || "Published model", [version, epoch, activated, previous]);
+      cell.title = [model.version, model.previous_version && `Previous ${model.previous_version}`].filter(Boolean).join("\n");
+      row.append(cell);
+    } else {
+      row.append(iosCell(cloud.error ? "Status unavailable" : "Unpublished"));
+    }
+    const actions = document.createElement("td");
+    actions.className = "ios-actions";
+    const workshop = document.createElement("button");
+    workshop.className = "secondary";
+    workshop.textContent = "Workshop";
+    workshop.setAttribute("aria-label", `Open model workshop for ${park.name}`);
+    workshop.addEventListener("click", () => {
+      if (state.park !== park.slug) selectPark(park.slug);
+      setPanel("manage", true);
+    });
+    actions.append(workshop);
+    row.append(actions);
+    $("ios-models").append(row);
+  }
+}
+
+async function refreshIOSModels() {
+  if (state.iosLoading) return;
+  state.iosLoading = true;
+  renderIOSModels();
+  try {
+    state.iosStatus = await api("/api/ios-models");
+    return true;
+  } catch (error) {
+    if (!state.iosStatus) $("ios-count").textContent = "Model status could not load.";
+    iosNotice(error.message, true);
+    return false;
+  } finally {
+    state.iosLoading = false;
+    renderIOSModels();
+  }
+}
+
+async function publishIOSModel(park, model) {
+  if (!model.ready || state.iosPublishing || state.iosLoading) return;
+  const checkpoint = model.selection === "final_epoch" ? "final" : "best";
+  if (!window.confirm(`Publish the ${checkpoint} checkpoint for “${model.name}” as the active iOS model for ${park.name}?`)) return;
+  state.iosPublishing = {park: park.slug, model: model.id};
+  renderIOSModels();
+  iosNotice(`Checking and publishing the model for ${park.name}…`);
+  try {
+    const result = await api("/api/action", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({park: park.slug, action: "publish", model: model.id})});
+    if (await refreshIOSModels()) iosNotice(result.message);
+    else iosNotice(`${result.message} Refresh status to reload the list.`);
+  } catch (error) {
+    iosNotice(error.message, true);
+  } finally {
+    state.iosPublishing = null;
+    renderIOSModels();
+  }
 }
 
 function message(text, error = false) {
@@ -832,12 +986,14 @@ $("calendar-year").addEventListener("change", () => {
   state.calendarMonth = `${$("calendar-year").value}-${state.calendarMonth.slice(5)}`;
   changeMonth(0);
 });
-for (const panel of ["forecast", "manage"]) {
+for (const [index, panel] of panels.entries()) {
   $(`${panel}-tab`).addEventListener("click", () => setPanel(panel));
   $(`${panel}-tab`).addEventListener("keydown", event => {
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       event.preventDefault();
-      setPanel(event.key === "Home" ? "forecast" : event.key === "End" ? "manage" : panel === "forecast" ? "manage" : "forecast", true);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? panels.length - 1
+        : (index + (event.key === "ArrowLeft" ? -1 : 1) + panels.length) % panels.length;
+      setPanel(panels[next], true);
     }
   });
 }
@@ -1064,7 +1220,7 @@ async function pollTask() {
 
 async function manage(action, deletedId = null) {
   if (state.jobBusy || state.submitting) return;
-  if (action === "publish" && !window.confirm("Publish the selected model to iOS and make it active for this park?")) return;
+  if (action === "publish" && !window.confirm("Publish this run’s best checkpoint as the active iOS model for this park?")) return;
   if (action === "refresh" || action === "rebuild") {
     const prompt = action === "rebuild"
       ? "Re-fetch history? This downloads historical data again, replacing cached historical downloads, and refreshes recent Firebase observations. This can take a while. Continue?"
@@ -1104,8 +1260,9 @@ async function manage(action, deletedId = null) {
     if (park === state.park) { state.submitting = false; syncModelButtons(); }
   }
 }
-$("park").addEventListener("change", async () => {
-  state.park = $("park").value;
+async function selectPark(park) {
+  state.park = park;
+  $("park").value = park;
   state.jobBusy = false;
   state.submitting = false;
   state.jobId = null;
@@ -1113,11 +1270,16 @@ $("park").addEventListener("change", async () => {
   $("stop-training").hidden = true;
   await reloadPark();
   await pollTask();
-});
+}
+$("park").addEventListener("change", () => selectPark($("park").value));
 for (const [id, action] of [["refresh-data", "refresh"], ["rebuild-data", "rebuild"], ["live-data", "live"], ["train-model", "train"], ["test-model", "test"], ["load-model", "load"], ["publish-model", "publish"], ["save-model", "save"], ["delete-model", "delete"]]) {
   $(id).addEventListener("click", () => manage(action));
 }
 $("live-all-data").addEventListener("click", refreshAllLive);
+$("ios-refresh").addEventListener("click", () => {
+  iosNotice("");
+  refreshIOSModels();
+});
 $("model-slot").addEventListener("change", () => {
   state.selectedModel = $("model-slot").value;
   renderSavedModel().catch(error => { $("model-action-note").textContent = error.message; });
@@ -1158,6 +1320,7 @@ $("download-log").addEventListener("click", async () => {
 });
 
 async function init() {
+  if (window.location.hash === "#ios-models") setPanel("ios");
   initMap();
   try {
     const result = await api("/api/parks");

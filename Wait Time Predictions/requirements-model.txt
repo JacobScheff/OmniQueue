@@ -2,3 +2,4 @@
 numpy>=1.26,<3
 torch>=2.7,<3
 tzdata>=2025.1
+google-cloud-storage>=3,<4

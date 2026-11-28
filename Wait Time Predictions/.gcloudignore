@@ -5,6 +5,5 @@ credentials
 data
 checkpoints
 tests
-scripts
 **/__pycache__
 **/*.pyc

@@ -1,5 +1,7 @@
 """Serving for the iOS app. Collection and training run independently."""
 
+import gzip
+import json
 import logging
 import os
 import tempfile
@@ -26,6 +28,11 @@ class ForecastUnavailable(ValueError):
 
 class ForecastBusy(RuntimeError):
     pass
+
+
+def snapshot_bounds(ticks):
+    return (datetime.fromtimestamp(ticks[0], timezone.utc),
+            datetime.fromtimestamp(ticks[-1] + TICK_SECONDS, timezone.utc))
 
 
 def legal_starts(day, ride_ids):
@@ -117,31 +124,26 @@ class ForecastService:
         if not ticks:
             return {"rides": [], "tokens": [], "timestamps": [], "expected_timestamps": [],
                     "closing_at": 0, "source": "firestore", "timezone": park.timezone}
-        opening = datetime.fromtimestamp(ticks[0], timezone.utc)
-        stop = datetime.fromtimestamp(ticks[-1] + TICK_SECONDS, timezone.utc)
+        opening, stop = snapshot_bounds(ticks)
         with self.day_locks[park.slug]:
             cache = self.day_cache.get(park.slug)
             if not recheck and cache and cache[0] == key and cache[1] == ticks and epoch() - cache[2] < 12:
                 return cache[4]
             archive = self.archives[park.slug]
-            query = archive.between(f"{park.id}_{opening:%Y%m%dT%H%MZ}", f"{park.id}_{stop:%Y%m%dT%H%MZ}")
-            newest = next(iter(query.select(["sampled_at"]).order_by("__name__", direction="DESCENDING")
-                               .limit(1).stream(timeout=5)), None)
-            revision = newest.id if newest else None
-            if (cache and cache[0] == key and cache[1] == ticks and cache[3] == revision
+            query = archive.interval(opening, stop)
+            # The collector creates immutable bucket documents. A count is stable
+            # across refreshes and catches snapshots that arrive out of order.
+            count = query.count(alias="snapshots").get(timeout=5)[0][0].value
+            if (cache and cache[0] == key and cache[1] == ticks and cache[3] == count
                     and epoch() - cache[5] < 300):
                 day, read_at = cache[4], cache[5]
             else:
-                snapshots = [doc.to_dict() for doc in query.stream(timeout=10)] if newest else []
+                snapshots = [doc.to_dict() for doc in query.stream(timeout=10)] if count else []
                 day = collect_day(ticks, snapshots, archive.catalog)
                 day.update(timezone=park.timezone, source="firestore", closing_at=close)
                 read_at = epoch()
-            self.day_cache[park.slug] = (key, ticks, epoch(), revision, day, read_at)
+            self.day_cache[park.slug] = (key, ticks, epoch(), count, day, read_at)
             return day
-
-    @lru_cache(maxsize=16)
-    def archived_day(self, path):
-        return self.store.read_json(path)
 
     def day(self, park, requested, now, *, recheck=False):
         today = self.today(park, now)
@@ -151,8 +153,8 @@ class ForecastService:
         if key == today:
             return key, today, self.recorded_day(park, key, recheck=recheck)
         record = self.store.public_day(park.slug, key.isoformat())
-        collected = record and record.get("source") == "firestore"
-        day = self.archived_day(record["path"]) if collected else None
+        payload = record.get("archive_gzip") if record and record.get("source") == "firestore" else None
+        day = json.loads(gzip.decompress(payload)) if payload is not None else None
         if day is not None and day.get("source") != "firestore":
             day = None
         if day is None or not record.get("complete"):
@@ -174,24 +176,26 @@ class ForecastService:
 
     @lru_cache(maxsize=40)
     def collector_dates(self, park, before, limit, window):
+        if before == date.min:
+            return []
         archive = self.archives[park.slug]
+        key = before - timedelta(days=1)
+        ticks, _ = self.ticks(park, key)
+        boundary = datetime.combine(before, time(), park.tz).astimezone(timezone.utc)
+        if ticks:
+            boundary = max(boundary, snapshot_bounds(ticks)[1])
+        oldest = archive.first_before(boundary)
+        if oldest is None:
+            return []
+        earliest = self.today(park, oldest)
         dates = []
-        for _ in range(limit):
-            if before == date.min:
+        while key >= earliest and len(dates) < limit:
+            if ticks and archive.has_snapshots(*snapshot_bounds(ticks)):
+                dates.append(key.isoformat())
+            if key == earliest:
                 break
-            boundary = datetime.combine(before, time(), park.tz).astimezone(timezone.utc)
-            _, close = self.ticks(park, before - timedelta(days=1))
-            if close > boundary.timestamp():
-                exclusive_bucket = (close + TICK_SECONDS - 1) // TICK_SECONDS * TICK_SECONDS
-                boundary = datetime.fromtimestamp(exclusive_bucket, timezone.utc)
-            sampled = archive.latest_before(boundary)
-            if sampled is None:
-                break
-            key = self.today(park, sampled)
-            if key >= before:
-                break
-            dates.append(key.isoformat())
-            before = key
+            key -= timedelta(days=1)
+            ticks, _ = self.ticks(park, key)
         return dates
 
     def day_payload(self, park, requested, now):

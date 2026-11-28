@@ -2,6 +2,7 @@
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import file_digest
 import os
 import re
 import shutil
@@ -10,11 +11,12 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from ml import config
 from ml.parks import PARKS, get_park, settings_for
-from ml.model_library import ModelLibrary, model_name, split_preview
+from ml.model_library import ModelLibrary, best_model_id, model_name, split_preview
 
 
 class ParkLab:
@@ -57,6 +59,56 @@ class ParkLab:
     def catalog(self, slug, percentages=None):
         with self.lock:
             return self.library.catalog(self.app(slug), percentages)
+
+    def ios_models(self):
+        from ml.forecast_store import published_models
+
+        rows = []
+        with self.lock:
+            for park in PARKS.values():
+                app = self.apps.get(park.slug)
+                if app is None:
+                    app = SimpleNamespace(park=park, settings=settings_for(park, migrate=False))
+                    self.library.restore_active(app)
+                models = self.ios_local_models(app)
+                task = self.tasks.get(park.slug)
+                rows.append({"slug": park.slug, "name": park.name, "models": models,
+                             "busy": bool(task and task["state"] in ("queued", "running", "cancelling"))})
+        cloud = published_models(PARKS)
+        activations = cloud.pop("parks")
+        for row in rows:
+            row["published"] = activations.get(row["slug"])
+        return {"parks": rows, "cloud": cloud}
+
+    def ios_local_models(self, app):
+        active = app.settings.CHECKPOINT.resolve()
+        paths = self.library.paths(app)
+        models = {}
+        for identifier, path in paths.items():
+            if not path.is_file():
+                continue
+            origin = self.library.publication_origin(app, identifier, paths)
+            if origin not in models:
+                best = paths[origin]
+                has_best = best.is_file() and not best.name.lower().endswith(".latest.pt")
+                try:
+                    summary = self.library.summary(app, origin, best if has_best else path)
+                    model = {key: summary[key] for key in ("name", "epoch", "modified_at", "selection")}
+                    model["ready"] = has_best and summary["ready"] and summary["publishable"]
+                    if model["ready"]:
+                        with best.open("rb") as stream:
+                            model["sha256"] = file_digest(stream, "sha256").hexdigest()
+                    elif not has_best or summary["ready"]:
+                        model["error"] = "This run has no publishable best checkpoint."
+                    else:
+                        model["error"] = summary["error"]
+                except OSError:
+                    model = {"ready": False, "error": "The local checkpoint could not be read."}
+                models[origin] = {"id": origin, **model}
+            if path.resolve() == active:
+                models[origin]["lab_active"] = "latest" if identifier != best_model_id(identifier) else "selected"
+        return sorted(models.values(), key=lambda model: (
+            bool(model.get("lab_active")), model.get("modified_at", 0)), reverse=True)
 
     def report(self, slug, identifier):
         app = self.app(slug)
@@ -157,11 +209,19 @@ class ParkLab:
                 from ml.forecast_store import ForecastStore
 
                 identifier = payload.get("model", "best")
-                path = self.library.resolve(app, identifier)
+                if not isinstance(identifier, str):
+                    raise ValueError("Select a saved run to publish.")
+                identifier = self.library.publication_origin(app, identifier)
+                path = self.library.paths(app).get(identifier)
+                if path is None or not path.is_file() or path.name.lower().endswith(".latest.pt"):
+                    raise ValueError("This run has no best checkpoint to publish.")
+                summary = self.library.summary(app, identifier, path)
+                if not (summary["ready"] and summary["publishable"]):
+                    raise ValueError("This run has no publishable best checkpoint.")
                 try:
-                    published = publish_model(ForecastStore(), park, path, samples=self.samples)
+                    published = publish_model(ForecastStore(), park, path, samples=self.samples, model_id=identifier)
                 except ImportError as error:
-                    raise ValueError("Install requirements-forecast.txt to publish models.") from error
+                    raise ValueError("Install requirements-model.txt in the Python environment running the lab, then restart it.") from error
                 except Exception as error:
                     from google.api_core.exceptions import GoogleAPIError
                     from google.auth.exceptions import GoogleAuthError

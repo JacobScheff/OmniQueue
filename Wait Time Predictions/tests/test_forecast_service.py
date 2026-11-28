@@ -5,14 +5,71 @@ import importlib.util
 import json
 import unittest
 from datetime import date, datetime, timezone
-from unittest.mock import Mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 from ml.data import MISSING
+from ml.forecast_admin import publish_model
 from ml.forecast_service import ForecastBusy, ForecastService, legal_starts
+from ml.forecast_store import ForecastStore, published_models
 from ml.parks import get_park
 
 
 class ForecastServiceTests(unittest.TestCase):
+    def test_manager_reads_publication_status_in_one_batch(self):
+        db = Mock(project="forecast-project")
+        timestamp = datetime(2026, 11, 27, 18, tzinfo=timezone.utc)
+        published = {"active_model": {"name": "Disneyland baseline", "version": "v2", "sha256": "abc"},
+                     "previous_model": {"version": "v1"}, "activated_at": timestamp}
+        first = Mock(id="disneyland")
+        first.to_dict.return_value = published
+        another = Mock(id="epcot")
+        another.to_dict.return_value = None
+        db.get_all.return_value = [first, another]
+        with patch("google.cloud.firestore.Client", return_value=db):
+            status = published_models(["disneyland", "epcot"])
+        self.assertEqual(status["project"], "forecast-project")
+        self.assertIsNone(status["error"])
+        self.assertEqual(status["parks"]["disneyland"]["activated_at"], timestamp.isoformat())
+        self.assertEqual(status["parks"]["disneyland"]["previous_version"], "v1")
+        self.assertIsNone(status["parks"]["epcot"])
+        db.get_all.assert_called_once()
+        db.close.assert_called_once()
+
+    def test_publish_from_latest_path_uploads_the_best_sibling(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            latest = root / "best.latest.pt"
+            best = root / "best.pt"
+            latest.write_bytes(b"latest weights")
+            best.write_bytes(b"best weights")
+            store = Mock()
+            with patch("ml.forecast_admin.verify_model", return_value={"name": "Best"}) as verify:
+                manifest = publish_model(store, get_park("disneyland"), latest)
+            self.assertEqual(verify.call_count, 1)
+            store.write_once.assert_called_once_with(manifest["path"], b"best weights", "application/octet-stream")
+            best.unlink()
+            with self.assertRaisesRegex(ValueError, "no best checkpoint"):
+                publish_model(store, get_park("disneyland"), latest)
+
+    def test_activation_replaces_the_parks_active_model_in_one_document(self):
+        store = ForecastStore.__new__(ForecastStore)
+        store.db = Mock()
+        reference = store.park("epcot")
+        first = {"version": "first"}
+        second = {"version": "second"}
+        reference.get.return_value.to_dict.return_value = {"active_model": first}
+        with patch("google.cloud.firestore.transactional", side_effect=lambda operation: operation):
+            store.activate("epcot", second)
+        transaction = store.db.transaction.return_value
+        target, fields = transaction.set.call_args.args
+        self.assertIs(target, reference)
+        self.assertEqual(fields["active_model"], second)
+        self.assertEqual(fields["previous_model"], first)
+        self.assertEqual(transaction.set.call_args.kwargs["merge"], ["active_model", "previous_model", "activated_at"])
+        transaction.set.assert_called_once()
+
     def test_start_excludes_interpolation_using_an_observation_at_the_cutoff(self):
         day = {"rides": [{"id": "ride", "name": "Ride"}], "timestamps": [300, 900, 1200],
                "expected_timestamps": [300, 600, 900, 1200, 1500],
@@ -22,8 +79,8 @@ class ForecastServiceTests(unittest.TestCase):
 
     def test_public_day_rejects_mixed_source_even_if_indexed(self):
         store = Mock()
-        store.public_day.return_value = {"source": "firestore", "path": "mixed"}
-        store.read_json.return_value = {"source": "firestore_with_history_prefix"}
+        mixed = gzip.compress(json.dumps({"source": "firestore_with_history_prefix"}).encode())
+        store.public_day.return_value = {"source": "firestore", "archive_gzip": mixed}
         service = ForecastService(store)
         service.today = Mock(return_value=date(2026, 11, 27))
         service.recorded_day = Mock(return_value={"source": "firestore", "timestamps": []})
@@ -37,8 +94,11 @@ class ForecastServiceTests(unittest.TestCase):
     def test_past_day_reads_directly_from_firestore_when_seed_is_absent_or_partial(self):
         park = get_park("disneyland")
         store = Mock()
-        store.public_day.side_effect = [None, {"source": "firestore", "path": "seed", "complete": False}]
-        store.read_json.return_value = {"source": "firestore", "timestamps": [300]}
+        seed = gzip.compress(json.dumps({"source": "firestore", "timestamps": [300]}).encode())
+        store.public_day.side_effect = [
+            None, {"source": "firestore", "archive_gzip": seed, "complete": False},
+            {"source": "firestore", "archive_gzip": seed, "complete": True},
+        ]
         service = ForecastService(store)
         service.today = Mock(return_value=date(2026, 11, 27))
         collected = {"source": "firestore", "timestamps": [300, 600]}
@@ -46,6 +106,8 @@ class ForecastServiceTests(unittest.TestCase):
         try:
             for key in (date(2026, 11, 25), date(2026, 11, 26)):
                 self.assertEqual(service.day(park, key, None)[2], collected)
+            self.assertEqual(service.day(park, date(2026, 11, 24), None)[2]["timestamps"], [300])
+            self.assertEqual(service.recorded_day.call_count, 2)
         finally:
             service.client.close()
             service.workspace.cleanup()
@@ -58,13 +120,13 @@ class ForecastServiceTests(unittest.TestCase):
         archive = Mock()
         service.archives[park.slug] = archive
         night = date(2026, 11, 26)
-        closed = datetime(2026, 11, 27, 9, 2, tzinfo=timezone.utc)
-        service.ticks = Mock(side_effect=lambda park, key: ([0], int(closed.timestamp())) if key == night else ([], 0))
-        archive.latest_before.side_effect = [
-            datetime(2026, 11, 27, 8, 45, tzinfo=timezone.utc),
-            datetime(2026, 11, 25, 22, tzinfo=timezone.utc),
-            None,
-        ]
+        prior = date(2026, 11, 25)
+        overnight = [datetime(2026, 11, 27, 9, tzinfo=timezone.utc).timestamp()]
+        afternoon = [datetime(2026, 11, 25, 22, tzinfo=timezone.utc).timestamp()]
+        sessions = {night: overnight, prior: afternoon}
+        service.ticks = Mock(side_effect=lambda park, key: (sessions.get(key, []), 0))
+        archive.first_before.return_value = datetime(2026, 11, 25, 22, tzinfo=timezone.utc)
+        archive.has_snapshots.return_value = True
         try:
             noon = datetime(2026, 11, 27, 20, tzinfo=timezone.utc)
             self.assertEqual(service.dates(park, None, noon, 3), [
@@ -72,8 +134,29 @@ class ForecastServiceTests(unittest.TestCase):
                 {"date": "2026-11-25", "complete": None},
                 {"date": "2026-11-23", "complete": True},
             ])
-            self.assertEqual(archive.latest_before.call_args_list[0].args[0].minute, 5)
-            self.assertEqual(archive.latest_before.call_args_list[1].args[0].day, 26)
+            self.assertEqual(archive.first_before.call_args.args[0].minute, 5)
+            self.assertEqual(archive.has_snapshots.call_args_list[0].args[1].minute, 5)
+            self.assertEqual(archive.has_snapshots.call_args_list[1].args[0].day, 25)
+        finally:
+            service.client.close()
+            service.workspace.cleanup()
+
+    def test_recorded_day_reuses_count_and_reads_new_rows_without_a_descending_name_index(self):
+        store = Mock()
+        park = get_park("disneyland")
+        service = ForecastService(store)
+        ordered = Mock()
+        service.archives[park.slug] = ordered
+        query = ordered.interval.return_value
+        # The SDK's aggregation result consists of batches of alias/value entries.
+        query.count.return_value.get.side_effect = [[[Mock(value=count)]] for count in (1, 1, 2)]
+        query.stream.return_value = []
+        service.ticks = Mock(return_value=([300], 600))
+        try:
+            for _ in range(3):
+                service.recorded_day(park, date(2026, 11, 27), recheck=True)
+            self.assertEqual(query.stream.call_count, 2)
+            query.order_by.assert_not_called()
         finally:
             service.client.close()
             service.workspace.cleanup()
