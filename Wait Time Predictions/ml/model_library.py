@@ -44,6 +44,22 @@ def model_name(value):
     return value.strip()
 
 
+def best_model_id(identifier):
+    if identifier == "latest":
+        return "best"
+    if isinstance(identifier, str) and identifier.startswith("run-") and identifier.endswith("-latest"):
+        return identifier.removesuffix("-latest") + "-best"
+    return identifier
+
+
+def is_best_checkpoint(checkpoint):
+    source = checkpoint.get("copied_from")
+    best_epoch = checkpoint.get("best_epoch")
+    return source == best_model_id(source) and (
+        checkpoint.get("selection") == "final_epoch" or best_epoch is None or best_epoch == checkpoint.get("epoch")
+    )
+
+
 class ModelLibrary:
     def __init__(self):
         self.cache = {}
@@ -71,6 +87,22 @@ class ModelLibrary:
         if path is None or not path.is_file():
             raise ValueError("Select an existing model saved for this park")
         return path
+
+    def publication_origin(self, app, identifier, paths=None):
+        """Resolve latest slots and named copies to the original run's best slot."""
+        paths = self.paths(app) if paths is None else paths
+        identifier = best_model_id(identifier)
+        seen = {identifier}
+        while (path := paths.get(identifier)) is not None and path.is_file():
+            copied_from = self.summary(app, identifier, path)["copied_from"]
+            parent = best_model_id(copied_from)
+            if parent not in paths or parent in seen:
+                break
+            if not paths[parent].is_file() and (copied_from not in paths or not paths[copied_from].is_file()):
+                break
+            seen.add(parent)
+            identifier = parent
+        return identifier
 
     def create(self, app):
         run = uuid4().hex
@@ -259,7 +291,8 @@ class ModelLibrary:
         if cached is None:
             cached = {"ready": False, "test_ready": False, "error": "", "training_days": 0,
                       "validation_days": 0, "test_days": 0, "first_training_date": None,
-                      "last_training_date": None, "epoch": None, "run_name": None}
+                      "last_training_date": None, "epoch": None, "run_name": None,
+                      "copied_from": None, "publishable": False, "selection": None}
             try:
                 checkpoint = torch.load(path, map_location="cpu", weights_only=True)
                 if not isinstance(checkpoint, dict) or checkpoint.get("version") != 1 or checkpoint.get("token_labels") != TOKEN_LABELS:
@@ -274,6 +307,9 @@ class ModelLibrary:
                 cached.update(ready=True, training_days=len(train), validation_days=len(validation), test_days=len(test),
                               first_training_date=min(train) if train else None, last_training_date=max(train) if train else None,
                               epoch=checkpoint.get("epoch"), run_name=checkpoint.get("run_name"),
+                              copied_from=checkpoint.get("copied_from") if isinstance(checkpoint.get("copied_from"), str) else None,
+                              publishable=is_best_checkpoint(checkpoint),
+                              selection=checkpoint.get("selection"),
                               test_ready=all(name in checkpoint for name in ("train_dates", "validation_dates", "test_dates"))
                                          and bool(test) and len(set(train + validation + test)) == sum(map(len, groups)))
                 if not cached["test_ready"]:

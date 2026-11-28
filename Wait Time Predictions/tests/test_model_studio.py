@@ -66,6 +66,32 @@ class ModelStudioTests(unittest.TestCase):
                                                                       "checkpoint_size": stat.st_size}), encoding="utf-8")
         return identifier, path
 
+    def test_ios_manager_groups_variants_and_publishes_the_best_run_checkpoint(self):
+        first, best = self.saved_run()
+        second, _ = self.saved_run()
+        latest_id = first.replace("-best", "-latest")
+        latest = best.with_name("best.latest.pt")
+        checkpoint = torch.load(best, weights_only=True)
+        torch.save({**checkpoint, "epoch": 4, "best_epoch": 4}, best)
+        torch.save({**checkpoint, "epoch": 9, "best_epoch": 4}, latest)
+        copy = self.lab.library.save_copy(self.app, latest_id, "Named copy of latest")
+        self.lab.library.activate(self.app, latest_id)
+        candidates = self.lab.ios_local_models(self.app)
+        self.assertEqual({model["id"] for model in candidates}, {first, second})
+        selected = next(model for model in candidates if model["id"] == first)
+        self.assertEqual((selected["epoch"], selected["lab_active"], selected["ready"]), (4, "latest", True))
+        with patch("ml.forecast_admin.publish_model") as publish, patch("ml.forecast_store.ForecastStore") as store:
+            publish.return_value = {"name": "Keep me", "version": "a" * 64}
+            for identifier in (latest_id, copy):
+                result = self.lab.action({"park": "epcot", "action": "publish", "model": identifier})
+                self.assertEqual(result["model_id"], first)
+                publish.assert_called_with(store.return_value, self.app.park, best, samples=self.lab.samples, model_id=first)
+        best.unlink()
+        candidates = self.lab.ios_local_models(self.app)
+        self.assertFalse(next(model for model in candidates if model["id"] == first)["ready"])
+        with self.assertRaisesRegex(ValueError, "no best checkpoint"):
+            self.lab.action({"park": "epcot", "action": "publish", "model": latest_id})
+
     def test_delete_run_preserves_all_files_and_restore_does_not_reactivate(self):
         identifier, path = self.saved_run()
         originals = {file.name: file.read_bytes() for file in path.parent.iterdir()}

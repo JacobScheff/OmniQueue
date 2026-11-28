@@ -121,7 +121,7 @@ def park_timestamp(opening_date, clock_text, first_timestamp, park_timezone=PARK
     return math.ceil(moment.timestamp() / TICK_SECONDS) * TICK_SECONDS
 
 
-def forecast_boundary(day, opening_date, start_time, park_timezone=PARK_TIMEZONE):
+def forecast_boundary(day, opening_date, start_time, park_timezone=PARK_TIMEZONE, *, start_timestamp=None):
     """Use observed tokens strictly before the first predicted five-minute tick."""
     timestamps = day["timestamps"]
     if any(b <= a for a, b in zip(timestamps, timestamps[1:])):
@@ -129,7 +129,9 @@ def forecast_boundary(day, opening_date, start_time, park_timezone=PARK_TIMEZONE
     expected = day.get("expected_timestamps", timestamps)
     if not expected:
         raise ValueError("No published schedule or observations are available for this day")
-    if start_time is None:
+    if start_timestamp is not None:
+        cutoff = start_timestamp
+    elif start_time is None:
         if not timestamps:
             raise ValueError("No observations are available before the prediction start")
         cutoff = timestamps[-1] + TICK_SECONDS
@@ -144,7 +146,7 @@ def forecast_boundary(day, opening_date, start_time, park_timezone=PARK_TIMEZONE
     return count, cutoff
 
 
-def predict(settings=config, target_time=None, *, print_output=True):
+def predict(settings=config, target_time=None, *, print_output=True, day_override=None, start_timestamp=None):
     if (settings.STEPS is not None and settings.STEPS < 1) or settings.SAMPLES < 1 or settings.TEMPERATURE <= 0:
         raise ValueError("Steps, samples, and temperature must be positive")
     torch.manual_seed(settings.SEED)
@@ -160,7 +162,10 @@ def predict(settings=config, target_time=None, *, print_output=True):
     validate_checkpoint_rides(checkpoint["rides"])
     model = build_model(**checkpoint["model_config"]).to(device)
     model.load_state_dict(checkpoint["model_state"])
-    if settings.HISTORY:
+    if day_override is not None:
+        day = day_override
+        key = settings.PREDICT_DAY
+    elif settings.HISTORY:
         day = history_from_json(settings.HISTORY)
         key = settings.PREDICT_DAY or datetime.fromtimestamp(day["timestamps"][0], park_timezone).date().isoformat()
         if "expected_timestamps" not in day:
@@ -183,7 +188,8 @@ def predict(settings=config, target_time=None, *, print_output=True):
             raise ValueError(f"Dataset has no cached day for {key}. Run data.py to fetch it.")
         day = available[key]
     day = interpolate_day(modeling_day(day, {ride["id"] for ride in checkpoint["rides"]}))
-    count, cutoff = forecast_boundary(day, key, settings.PREDICT_START_TIME, park_timezone)
+    count, cutoff = forecast_boundary(day, key, settings.PREDICT_START_TIME, park_timezone,
+                                      start_timestamp=start_timestamp)
     timestamps = day["timestamps"][:count]
     # Later observations supply the replay's end time, while history contains
     # only the tokens available before the forecast starts.

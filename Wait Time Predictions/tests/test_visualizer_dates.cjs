@@ -112,6 +112,44 @@ test("workspace tabs expose only the selected panel and support keyboard switchi
   assert.equal(ui.get("manage-tab").attributes["aria-selected"], "false");
 });
 
+test("iOS Models shows local and published statuses and targets the chosen park", async () => {
+  const ui = calendar([]);
+  ui.state.park = "disneyland";
+  vm.runInContext(`
+    var submitted = null;
+    window = {confirm: () => true};
+    api = async (path, options) => {
+      if (path === "/api/action") {
+        submitted = JSON.parse(options.body);
+        return {message: "Published EPCOT"};
+      }
+      return {cloud: {project: "example"}, parks: [
+        {slug: "disneyland", name: "Disneyland", models: [], published: null},
+        {slug: "epcot", name: "EPCOT", models: [
+          {id: "best", name: "Local Epcot", ready: true, sha256: "abc", epoch: 20},
+          {id: "run-other-best", name: "Another run", ready: true, sha256: "xyz", epoch: 15}
+        ], published: {name: "Published baseline", version: "1234567890123456", sha256: "abc", source_model_id: "best"}}
+      ]};
+    };
+  `, ui.context);
+  ui.get("manage-tab").handlers.keydown({key: "End", preventDefault() {}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ui.get("ios-workspace").hidden, false);
+  assert.equal(ui.get("model-workspace").hidden, true);
+  assert.equal(ui.get("ios-count").textContent, "1 of 2 parks have an iOS model");
+  const [disneyland, epcot] = ui.get("ios-models").children;
+  assert.equal(disneyland.children[2].children[0].textContent, "Unpublished");
+  assert.equal(epcot.children[2].children[0].textContent, "Published baseline");
+  const [baseline, other] = epcot.children[1].children;
+  assert.equal(baseline.children[1].textContent, "Published");
+  assert.equal(baseline.children[1].disabled, true);
+  assert.equal(other.children[1].textContent, "Publish best");
+  await other.children[1].handlers.click();
+  assert.equal(vm.runInContext("submitted.park", ui.context), "epcot");
+  assert.equal(vm.runInContext("submitted.model", ui.context), "run-other-best");
+  assert.equal(ui.get("ios-notice").textContent, "Published EPCOT");
+});
+
 test("a failed forecast returns a future view to the latest actual observation", () => {
   const ui = calendar([]);
   vm.runInContext("render = () => {}; renderTimeline = () => {};", ui.context);

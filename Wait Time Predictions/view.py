@@ -64,6 +64,20 @@ class Archive:
             filter=FieldFilter("__name__", "<", self.snapshots.document(end))
         )
 
+    def interval(self, start, stop):
+        prefix = f"{self.park_id}_"
+        lower = f"{prefix}{start:%Y%m%dT%H%MZ}" if start is not None else prefix
+        return self.between(lower, f"{prefix}{stop:%Y%m%dT%H%MZ}")
+
+    def first_before(self, stop):
+        query = self.interval(None, stop).select(["sampled_at"]).limit(1)
+        document = next(iter(query.stream(timeout=5)), None)
+        return document.get("sampled_at") if document is not None else None
+
+    def has_snapshots(self, start, stop):
+        query = self.interval(start, stop).select([]).limit(1)
+        return next(iter(query.stream(timeout=5)), None) is not None
+
     def load(self, requested_date):
         if not requested_date:
             latest = list(self.snapshots.order_by(

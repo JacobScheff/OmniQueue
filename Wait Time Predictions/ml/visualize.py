@@ -334,6 +334,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parts.path == "/api/models":
                 percentages = [float(query[key][0]) for key in ("train", "validation", "test")] if all(key in query for key in ("train", "validation", "test")) else None
                 self.reply(200, self.server.lab.catalog(query.get("park", [self.server.default_park])[0], percentages))
+            elif parts.path == "/api/ios-models":
+                self.reply(200, self.server.lab.ios_models())
             elif parts.path == "/api/test-report":
                 self.reply(200, self.server.lab.report(query.get("park", [self.server.default_park])[0], query.get("model", [""])[0]))
             elif parts.path == "/api/task-log":

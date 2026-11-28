@@ -3,7 +3,6 @@ import SwiftUI
 struct LocationPicker: View {
     @Environment(AppSession.self) private var session
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.themeBlend) private var blend
     @State private var query = ""
 
     var body: some View {
@@ -20,8 +19,6 @@ struct LocationPicker: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(TicketInk.paper(blend: blend))
             .searchable(text: $query, prompt: "Land or ride")
             .navigationTitle("Where are you?")
             .navigationBarTitleDisplayMode(.inline)
@@ -54,16 +51,15 @@ struct LocationPicker: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .foregroundStyle(TicketInk.ink(blend: blend))
+                    Text(name).foregroundStyle(.primary)
                     Text(subtitle)
-                        .font(TicketType.caption)
-                        .foregroundStyle(TicketInk.muted(blend: blend))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 if session.state.location == key {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(TicketInk.copperAccent(blend: blend))
+                        .foregroundStyle(Color.accentColor)
                 }
             }
         }

@@ -1,5 +1,34 @@
 # Wait time predictions
 
+## iOS forecast service
+
+The iOS forecast API uses Render's Free web service and Firestore's free quota. It reads five-minute observations from the existing Vercel collector and executes the same PyTorch prediction code as the local lab. Firestore stores model checkpoints, activation metadata, and the wait history. Days sourced from the live collector can appear in the app. The paid, mixed-source, and unlabeled archive stays private for internal use.
+
+The forecast service caches recent results in memory. Firestore keeps the first live forecast issued for each park's operating day. Historical requests can show that saved forecast or replay another start with the currently published model. This limits archive growth on Firestore's 1 GiB free tier.
+
+### Model publication
+
+Install `requirements-model.txt` in the same Python environment you use to run the lab. On Windows with an uv-managed virtual environment, run `uv pip install --python .venv/Scripts/python.exe -r requirements-model.txt` from this directory. Use Application Default Credentials with Firestore write access, then publish a saved run from **iOS Models** or from the Data & models workshop. Publishing uses that run's best validation checkpoint. A run trained with validation disabled has its final checkpoint as its only publishable artifact. The lab runs a CPU sample forecast and verifies the chunks uploaded to Firestore before updating the park's single active iOS model.
+
+```powershell
+python -m ml.forecast_admin publish --park disneyland --checkpoint path/to/best.pt
+python -m ml.forecast_admin activate --park disneyland --version FULL_PUBLISHED_VERSION
+```
+
+The second command reactivates an existing published version after checking its checksum again.
+
+Open **iOS Models** in the lab to check all ten parks at once. The page lists saved runs separately, groups each run's best and latest slots, and shows the one active published version per park. **Publish best** replaces that park's current iOS selection and keeps previous versions available for rollback. Local publishing uses the repository's Firebase project by default. Set `GOOGLE_CLOUD_PROJECT` to switch to a staging project.
+
+### Render Free
+
+1. Sync the repository's `render.yaml` from the branch containing the forecast service in a free Render workspace. The blueprint includes `omniqueue-forecasts`. For manual setup, create a Free Docker web service with `Wait Time Predictions` as its root directory and `/health` as its health check.
+2. Set `GOOGLE_CLOUD_PROJECT` to `omniqueue-9ce1b` and enter a dedicated Google service-account JSON key as the `FIRESTORE_SERVICE_ACCOUNT_JSON` secret in Render. The hosting identity needs Firestore read access and permission to create issued forecasts. Keep publisher credentials in the local lab.
+3. Check `/health`, `/v1/parks`, and the day and forecast endpoints with a published model. Set Render's HTTPS service URL in the iOS target as described in the [companion README](../Companion%20app/README.md).
+
+Render spins down free web services after inactivity. A first request can take about a minute, and monthly free compute hours are shared within the workspace. The collector continues on its existing Vercel schedule. [Render free web service limits](https://render.com/docs/free)
+
+## Local lab
+
 The ML code and interactive map are in `ml/`. Start the shared park lab from this folder:
 
 ```powershell

@@ -20,20 +20,6 @@ struct WaitBoard: Equatable {
     }
 }
 
-enum WaitTone: String {
-    case good, warn, bad, closed, unknown
-
-    static func of(wait: Double?, open: Bool, status: String) -> WaitTone {
-        let upper = status.uppercased()
-        if upper != "OPERATING" && upper != "UNKNOWN" { return .closed }
-        if !open { return .closed }
-        guard let wait else { return .unknown }
-        if wait <= 20 { return .good }
-        if wait <= 45 { return .warn }
-        return .bad
-    }
-}
-
 enum WaitFormatting {
     static func label(wait: Double?, open: Bool, status: String) -> String {
         let upper = status.uppercased()
