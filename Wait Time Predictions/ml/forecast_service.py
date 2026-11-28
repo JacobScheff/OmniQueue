@@ -3,7 +3,7 @@
 import logging
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -13,7 +13,7 @@ import httpx
 
 from api.collect import fetch_park_data
 from ml.attractions import modeling_day
-from ml.data import MISSING, OVERFLOW, TICK_SECONDS, collect_day, expected_ticks, interpolate_day, validate_day
+from ml.data import MISSING, OVERFLOW, TICK_SECONDS, collect_day, expected_ticks, interpolate_day
 from ml.forecast_store import digest, encode
 from ml.parks import PARKS, settings_for
 from ml.visualize import observed_ride
@@ -74,7 +74,7 @@ class ForecastService:
         self.client = httpx.Client(timeout=6, headers={"User-Agent": "OmniQueue/1.0"})
         self.archives = {park.slug: Archive(store.db, park.id) for park in PARKS.values()}
         self.day_locks = {slug: Lock() for slug in PARKS}
-        self.live_cache = {}
+        self.day_cache = {}
         self.inference = Lock()
         self.workspace = tempfile.TemporaryDirectory(prefix="omniqueue-forecast-")
 
@@ -112,7 +112,7 @@ class ForecastService:
     def model(self, slug, window):
         return self.store.active_model(slug)
 
-    def live_day(self, park, key, *, recheck=False, force=False):
+    def recorded_day(self, park, key, *, recheck=False):
         ticks, close = self.ticks(park, key)
         if not ticks:
             return {"rides": [], "tokens": [], "timestamps": [], "expected_timestamps": [],
@@ -120,15 +120,15 @@ class ForecastService:
         opening = datetime.fromtimestamp(ticks[0], timezone.utc)
         stop = datetime.fromtimestamp(ticks[-1] + TICK_SECONDS, timezone.utc)
         with self.day_locks[park.slug]:
-            cache = self.live_cache.get(park.slug)
-            if not (force or recheck) and cache and cache[0] == key and cache[1] == ticks and epoch() - cache[2] < 12:
+            cache = self.day_cache.get(park.slug)
+            if not recheck and cache and cache[0] == key and cache[1] == ticks and epoch() - cache[2] < 12:
                 return cache[4]
             archive = self.archives[park.slug]
             query = archive.between(f"{park.id}_{opening:%Y%m%dT%H%MZ}", f"{park.id}_{stop:%Y%m%dT%H%MZ}")
             newest = next(iter(query.select(["sampled_at"]).order_by("__name__", direction="DESCENDING")
                                .limit(1).stream(timeout=5)), None)
             revision = newest.id if newest else None
-            if (not force and cache and cache[0] == key and cache[1] == ticks and cache[3] == revision
+            if (cache and cache[0] == key and cache[1] == ticks and cache[3] == revision
                     and epoch() - cache[5] < 300):
                 day, read_at = cache[4], cache[5]
             else:
@@ -136,7 +136,7 @@ class ForecastService:
                 day = collect_day(ticks, snapshots, archive.catalog)
                 day.update(timezone=park.timezone, source="firestore", closing_at=close)
                 read_at = epoch()
-            self.live_cache[park.slug] = (key, ticks, epoch(), revision, day, read_at)
+            self.day_cache[park.slug] = (key, ticks, epoch(), revision, day, read_at)
             return day
 
     @lru_cache(maxsize=16)
@@ -149,13 +149,50 @@ class ForecastService:
         if key > today:
             raise ForecastUnavailable("Choose today or an earlier operating day.")
         if key == today:
-            return key, today, self.live_day(park, key, recheck=recheck)
+            return key, today, self.recorded_day(park, key, recheck=recheck)
         record = self.store.public_day(park.slug, key.isoformat())
-        # A day can be requested only through the collector-owned archive index.
-        day = self.archived_day(record["path"]) if record and record.get("source") == "firestore" else None
-        if day is None or day.get("source") != "firestore":
+        collected = record and record.get("source") == "firestore"
+        day = self.archived_day(record["path"]) if collected else None
+        if day is not None and day.get("source") != "firestore":
+            day = None
+        if day is None or not record.get("complete"):
+            live = self.recorded_day(park, key, recheck=recheck)
+            if day is None or len(live["timestamps"]) >= len(day["timestamps"]):
+                day = live
+        if not day["timestamps"]:
             raise ForecastUnavailable("No recorded waits are available for that date.")
         return key, today, day
+
+    def dates(self, park, before, now, limit):
+        today = self.today(park, now)
+        upper = min(before, today) if before is not None else today
+        seed = self.store.public_dates(park.slug, upper.isoformat(), limit)
+        rows = {item["date"]: item for item in seed}
+        for key in self.collector_dates(park, upper, limit, int(epoch()) // 300):
+            rows.setdefault(key, {"date": key, "complete": None})
+        return [rows[key] for key in sorted(rows, reverse=True)[:limit]]
+
+    @lru_cache(maxsize=40)
+    def collector_dates(self, park, before, limit, window):
+        archive = self.archives[park.slug]
+        dates = []
+        for _ in range(limit):
+            if before == date.min:
+                break
+            boundary = datetime.combine(before, time(), park.tz).astimezone(timezone.utc)
+            _, close = self.ticks(park, before - timedelta(days=1))
+            if close > boundary.timestamp():
+                exclusive_bucket = (close + TICK_SECONDS - 1) // TICK_SECONDS * TICK_SECONDS
+                boundary = datetime.fromtimestamp(exclusive_bucket, timezone.utc)
+            sampled = archive.latest_before(boundary)
+            if sampled is None:
+                break
+            key = self.today(park, sampled)
+            if key >= before:
+                break
+            dates.append(key.isoformat())
+            before = key
+        return dates
 
     def day_payload(self, park, requested, now):
         key, today, day = self.day(park, requested, now, recheck=True)
@@ -279,26 +316,3 @@ class ForecastService:
         issued = {**result, "kind": "live", "issued_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         self.store.write_json(issued_path, issued)
         return issued
-
-    def archive_recent(self, parks):
-        failures = []
-        now = datetime.now(timezone.utc)
-        for park in parks:
-            try:
-                today = self.today(park, now)
-                for offset in (2, 1):
-                    key = today - timedelta(days=offset)
-                    day = self.live_day(park, key, force=True)
-                    if not day["timestamps"]:
-                        continue
-                    try:
-                        validate_day(day)
-                        complete = True
-                    except ValueError:
-                        complete = False
-                    self.store.archive_day(park.slug, key.isoformat(), day, complete)
-            except Exception:
-                logging.exception("Could not archive recent waits for %s", park.slug)
-                failures.append(park.slug)
-        if failures:
-            raise RuntimeError("Could not archive recent waits for " + ", ".join(failures))

@@ -4,7 +4,6 @@ import gzip
 import hashlib
 import json
 import os
-from datetime import date
 
 
 def encode(value):
@@ -74,38 +73,6 @@ class ForecastStore:
             if previous.get("active_model") != manifest:
                 transaction.set(reference, {"active_model": manifest,
                                             "previous_model": previous.get("active_model")}, merge=True)
-
-        update(self.db.transaction())
-
-    def archive_day(self, slug, key, day, complete):
-        if date.fromisoformat(key).isoformat() != key:
-            raise ValueError("Archive day must use YYYY-MM-DD.")
-        source = day.get("source", "unlabeled")
-        collection = "days" if source == "firestore" else "private_days"
-        reference = self.park(slug).collection(collection).document(key)
-        data = encode(day)
-        revision = digest(data)
-        path = f"days/{slug}/{collection}/{key}/{revision}.json.gz"
-        # Collector archives can improve when late snapshots arrive. A local seed
-        # never replaces an already published collector day with fewer observations.
-        self.write_once(path, gzip.compress(data, mtime=0), "application/gzip")
-        self._index_day(reference, {"path": path, "revision": revision, "source": source,
-                                    "complete": complete, "snapshots": len(day["timestamps"]),
-                                    "expected": len(day.get("expected_timestamps", day["timestamps"]))},
-                        prefer_coverage=collection == "days")
-
-    def _index_day(self, reference, record, *, prefer_coverage):
-        from google.cloud.firestore import transactional
-
-        @transactional
-        def update(transaction):
-            previous = reference.get(transaction=transaction).to_dict()
-            if previous == record:
-                return
-            if previous and prefer_coverage and (previous["complete"], previous["snapshots"]) >= (
-                    record["complete"], record["snapshots"]):
-                return
-            transaction.set(reference, record)
 
         update(self.db.transaction())
 

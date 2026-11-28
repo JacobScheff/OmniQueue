@@ -525,7 +525,7 @@ private struct ForecastHistory: View {
                             HStack {
                                 Text(dateLabel(day.date, park: park))
                                 Spacer()
-                                if !day.complete { Text("Partial").font(.caption).foregroundStyle(.secondary) }
+                                if day.complete == false { Text("Partial").font(.caption).foregroundStyle(.secondary) }
                                 if selected == day.date { Image(systemName: "checkmark") }
                             }
                         }

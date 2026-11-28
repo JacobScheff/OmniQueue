@@ -64,6 +64,12 @@ class Archive:
             filter=FieldFilter("__name__", "<", self.snapshots.document(end))
         )
 
+    def latest_before(self, stop):
+        query = self.between(f"{self.park_id}_", f"{self.park_id}_{stop:%Y%m%dT%H%MZ}")
+        document = next(iter(query.select(["sampled_at"]).order_by("__name__", direction="DESCENDING")
+                             .limit(1).stream(timeout=5)), None)
+        return document.get("sampled_at") if document is not None else None
+
     def load(self, requested_date):
         if not requested_date:
             latest = list(self.snapshots.order_by(

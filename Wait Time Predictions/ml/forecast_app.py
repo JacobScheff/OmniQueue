@@ -87,9 +87,7 @@ def create_app(service=None):
             park, before = get_park(slug), query_date("before")
         except ValueError:
             return jsonify(error="Choose a supported park and a valid date."), 400
-        today = backend().today(park, now())
-        upper = min(before, today) if before is not None else today
-        rows = backend().store.public_dates(park.slug, upper.isoformat(), 32)
+        rows = backend().dates(park, before, now(), 32)
         return {"dates": rows[:31], "next": rows[30]["date"] if len(rows) == 32 else None}
 
     @app.get("/v1/parks/<slug>/forecast")

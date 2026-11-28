@@ -122,7 +122,7 @@ struct WaitForecast: Decodable, Sendable {
 struct ForecastDates: Decodable, Sendable {
     struct Day: Decodable, Identifiable, Sendable {
         let date: String
-        let complete: Bool
+        let complete: Bool?
 
         var id: String { date }
     }
